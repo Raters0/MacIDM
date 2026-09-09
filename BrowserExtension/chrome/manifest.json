@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MacIDM Development Extension",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Local development extension for MacIDM",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA995DgavkIxEzFG1QxNK9r3ZQjD3NesbqQtS+TjKdkMqwRk01SLO8eXowGKhqm4KnI15cxmlDG2LJbCm1DKZMwNJbFOCQ9jN7uSv/zimZsfCGwlJFeEPTF5SJ4LnwZxWNkXld1sm/nHOXBvZDZh7lyPDO+47PLcTQR0o8dL5yQjXhOCu6BqMoww5lLMOeRDBPc3dTPhCLnWlwdT/r7O8HATG/wWPmzuE9VVE/nKhF2pIFmdQbZWbQ0fJZ9vvPLmPky2mj1HM6huQs3igykWk0PbuVhnUw7EiSIcnFpQ8CG5pWiIsJNdTN9PMHzlM07nfROFzrLEGZ0SZTfYtQgchAawIDAQAB",
   "background": {
