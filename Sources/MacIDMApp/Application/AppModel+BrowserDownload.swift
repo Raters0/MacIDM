@@ -28,7 +28,7 @@ extension AppModel {
                 return .ok(
                     requestId: request.requestId,
                     type: "pong",
-                    payload: ["appVersion": .string("0.3.0")]
+                    payload: ["appVersion": .string("1.0.0")]
                 )
             case "download.create":
                 return try await prepareBrowserDownload(request, clientID: clientID, secret: secret)
