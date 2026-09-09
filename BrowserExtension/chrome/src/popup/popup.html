@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MacIDM</title>
+    <link rel="stylesheet" href="../shared/tokens.css">
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header class="app-header">
+        <img src="../../icons/icon-128.png" alt="" class="app-icon">
+        <h1>MacIDM</h1>
+        <!-- Quick cookie-authorization shortcut beside the title: shown only
+             when the current site is not yet authorized and has cookie-
+             sensitive candidates, so a silent guest-quality downgrade has a
+             one-click fix without opening the ⋯ menu. -->
+        <button id="cookie-authorize-shortcut" class="cookie-shortcut" type="button" hidden
+                data-i18n="popup.authorizeCookieShort" data-i18n-title="popup.cookieRowTitle"
+                title="点击授权站点 Cookie 并重新解析画质">授权 Cookie</button>
+        <span id="host-status" class="status-dot" role="status" data-i18n-aria="popup.connectionStatus" aria-label="连接状态"></span>
+        <!-- The ⋯ menu anchors to .app-header (position:relative); the button
+             is the header's last flex child, so right:0 aligns the menu's
+             right edge with the button's right edge. -->
+        <button id="menu-button" class="icon-button" type="button" aria-haspopup="true" data-i18n-title="popup.menuTitle" data-i18n-aria="popup.menuTitle" title="更多设置" aria-label="更多设置">⋯</button>
+        <div id="menu" class="menu" hidden>
+          <label class="menu-row">
+            <span data-i18n="popup.takeoverLabel">浏览器下载接管</span>
+            <input id="takeover-toggle" type="checkbox" role="switch">
+          </label>
+          <label class="menu-row">
+            <span data-i18n="popup.filterNoiseLabel">过滤噪声候选</span>
+            <input id="sniff-governance-toggle" type="checkbox" role="switch">
+          </label>
+          <!-- Threshold inputs (disabled while governance is off): sizes are
+               entered in KB and stored internally in bytes. The minimum
+               resource size stays plainly visible; the two fine-grained
+               thresholds go under the "threshold details" subheading. -->
+          <label class="menu-row threshold-row" data-i18n-title="popup.minSizeTitle">
+            <span data-i18n="popup.minSizeLabel">最小资源体积</span>
+            <span class="threshold-input-group">
+              <input id="min-size-input" class="threshold-input" type="number" min="0" max="65536" step="1" inputmode="numeric" aria-label="KB">
+              <span class="threshold-unit" aria-hidden="true">KB</span>
+            </span>
+          </label>
+          <div class="menu-subheading" data-i18n="popup.thresholdsSubheading">阈值细节</div>
+          <label class="menu-row threshold-row" data-i18n-title="popup.audioMinTitle">
+            <span data-i18n="popup.audioMinLabel">诊断音频阈值</span>
+            <span class="threshold-input-group">
+              <input id="audio-min-input" class="threshold-input" type="number" min="0" max="65536" step="1" inputmode="numeric" aria-label="KB">
+              <span class="threshold-unit" aria-hidden="true">KB</span>
+            </span>
+          </label>
+          <label class="menu-row threshold-row" data-i18n-title="popup.segmentMaxTitle">
+            <span data-i18n="popup.segmentMaxLabel">分片体积阈值</span>
+            <span class="threshold-input-group">
+              <input id="segment-max-input" class="threshold-input" type="number" min="0" max="65536" step="1" inputmode="numeric" aria-label="KB">
+              <span class="threshold-unit" aria-hidden="true">KB</span>
+            </span>
+          </label>
+          <label class="menu-row">
+            <span data-i18n="popup.languageLabel">语言</span>
+            <select id="language-select" class="language-select"></select>
+          </label>
+          <div class="menu-divider" role="separator"></div>
+          <!-- The Cookie row is an action, not a status label: clicking it
+               requests the per-site cookies permission (needs a user gesture)
+               and re-parses, so a silent guest-quality downgrade stays
+               actionable instead of being three inert words. -->
+          <div class="menu-row clickable" id="cookie-row" role="menuitem" tabindex="0" data-i18n-title="popup.cookieRowTitle">
+            <span data-i18n="popup.cookieStatusLabel">站点 Cookie</span>
+            <span id="cookie-status" class="menu-value"></span>
+          </div>
+          <div class="menu-row clickable" id="open-app" role="menuitem" tabindex="0">
+            <span data-i18n="popup.openApp">打开 MacIDM</span>
+            <span class="menu-arrow" aria-hidden="true">↗</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="media-section" aria-labelledby="media-title">
+        <div class="section-heading">
+          <h2 id="media-title" data-i18n="popup.pageMedia">本页媒体</h2>
+          <span id="media-count"></span>
+        </div>
+        <p id="filtered-note" class="filtered-note" hidden></p>
+        <div id="media-list" class="media-list" aria-live="polite">
+          <p class="empty-state" data-i18n="popup.readingPage">正在读取当前页面…</p>
+        </div>
+      </section>
+
+      <section class="controls-section">
+        <button id="download-all" type="button" class="hairline" data-i18n="popup.downloadAllLinks">下载本页全部链接</button>
+      </section>
+    </main>
+    <script src="../shared/media-utils.js"></script>
+    <script src="../shared/youtube-format-utils.js"></script>
+    <script src="../shared/media-presentation.js"></script>
+    <script src="../shared/category.js"></script>
+    <script src="../shared/panel-ui.js"></script>
+    <script src="../shared/slim-scrollbar.js"></script>
+    <script src="../shared/i18n.js"></script>
+    <script src="../shared/locale-zh-cn.js"></script>
+    <script src="../shared/locale-en.js"></script>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

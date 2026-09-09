@@ -1,0 +1,478 @@
+:root {
+  color-scheme: light dark;
+  font-family: var(--macidm-font);
+  /* Local aliases keep rules readable while the shared tokens
+     (src/shared/tokens.css, mirrors the App's AppTheme) stay the source
+     of truth. */
+  --accent: var(--macidm-accent);
+  --accent-text: var(--macidm-accent-text);
+  --accent-soft: var(--macidm-accent-soft);
+  --text-secondary: var(--macidm-text-secondary);
+  --divider: var(--macidm-hairline);
+  --danger: var(--macidm-danger);
+  --success: var(--macidm-success);
+  --warning: var(--macidm-warning);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 340px;
+  max-width: 400px;
+  /* Anchor for the top-center toast (shared/panel-ui.js). */
+  position: relative;
+}
+
+main { padding: 12px 14px 10px; }
+
+h1, h2, p { margin: 0; }
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  /* Anchor for the absolutely-positioned ⋯ menu. */
+  position: relative;
+}
+
+.app-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--macidm-radius);
+}
+
+h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+
+/* Quick cookie-authorization shortcut beside the title. The generic button
+   rule sets width:100%, so this class pins it back to content width. */
+.cookie-shortcut {
+  flex: none;
+  width: auto;
+  border: none;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: var(--macidm-radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cookie-shortcut:hover:not(:disabled) { background: var(--macidm-accent-outline); filter: none; }
+.cookie-shortcut[hidden] { display: none; }
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--macidm-neutral);
+  margin-left: auto;
+  flex: none;
+  transition: background 0.2s ease;
+}
+
+.status-dot.online { background: var(--success); }
+.status-dot.offline { background: var(--danger); }
+
+.icon-button {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--macidm-radius);
+  /* Explicit 22×22 lock: the generic button rule below sets width:100%,
+     so width:auto alone would not survive it. */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.icon-button:hover { background: var(--macidm-fill-subtle); color: var(--accent-text); filter: none; }
+.icon-button svg { width: 15px; height: 15px; fill: currentColor; }
+
+/* ⋯ menu: same translucent surface as the overlay panel. It hangs inside
+   .app-header, so right:0 aligns its right edge with the ⋯ button's. */
+.menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 6;
+  background: light-dark(rgba(255, 255, 255, 0.97), rgba(32, 35, 41, 0.97));
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--divider);
+  border-radius: var(--macidm-radius-card);
+  box-shadow: light-dark(0 8px 24px rgba(15, 23, 42, 0.16), 0 8px 24px rgba(0, 0, 0, 0.4));
+  padding: 6px;
+  min-width: 228px;
+  overflow-y: auto;
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 7px 8px;
+  font-size: 12px;
+  border-radius: var(--macidm-radius);
+}
+
+.menu-row > span:first-child { font-weight: 500; }
+
+.menu-value { color: var(--text-secondary); font-size: 11px; }
+
+.menu-arrow { color: var(--text-secondary); font-size: 12px; }
+
+.menu-row.clickable { cursor: pointer; }
+.menu-row.clickable:hover { background: var(--macidm-fill-subtle); }
+.menu-row.clickable:hover .menu-arrow { color: var(--accent-text); }
+
+.menu-divider { height: 1px; background: var(--divider); margin: 4px 8px; }
+
+.menu input[type="checkbox"] { accent-color: var(--accent); }
+
+/* Threshold input rows: the number input + right-aligned KB unit form one
+   group; the whole group is disabled while governance is off. */
+.menu-subheading {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+.threshold-row { gap: 12px; }
+.threshold-row > span:first-child { font-weight: 400; }
+.threshold-input-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: none;
+}
+.threshold-input {
+  width: 58px;
+  box-sizing: border-box;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 11px;
+  text-align: right;
+  color: inherit;
+  background: var(--macidm-fill-subtle);
+  border: 1px solid var(--divider);
+  border-radius: var(--macidm-radius);
+}
+.threshold-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.threshold-input:disabled { opacity: 0.45; }
+.threshold-unit {
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 16px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+h2 { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
+.section-heading span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.media-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border-radius: var(--macidm-radius-card);
+}
+
+.empty-state {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 18px 8px;
+  text-align: center;
+}
+
+/* Redacted count feedback for false-positive suppression: secondary to
+   the heading, never stealing the list's visual focus. */
+.filtered-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -2px 0 6px;
+}
+
+.media-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px;
+  border-top: 1px solid var(--divider);
+  flex-wrap: wrap;
+}
+
+.media-row:first-child { border-top: none; }
+
+.media-content { min-width: 0; flex: 1; }
+
+.media-content strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Expanded candidate full title (AI handover doc §5.5): collapsed rows
+   keep single-line ellipsis; .media-row.open switches to full multi-line
+   wrapping. Every render branch (parsing, success, partial results,
+   failure) must preserve the .open class or the expanded state would
+   regress. */
+.media-row.open .media-content strong {
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+.media-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.media-meta .meta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.media-meta .meta-icon svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.media-meta .meta-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Parsing spinner on the main row: an inline rotating ring in the meta
+   area (same style as the overlay), replaced by result slots like
+   "highest spec: ~XX MB" once parsing completes. */
+.media-meta .meta-spinner {
+  display: inline-flex;
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--macidm-fill-subtle);
+  border-top-color: var(--text-secondary);
+  animation: macidm-meta-spin 0.8s linear infinite;
+}
+
+@keyframes macidm-meta-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Whole-row click model (shared with the overlay): the row is the only
+   click target, hover is a 5% neutral fill with no side bar, and submit
+   feedback is a toast instead of inline state. */
+.media-row.clickable { cursor: pointer; }
+.media-row.clickable:hover { background: var(--macidm-fill-subtle); }
+.media-row.busy { opacity: 0.55; pointer-events: none; }
+.media-row.static { cursor: default; }
+
+.pv-chevron {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.media-row.open .pv-chevron { transform: rotate(90deg); }
+
+/* Accordion quality options expand in place, directly below their row. */
+.pv-sub {
+  width: 100%;
+  padding: 2px 4px 6px 8px;
+}
+
+.pv-opt {
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: var(--macidm-radius);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pv-opt:hover { background: var(--macidm-fill-subtle); color: var(--accent-text); }
+
+.pv-opt.parsing { color: var(--text-secondary); cursor: default; }
+.pv-opt.parsing:hover { background: transparent; color: var(--text-secondary); }
+
+/* Parse-failure rows keep the short red text plus the one allowed exception
+   button (cookie authorization needs an explicit user gesture). */
+.media-error-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.media-error {
+  color: var(--danger);
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The single exception button inside a parse-failure row: same hairline
+   language as the bottom primary action, locked to a compact size. */
+button.media-action {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--macidm-structural-hairline);
+  border-radius: var(--macidm-radius);
+  font-size: 11px;
+  font-weight: 600;
+  height: 26px;
+  padding: 0 8px;
+  width: auto;
+  flex: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+button.media-action:hover:not(:disabled) {
+  background: var(--macidm-fill-subtle);
+  color: var(--accent-text);
+  filter: none;
+}
+
+.media-row-pair {
+  background: var(--accent-soft);
+  border-radius: var(--macidm-radius-card);
+  padding: 8px 6px;
+}
+
+.fragment-group {
+  border-top: 1px solid var(--divider);
+  margin-top: 6px;
+  padding: 6px 4px;
+}
+
+.fragment-group > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 6px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fragment-group > summary::before {
+  content: "▶";
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.fragment-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.fragment-group[open] > summary {
+  margin-bottom: 4px;
+}
+
+.fragment-group .media-row {
+  padding: 6px 4px;
+}
+
+.controls-section {
+  border-top: 1px solid var(--divider);
+  margin-top: 8px;
+  padding-top: 10px;
+}
+
+.language-select {
+  background: transparent;
+  border: 1px solid var(--divider);
+  border-radius: var(--macidm-radius);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+button {
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--macidm-radius);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 10px;
+  width: 100%;
+  transition: filter 0.15s ease;
+}
+
+button:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* The single primary action follows the App's FlatHoverButtonStyle normal
+   treatment: transparent fill + hairline outline; hover adds a 5% neutral
+   fill and switches the label to the accent color. No blue fills. */
+button.hairline {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--macidm-structural-hairline);
+  font-weight: 600;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+button.hairline:hover:not(:disabled) {
+  background: var(--macidm-fill-subtle);
+  color: var(--accent-text);
+  filter: none;
+}
+
+button:disabled { cursor: default; opacity: 0.5; }

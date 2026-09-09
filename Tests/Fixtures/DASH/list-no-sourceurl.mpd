@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT0H1M30.080S">
+  <Period>
+    <AdaptationSet segmentAlignment="true" maxWidth="1280" maxHeight="720">
+      <Representation id="muxed" bandwidth="6000000" mimeType="video/mp4" width="1280" height="720">
+        <BaseURL>media_muxed.mp4</BaseURL>
+        <SegmentList timescale="1000" duration="1000">
+          <Initialization range="0-1256" />
+          <SegmentURL mediaRange="1257-1006330" indexRange="1257-1300" />
+          <SegmentURL mediaRange="1006331-1909476" indexRange="1006331-1006374" />
+        </SegmentList>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

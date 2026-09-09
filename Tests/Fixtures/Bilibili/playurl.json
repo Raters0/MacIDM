@@ -1,0 +1,40 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "time_length": 120,
+    "dash": {
+      "duration": 120,
+      "video": [
+        {
+          "id": 64,
+          "baseUrl": "https://video.example.test/1550776785-1-100022.m4s",
+          "bandwidth": 800000,
+          "width": 1280,
+          "height": 720,
+          "codecs": "avc1.64001f"
+        },
+        {
+          "id": 80,
+          "baseUrl": "https://video.example.test/1550776785-1-100116.m4s",
+          "bandwidth": 1600000,
+          "width": 1920,
+          "height": 1080,
+          "codecs": "hev1.2.4.L153.B0"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30216,
+          "baseUrl": "https://audio.example.test/1550776785-1-30216.m4s",
+          "bandwidth": 128000
+        },
+        {
+          "id": 30280,
+          "baseUrl": "https://audio.example.test/1550776785-1-30280.m4s",
+          "bandwidth": 192000
+        }
+      ]
+    }
+  }
+}

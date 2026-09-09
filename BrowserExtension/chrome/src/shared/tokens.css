@@ -1,0 +1,38 @@
+/* MacIDM extension design tokens. Mirrors the App's AppTheme
+   (Sources/MacIDMApp/Presentation/AppTheme.swift): flat, line-first look
+   with a desaturated palette and small radii. Keep the values below in sync
+   with AppTheme; the overlay's Shadow DOM styles in content/overlay.js
+   mirror these tokens inline because shadow roots cannot load this file. */
+
+:root {
+  color-scheme: light dark;
+
+  /* Brand accent: the App's soft indigo (AppTheme.accent). */
+  --macidm-accent: #5b6cf0;
+  /* Interactive fill/outline pair, mirrors selectionFill / selectionOutline. */
+  --macidm-accent-soft: rgba(91, 108, 240, 0.1);
+  --macidm-accent-outline: rgba(91, 108, 240, 0.25);
+  /* Accent text on light surfaces needs a touch more contrast. */
+  --macidm-accent-text: light-dark(#4c5be0, #8b96f4);
+
+  /* Semantic state colors (AppTheme.success / danger / warning). */
+  --macidm-success: #38ab78;
+  --macidm-danger: light-dark(#d33c41, #f0868a);
+  --macidm-warning: light-dark(#a16207, #e0a54b);
+
+  /* Hairline separators are the primary section boundary, like the App. */
+  --macidm-hairline: light-dark(rgba(15, 23, 42, 0.08), rgba(255, 255, 255, 0.08));
+  --macidm-structural-hairline: light-dark(rgba(15, 23, 42, 0.18), rgba(255, 255, 255, 0.18));
+
+  /* Quiet secondary text and subdued fills. */
+  --macidm-text-secondary: light-dark(#64748b, #98a1b3);
+  --macidm-fill-subtle: light-dark(rgba(15, 23, 42, 0.05), rgba(255, 255, 255, 0.06));
+  /* Neutral resting state (e.g. the connection dot before status loads). */
+  --macidm-neutral: light-dark(#cbd5e1, #475569);
+
+  /* Small radii only — the look is flat and linear, not bubbly. */
+  --macidm-radius: 6px;
+  --macidm-radius-card: 8px;
+
+  --macidm-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MacIDM</title>
+    <link rel="stylesheet" href="../shared/tokens.css">
+    <link rel="stylesheet" href="authorize.css">
+  </head>
+  <body>
+    <!-- A minimal, single-purpose extension page opened by the service worker
+         when the in-page overlay asks to authorize site cookies. Content
+         scripts cannot call chrome.permissions.request, and the user gesture
+         cannot cross the content-script -> service-worker boundary, so the
+         actual permission prompt must be triggered from this extension page. -->
+    <main class="authorize-main">
+      <img src="../../icons/icon-128.png" alt="" class="authorize-icon">
+      <h1 data-i18n="authorize.title">授权站点 Cookie</h1>
+      <p class="authorize-desc" data-i18n="authorize.desc"></p>
+      <p id="authorize-origin" class="authorize-origin"></p>
+      <button id="authorize-grant" type="button" class="authorize-grant" data-i18n="authorize.grant">授权本站点 Cookie</button>
+      <p id="authorize-status" class="authorize-status" role="status"></p>
+    </main>
+    <script type="module" src="authorize.js"></script>
+  </body>
+</html>

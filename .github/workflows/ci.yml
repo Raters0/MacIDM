@@ -1,0 +1,88 @@
+# MacIDM CI — mirrors the "Required checks" contract in AGENTS.md.
+#
+# Gates:
+#   lint            -> swift format lint --recursive --strict
+#   swift           -> swift test, swift build --product macidm
+#   extension       -> node --test Tests/BrowserExtensionTests/Unit/*.test.mjs
+#   integration     -> download-engine + hls-download integration runners
+#                      (run after building the macidm executable, per AGENTS.md)
+#
+# Conditional gates (AGENTS.md "also run" rules) use skip gates instead of
+# failing when their toolchain is absent:
+#   ffmpeg          -> ffmpeg-remux-integration.sh when FFmpeg is configured
+#   youtube         -> youtube-ytdlp-integration.sh when a yt-dlp binary resolves
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-format-lint:
+    name: Swift format lint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint with swift-format
+        run: swift format lint --recursive --strict --configuration .swift-format Sources Tests Package.swift
+
+  swift-tests:
+    name: Swift tests and build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Swift tests
+        run: swift test
+      - name: Build macidm executable
+        run: swift build --product macidm
+
+  browser-extension-tests:
+    name: Browser extension unit tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run extension unit tests
+        run: node --test Tests/BrowserExtensionTests/Unit/*.test.mjs
+
+  integration:
+    name: Download engine and HLS integration
+    runs-on: macos-15
+    needs: swift-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build macidm executable
+        run: swift build --product macidm
+      - name: Run download engine integration
+        run: bash Tests/Integration/download-engine-integration.sh
+      - name: Run HLS download integration
+        run: bash Tests/Integration/hls-download-integration.sh
+
+  ffmpeg-remux:
+    name: FFmpeg remux integration
+    runs-on: macos-15
+    needs: swift-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+      - name: Run FFmpeg remux integration
+        run: bash Tests/Integration/ffmpeg-remux-integration.sh
+      - name: Run App HLS and DASH pipeline integration
+        run: bash Tests/Integration/app-media-pipeline-integration.sh
+
+  youtube-ytdlp:
+    name: YouTube yt-dlp integration
+    runs-on: macos-15
+    needs: swift-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve bundled yt-dlp
+        run: bash scripts/fetch-ytdlp.sh
+      - name: Run YouTube yt-dlp integration
+        run: bash Tests/Integration/youtube-ytdlp-integration.sh

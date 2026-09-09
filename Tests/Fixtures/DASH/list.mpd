@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">
+  <Period>
+    <AdaptationSet contentType="video" mimeType="video/mp4">
+      <Representation id="list" bandwidth="500000">
+        <SegmentList>
+          <Initialization sourceURL="init.mp4" range="0-99" />
+          <SegmentURL media="chunk-1.m4s" mediaRange="100-199" />
+          <SegmentURL media="chunk-2.m4s" mediaRange="200-299" />
+        </SegmentList>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

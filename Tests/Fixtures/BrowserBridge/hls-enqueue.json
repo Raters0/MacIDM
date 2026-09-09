@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "requestId": "8e1c5d7b-4e90-4a85-9f42-7e2c4f1d2a30",
+  "idempotencyKey": "test-profile:explicit-hls-fixture",
+  "type": "download.enqueue",
+  "payload": {
+    "url": "https://example.invalid/master.m3u8?token=fixture-secret",
+    "filenameHint": "master.m3u8",
+    "mediaKind": "hls"
+  }
+}

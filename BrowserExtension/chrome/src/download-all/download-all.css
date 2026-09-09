@@ -1,0 +1,114 @@
+/* Download-all selection page. Shares the design tokens from
+   src/shared/tokens.css (mirrors the App's AppTheme) so the tab page
+   reads as part of the same product as the popup and the App. */
+
+:root {
+  color-scheme: light dark;
+  font-family: var(--macidm-font);
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 980px;
+  padding: 28px;
+}
+
+header,
+.tools,
+nav,
+.link-row {
+  align-items: center;
+  display: flex;
+}
+
+header,
+.tools,
+nav {
+  justify-content: space-between;
+}
+
+h1 {
+  margin: 0;
+}
+
+#page-title,
+#notice,
+#summary,
+#page-number {
+  color: var(--macidm-text-secondary);
+}
+
+button {
+  background: var(--macidm-accent);
+  border: 0;
+  border-radius: var(--macidm-radius);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  padding: 9px 13px;
+  transition: filter 0.15s ease;
+}
+
+button:hover:not(:disabled) { filter: brightness(1.08); }
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.tools {
+  border-bottom: 1px solid var(--macidm-structural-hairline);
+  gap: 18px;
+  padding: 18px 0 12px;
+}
+
+#filter {
+  background: transparent;
+  border: 1px solid var(--macidm-structural-hairline);
+  border-radius: var(--macidm-radius);
+  color: inherit;
+  flex: 1;
+  font: inherit;
+  max-width: 520px;
+  padding: 8px 10px;
+}
+
+.link-row {
+  border-bottom: 1px solid var(--macidm-hairline);
+  gap: 12px;
+  padding: 10px 4px;
+}
+
+.link-row input { accent-color: var(--macidm-accent); }
+
+/* Category icon aligned with the App's seven DownloadCategory groups. */
+.link-icon {
+  color: var(--macidm-text-secondary);
+  display: inline-flex;
+  flex: none;
+}
+
+.link-copy {
+  min-width: 0;
+}
+
+.link-copy strong,
+.link-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-copy small {
+  color: var(--macidm-text-secondary);
+  margin-top: 3px;
+}
+
+nav {
+  margin-top: 18px;
+}

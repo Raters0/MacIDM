@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MacIDM</title>
+    <link rel="stylesheet" href="../shared/tokens.css">
+    <link rel="stylesheet" href="download-all.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1 data-i18n="downloadAll.title">下载本页链接</h1>
+          <p id="page-title" data-i18n="downloadAll.pageLoading">正在读取页面…</p>
+        </div>
+        <button id="submit" type="button" data-i18n="downloadAll.submit">下载所选链接</button>
+      </header>
+      <section class="tools">
+        <label><input id="select-all" type="checkbox" checked> <span data-i18n="downloadAll.selectCurrentPage">选择当前页</span></label>
+        <input id="filter" type="search" data-i18n-placeholder="downloadAll.filterPlaceholder" placeholder="按文件名或网址筛选">
+        <span id="summary"></span>
+      </section>
+      <p id="notice" role="status"></p>
+      <div id="links"></div>
+      <nav>
+        <button id="previous" type="button" data-i18n="downloadAll.previous">上一页</button>
+        <span id="page-number"></span>
+        <button id="next" type="button" data-i18n="downloadAll.next">下一页</button>
+      </nav>
+    </main>
+    <script src="../shared/media-utils.js"></script>
+    <script src="../shared/category.js"></script>
+    <script src="../shared/i18n.js"></script>
+    <script src="../shared/locale-zh-cn.js"></script>
+    <script src="../shared/locale-en.js"></script>
+    <script type="module" src="download-all.js"></script>
+  </body>
+</html>

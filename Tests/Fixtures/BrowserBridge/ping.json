@@ -1,0 +1,7 @@
+{
+  "protocolVersion": 1,
+  "requestId": "22222222-2222-4222-8222-222222222222",
+  "idempotencyKey": "test-profile:ping-1",
+  "type": "ping",
+  "payload": {}
+}

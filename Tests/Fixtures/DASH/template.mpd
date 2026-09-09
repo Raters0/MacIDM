@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT6S">
+  <BaseURL>https://media.example.test/vod/</BaseURL>
+  <Period id="p0">
+    <AdaptationSet contentType="video" mimeType="video/mp4">
+      <Representation id="video-720" bandwidth="1500000" width="1280" height="720" codecs="avc1.4d401f">
+        <SegmentTemplate timescale="1" duration="2" startNumber="1" media="$RepresentationID$-$Number%05d$.m4s" initialization="$RepresentationID$-init.m4s" />
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

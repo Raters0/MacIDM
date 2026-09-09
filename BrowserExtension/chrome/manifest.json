@@ -1,0 +1,87 @@
+{
+  "manifest_version": 3,
+  "name": "MacIDM Development Extension",
+  "version": "0.3.0",
+  "description": "Local development extension for MacIDM",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA995DgavkIxEzFG1QxNK9r3ZQjD3NesbqQtS+TjKdkMqwRk01SLO8eXowGKhqm4KnI15cxmlDG2LJbCm1DKZMwNJbFOCQ9jN7uSv/zimZsfCGwlJFeEPTF5SJ4LnwZxWNkXld1sm/nHOXBvZDZh7lyPDO+47PLcTQR0o8dL5yQjXhOCu6BqMoww5lLMOeRDBPc3dTPhCLnWlwdT/r7O8HATG/wWPmzuE9VVE/nKhF2pIFmdQbZWbQ0fJZ9vvPLmPky2mj1HM6huQs3igykWk0PbuVhnUw7EiSIcnFpQ8CG5pWiIsJNdTN9PMHzlM07nfROFzrLEGZ0SZTfYtQgchAawIDAQAB",
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "MacIDM",
+    "default_popup": "src/popup/popup.html"
+  },
+  "permissions": [
+    "downloads",
+    "downloads.ui",
+    "tabs",
+    "contextMenus",
+    "storage",
+    "nativeMessaging",
+    "scripting",
+    "webRequest",
+    "notifications"
+  ],
+  "icons": {
+    "128": "icons/icon-128.png"
+  },
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "optional_permissions": [
+    "cookies"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/shared/media-utils.js",
+        "src/shared/youtube-format-utils.js",
+        "src/shared/media-presentation.js",
+        "src/shared/sniff-governance.js",
+        "src/shared/category.js",
+        "src/shared/i18n.js",
+        "src/shared/locale-zh-cn.js",
+        "src/shared/locale-en.js",
+        "src/shared/panel-ui.js",
+        "src/shared/slim-scrollbar.js",
+        "src/content/discovery.js",
+        "src/content/content-script.js",
+        "src/content/overlay.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content/fetch-interceptor.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://www.youtube-nocookie.com/*"
+      ],
+      "js": [
+        "src/content/youtube-player-bridge.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN",
+      "all_frames": false
+    }
+  ]
+}

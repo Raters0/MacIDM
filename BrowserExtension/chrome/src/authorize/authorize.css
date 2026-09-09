@@ -1,0 +1,58 @@
+/* Minimal, self-contained styling for the cookie-authorization window.
+   Mirrors the flat, line-first look defined in shared/tokens.css. */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 13px/1.5 var(--macidm-font, -apple-system, "PingFang SC", sans-serif);
+  color: light-dark(#1f2329, #e8eaf0);
+  background: light-dark(#ffffff, #202329);
+}
+
+.authorize-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.authorize-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--macidm-radius, 6px);
+}
+
+h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+
+.authorize-desc { margin: 0; color: var(--macidm-text-secondary, #64748b); }
+
+.authorize-origin {
+  margin: 0;
+  font-size: 12px;
+  color: var(--macidm-text-secondary, #64748b);
+  word-break: break-all;
+  padding: 6px 8px;
+  background: var(--macidm-fill-subtle, rgba(15, 23, 42, 0.05));
+  border-radius: var(--macidm-radius, 6px);
+}
+
+.authorize-grant {
+  margin-top: 2px;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--macidm-radius, 6px);
+  background: var(--macidm-accent, #5b6cf0);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.authorize-grant:hover { filter: brightness(1.06); }
+.authorize-grant:disabled { opacity: 0.5; cursor: default; filter: none; }
+
+.authorize-status {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: 12px;
+  color: var(--macidm-text-secondary, #64748b);
+}

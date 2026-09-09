@@ -1,0 +1,3 @@
+/* Simplified Chinese is the development region: source keys are the
+   Chinese strings themselves, so this catalog stays empty. Entries are
+   only needed when a key must differ from its literal spelling. */

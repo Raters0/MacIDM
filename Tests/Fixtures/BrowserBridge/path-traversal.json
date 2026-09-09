@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "requestId": "33333333-3333-4333-8333-333333333333",
+  "idempotencyKey": "test-profile:download-43",
+  "type": "download.create",
+  "payload": {
+    "browserDownloadId": 43,
+    "url": "https://example.com/archive.zip",
+    "filenameHint": "../archive.zip"
+  }
+}

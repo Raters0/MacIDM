@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">
+  <Period>
+    <AdaptationSet mimeType="audio/mp4" lang="en">
+      <Representation id="audio" bandwidth="128000" codecs="mp4a.40.2">
+        <BaseURL>https://media.example.test/audio/</BaseURL>
+        <SegmentTemplate timescale="1000" media="a-$Time$.m4s" initialization="a-init.m4s">
+          <SegmentTimeline>
+            <S t="0" d="1000" r="1" />
+            <S d="500" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>
