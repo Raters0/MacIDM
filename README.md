@@ -27,7 +27,7 @@ App 用 Swift / SwiftUI 编写。普通文件下载、分段、续传和任务�
 
 页面里的下载按钮默认折叠，点击后展开候选列表。选中资源后，再到 App 确认下载。下面演示浮窗的展开与收起：
 
-<table><tr><td><img src="README-assets/page-sniff.gif" alt="页面嗅探浮窗：从折叠按钮展开媒体候选" width="900" /></td></tr></table>
+<p><img src="README-assets/page-sniff.gif" alt="页面嗅探浮窗：从折叠按钮展开媒体候选" width="900" /></p>
 
 演示视频：[Sintel](https://www.sintel.org/)，Blender Foundation。
 

@@ -27,7 +27,7 @@ Alongside finding resources, I've worked on reducing duplicates, small audio fil
 
 The on-page download button starts collapsed. Click it to see candidates, select a resource, then confirm the task in the app. Here's the floating panel opening and closing:
 
-<table><tr><td><img src="README-assets/page-sniff.gif" alt="On-page media panel opening from its collapsed button" width="900" /></td></tr></table>
+<p><img src="README-assets/page-sniff.gif" alt="On-page media panel opening from its collapsed button" width="900" /></p>
 
 Demo video: [Sintel](https://www.sintel.org/), Blender Foundation.
 
