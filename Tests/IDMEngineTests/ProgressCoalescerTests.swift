@@ -33,12 +33,13 @@ private final class TestProgressCollector: @unchecked Sendable {
 
 final class ProgressCoalescerTests: XCTestCase {
     func testConcurrentAddByteDeltaAccuracy() async throws {
-        let segments = (0..<8).map {
-            SegmentCheckpoint(
-                index: $0,
-                start: Int64($0 * 1000),
-                endExclusive: Int64(($0 + 1) * 1000),
-                nextUncommittedOffset: Int64($0 * 1000)
+        let segments: [SegmentCheckpoint] = (0..<8).map { index -> SegmentCheckpoint in
+            let start = Int64(index * 1000)
+            return SegmentCheckpoint(
+                index: index,
+                start: start,
+                endExclusive: start + 1000,
+                nextUncommittedOffset: start
             )
         }
 
@@ -213,12 +214,13 @@ final class ProgressCoalescerTests: XCTestCase {
     }
 
     func testNoStaleSnapshotAfterFinishUnderHighConcurrency() async throws {
-        let initialSegments = (0..<4).map {
-            SegmentCheckpoint(
-                index: $0,
-                start: Int64($0 * 1000),
-                endExclusive: Int64(($0 + 1) * 1000),
-                nextUncommittedOffset: Int64($0 * 1000)
+        let initialSegments: [SegmentCheckpoint] = (0..<4).map { index -> SegmentCheckpoint in
+            let start = Int64(index * 1000)
+            return SegmentCheckpoint(
+                index: index,
+                start: start,
+                endExclusive: start + 1000,
+                nextUncommittedOffset: start
             )
         }
 
