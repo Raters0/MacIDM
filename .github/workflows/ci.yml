@@ -84,5 +84,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Resolve bundled yt-dlp
         run: bash scripts/fetch-ytdlp.sh
+        env:
+          # The unauthenticated release API is rate-limited per IP; hosted
+          # runners share addresses and get 403 without a token.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run YouTube yt-dlp integration
         run: bash Tests/Integration/youtube-ytdlp-integration.sh

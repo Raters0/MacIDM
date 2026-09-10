@@ -40,7 +40,17 @@ cleanup() {
   exit "$result"
 }
 trap cleanup EXIT
-curl -fsSL --max-time 20 https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest > "$staging/release.json"
+# The unauthenticated release API answers 403 once a shared runner IP has spent
+# its hourly quota. Authenticate whenever the environment offers a token; the
+# download itself stays on github.com and never receives it.
+latest_release_api="https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+release_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [[ -n "$release_token" ]]; then
+  curl -fsSL --max-time 20 -H "Authorization: Bearer $release_token" \
+    "$latest_release_api" > "$staging/release.json"
+else
+  curl -fsSL --max-time 20 "$latest_release_api" > "$staging/release.json"
+fi
 python3 - "$staging/release.json" > "$staging/release-info" <<'PY'
 import json, re, sys
 release = json.load(open(sys.argv[1]))
