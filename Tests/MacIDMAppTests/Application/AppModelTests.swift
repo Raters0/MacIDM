@@ -1422,6 +1422,12 @@ final class AppModelTests: XCTestCase {
     }
 
     func testRetryWithYtdlpSwitchesBackendAndRequeues() throws {
+        // Re-queueing through the yt-dlp backend probes the real binary
+        // resolution order, so this test needs an installed yt-dlp and skips
+        // when one is absent; the youtube-ytdlp integration job covers the
+        // toolchain itself.
+        try XCTSkipIf(!YTDlpManager.isAvailable, "yt-dlp not installed")
+
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMYtdlpFallbackTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
