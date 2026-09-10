@@ -5,29 +5,27 @@
   <p><a href="README.en.md">English</a> · <a href="https://github.com/Raters0/MacIDM/releases/tag/v1.0.0">下载 v1.0.0</a> · <a href="#快速开始">快速开始</a></p>
 </div>
 
-我想在 Mac 上做一个类似 IDM 的通用下载器：界面简单一点，下载时少占些内存，网页里的视频和音频也能顺手保存下来。于是有了 MacIDM。
+MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 通用下载器，支持浏览器媒体嗅探、分段下载、断点续传、任务队列和限速，并以简洁界面和低内存占用为设计目标。[Internet Download Manager（IDM）](https://www.internetdownloadmanager.com/) [没有 macOS 版本](https://www.internetdownloadmanager.com/register/new_faq/functions2.html)，MacIDM 因此围绕在 Mac 上同时使用浏览器媒体嗅探与本地分段下载的需求开发：Chrome 扩展发现网页中的文件、视频和音频，原生 App 负责资源解析、下载确认和任务管理。
 
-App 用 Swift / SwiftUI 编写。普通文件下载、分段、续传和任务队列由自己的下载引擎处理，Chrome 扩展负责网页媒体嗅探。开发中花时间最多的是下载调度、媒体发现和内存控制，下面也主要介绍这几部分。
+<p><img src="README-assets/app-overview.png" alt="MacIDM 主窗口：任务列表、轨道进度与速度曲线" width="1000" /></p>
 
-<table><tr><td><img src="README-assets/app-overview.png" alt="MacIDM 主窗口：任务列表和分段进度" width="1000" /></td></tr></table>
-
-## 花时间打磨的地方
+## 功能
 
 ### 下载与内存
 
 普通文件支持分段下载、暂停续传、队列和限速。并行请求数可以在 1–64 之间调整；遇到拖慢进度的分段会再切分，服务器返回 429 / 503 时也会调整连接策略。分段和续传前会检查 Range 响应与资源身份，避免拼接出错误文件。
 
-低内存占用是我比较在意的一点。HLS / DASH 分片会边接收边写盘，缓冲有任务级和全局上限，预算会根据机器内存调整。这里先不放“占用多少 MB”的数字，实际使用量还会随任务数量和资源类型变化。
+HLS / DASH 分片采用流式处理，边接收边写盘。缓冲设置任务级和全局上限，并根据机器物理内存调整预算，避免将完整媒体或大分片积压在内存中。
 
 ### 网页媒体嗅探
 
 有些媒体地址能直接从网络请求里找到，有些藏在播放器脚本或接口返回的数据里。扩展同时观察网络请求、fetch / XHR、响应类型与字节头、JSON、DOM 和 Performance，再把找到的候选归一化、去重。
 
-这部分除了尽量找全，也在处理重复候选、小音频和媒体分片带来的列表噪声，以及页面变化后候选的更新。相较于只收集链接的做法，我更想把“在页面里找到资源”和“交给本地下载器处理”接起来。
+扩展会减少重复候选和小音频带来的噪声，对媒体分片归组，并随页面变化更新资源列表。页面负责发现和选择资源，下载由本地 App 及其下载后端执行。
 
-页面里的下载按钮默认折叠，点击后展开候选列表。选中资源后，再到 App 确认下载。下面演示浮窗的展开与收起：
+页面里的下载按钮默认折叠。下面依次演示点击悬浮按钮、展开资源、点击下载，以及打开 App 的新建任务窗口：
 
-<p><img src="README-assets/page-sniff.gif" alt="页面嗅探浮窗：从折叠按钮展开媒体候选" width="900" /></p>
+<p><img src="README-assets/page-sniff.gif" alt="中文操作演示：点击嗅探按钮、选择资源、打开新建下载任务" width="900" /></p>
 
 演示视频：[Sintel](https://www.sintel.org/)，Blender Foundation。
 
@@ -35,33 +33,42 @@ App 用 Swift / SwiftUI 编写。普通文件下载、分段、续传和任务�
 
 <table><tr><td><img src="README-assets/browser-popup.png" alt="MacIDM 扩展 Popup" width="380" /></td></tr></table>
 
-### 任务界面与小工具
+### 任务管理与其他功能
 
 主窗口放任务列表、分类和下载详情，可以查看分段进度和速度曲线。新建任务时能改保存位置、文件名、并发数；HLS / DASH 有多个清晰度时会先列出来供选择。
 
-<table><tr><td><img src="README-assets/media-discovery.png" alt="新建下载任务：选择清晰度和保存位置" width="520" /></td></tr></table>
-
-此外还有代理、全局和任务限速、中英文界面，以及 CLI 和本地 HTTP API。喜欢用终端或脚本的话，可以从下面的命令行章节开始。
+此外还有代理、全局限速、中英文界面，以及 CLI 和本地 HTTP API。命令行可用于读取状态、控制任务和自动化脚本。
 
 ## 工作原理
 
+下载分为资源发现、解析与确认、任务执行三个步骤。嗅探到的地址不一定是最终文件：它可能是媒体清单，也可能需要进一步解析的站点页面。
+
 ```mermaid
-flowchart LR
-    Extension[Chrome 扩展] --> Host[Native Messaging Host]
-    Host --> App[MacIDM App]
-    App --> Engine[IDMEngine]
-    CLI[macidm CLI] --> Engine
-    App --> Tools[yt-dlp / FFmpeg]
-    Engine --> File[本地文件]
-    Tools --> File
+flowchart TD
+    Page[网页请求 / 播放器 / 页面数据] --> Sniff[Chrome 扩展：发现、过滤、去重]
+    Sniff --> Bridge[Native Messaging Host / 本地鉴权通信]
+    Bridge --> Inspect[App：识别资源类型]
+    URL[粘贴 URL] --> Inspect
+    Inspect -->|HTTP / HLS / DASH / Bilibili| NativeInspect[原生探测、清单解析或站点适配]
+    Inspect -->|YouTube / 站点兜底| SiteInspect[yt-dlp：提取可用格式]
+    NativeInspect --> Draft[新建任务：选择格式、文件名与保存位置]
+    SiteInspect --> Draft
+    Draft --> Confirm[用户确认，加入任务队列]
+    Confirm --> Route{App 选择下载后端并管理任务状态}
+    Route -->|原生 HTTP| HTTP[Range 校验 / 分段下载 / 断点续传]
+    Route -->|原生 HLS / 静态 DASH| Media[分片下载 / 解密 / 音视频轨处理]
+    Route -->|站点提取器| YT[yt-dlp：下载所选媒体]
+    Media --> FF[FFmpeg / ffprobe：转封装、合并与校验]
+    YT --> FF
+    HTTP --> Output
+    FF --> Output[本地文件与最终任务状态]
 ```
 
-- **普通文件**：下载引擎探测 Range 支持，校验分段响应，按绝对偏移写盘；支持续传和可选 SHA-256 校验。
-- **HLS / 静态 DASH**：下载媒体分片，处理 HLS AES-128、byte-range 和 DASH 音视频轨；需要时调用 FFmpeg 转封装或合并。Bilibili 有单独的适配代码。
-- **YouTube 等页面**：调用 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 解析格式和下载；其他视频网站在常规发现未找到资源时，也会尝试 yt-dlp 的通用解析作为兜底。感谢这个项目和它的贡献者，省去了很多站点适配工作。
-- **扩展与 App**：通过 Native Messaging Host 和经过鉴权的本地 Unix socket 通信。页面候选是临时数据，确认后才创建下载任务。
+**资源解析。** 普通文件探测大小和 Range 支持；HLS / DASH 解析清单与可用清晰度；Bilibili 使用专门的适配代码。YouTube 调用 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 提取格式；其他视频网站在常规发现未找到资源时，也会尝试 yt-dlp 的通用提取器。
 
-引擎、App、CLI 和桥接层是独立的 Swift target。扩展里的页面观察、Popup 和共享数据处理也分别放置，方便单独测试和修改。
+**任务执行。** App 选择下载后端，并管理队列、并发、暂停、恢复和最终状态。`IDMEngine` 处理普通 HTTP、HLS 和静态 DASH：校验 HTTP 分段响应并按绝对偏移写盘，支持 HLS AES-128 和 byte-range，并处理 DASH 独立音视频轨。站点提取器后端由 yt-dlp 下载所选媒体；HLS、DASH 和站点媒体随后按需由 FFmpeg 转封装或合并，并用 ffprobe 校验。媒体缓冲受任务级和全局内存预算约束。
+
+**本地通信。** 扩展通过 Native Messaging Host 与 App 的鉴权 Unix socket 通信。发现的候选临时保存在内存中，用户确认后才保存为下载任务。CLI 独立使用同一个下载引擎；本地 HTTP API 则用于读取和控制 App 中的任务。
 
 ## 快速开始
 
@@ -103,14 +110,14 @@ bash scripts/check-debug-native-host.sh     # 检查 Host 连通性
 ## 操作指南
 
 - **确认窗口**：下载前你可以改文件名、保存目录、最大并行请求数（1–64）、队列优先级，并可选填预期 SHA-256 做完整性校验；对 HLS/DASH 会先列出清晰度变体供选择。
-- **队列与分类**：侧栏按状态、队列、时间和分类筛选；可为不同队列设置并发与完成动作。
+- **队列与分类**：侧栏按状态、队列、时间和分类筛选；可为不同队列设置并发、排序方式和定时窗口。
 - **限速与代理**：设置中提供全局速度限制（token-bucket）与代理配置；代理密码仅存于系统钥匙串。
 - **登录态资源**：对需要登录的普通 GET 资源，只有在你明确授权当前站点 Cookie 后，扩展才会尝试重建请求上下文；POST、Authorization、复杂自定义头、`blob:` 与 DRM 会安全降级。
-- **文件名隐私**：设置中可开启文件名遮罩，列表与详情以任务 ID 显示，避免敏感文件名外泄。
+- **文件名隐私**：设置中可开启文件名遮罩，列表与详情会显示任务标识而非文件名。
 
 ## CLI 与本地 Agent API
 
-CLI 与 App 共享下载内核，适合脚本与自动化：
+CLI 独立使用与 App 相同的下载内核，可用于脚本和自动化：
 
 ```bash
 swift build --product macidm
@@ -206,11 +213,11 @@ docs/agent-http-api.md    本地 Agent HTTP API 参考
 
 下载和任务管理都在本机完成。设置里可以隐藏文件名，普通日志也会省略页面标题、完整 URL 和本地路径；需要详细排障时，另有单独的本地诊断日志。Cookie、Authorization、代理密码和桥接 token 默认不记录原值。
 
-做这部分时也考虑了用 AI 辅助调试的习惯：排查速度、重试或任务状态，通常不需要把下载内容的标题和地址一并交出去。先看普通日志，需要时再按具体任务查看详细诊断；分享日志前检查一下内容即可。
+使用 AI 辅助调试时，排查速度、重试或任务状态，通常不需要把下载内容的标题和地址一并交出去。先看普通日志，需要时再按具体任务查看详细诊断；分享日志前检查一下内容即可。
 
 ## 致谢与许可证
 
-- 感谢 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 项目及其贡献者，为站点媒体解析与视频下载提供了重要基础；
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 提供站点媒体解析与下载支持；
 - FFmpeg / ffprobe 用于媒体转封装与校验，遵循其自身许可证；
 - 其他第三方组件各自遵循其自身许可证。
 

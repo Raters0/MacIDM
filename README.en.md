@@ -5,63 +5,70 @@
   <p><a href="README.md">简体中文</a> · <a href="https://github.com/Raters0/MacIDM/releases/tag/v1.0.0">Download v1.0.0</a> · <a href="#quick-start">Quick start</a></p>
 </div>
 
-I wanted to build an IDM-like general-purpose downloader for the Mac: a simple interface, modest memory use, and a way to save video and audio found on web pages. MacIDM is that project.
+MacIDM is a general-purpose macOS downloader written in Swift and SwiftUI. It supports browser media discovery, segmented downloads, resume, queues, and rate limits, with a simple interface and low memory usage as design goals. [Internet Download Manager (IDM)](https://www.internetdownloadmanager.com/) [has no macOS version](https://www.internetdownloadmanager.com/register/new_faq/functions2.html), so MacIDM was built to combine browser-side media discovery and native segmented downloading on the Mac. The Chrome extension finds files, video, and audio on web pages; the app handles resource inspection, download confirmation, and task management.
 
-The app uses Swift and SwiftUI. My download engine handles ordinary files, segmented transfers, resume, and queues; the Chrome extension finds media on web pages. Most of the work has gone into download scheduling, media discovery, and memory usage, so those are the parts described below.
+<p><img src="README-assets/app-overview-en.png" alt="MacIDM main window: task list, track progress and speed graph" width="1000" /></p>
 
-<table><tr><td><img src="README-assets/app-overview.png" alt="MacIDM main window: task list and segment progress" width="1000" /></td></tr></table>
-
-## What I've been working on
+## Features
 
 ### Downloads and memory
 
 Ordinary downloads support segmentation, pause and resume, queues, and rate limits. Parallel requests can be set from 1 to 64. Slow segments can be split again, and connection policy adjusts when a server returns 429 or 503. Range responses and resource identity are checked before segmented transfers and resume to avoid assembling an incorrect file.
 
-Keeping memory use down has been a particular focus. HLS and DASH segments are written to disk as they arrive, with per-task and global buffer limits that adjust to the machine's memory. I haven't put a fixed MB figure here: usage also depends on the number of tasks and the resources being downloaded.
+HLS and DASH segments are streamed to disk as they arrive. Per-task and global buffer limits adjust to physical memory, avoiding the need to hold complete media files or large segments in memory.
 
 ### Finding media on a page
 
 Some media URLs appear directly in network requests; others are buried in player scripts or API responses. The extension observes network requests, fetch / XHR, response types and byte signatures, JSON, the DOM, and Performance entries, then normalizes and deduplicates the candidates.
 
-Alongside finding resources, I've worked on reducing duplicates, small audio files and media fragments in the list, and keeping candidates up to date as pages change. Beyond collecting links, I wanted the resources found in the browser to be usable in the local download manager.
+The extension reduces noise from duplicate candidates and small audio files, groups media fragments, and updates the list as pages change. Discovery and resource selection happen in the browser; the local app and its download backends execute the download.
 
-The on-page download button starts collapsed. Click it to see candidates, select a resource, then confirm the task in the app. Here's the floating panel opening and closing:
+The on-page download button starts collapsed. This walkthrough shows opening the panel, expanding a resource, clicking Download, and arriving at the app's new task window:
 
-<p><img src="README-assets/page-sniff.gif" alt="On-page media panel opening from its collapsed button" width="900" /></p>
+<p><img src="README-assets/page-sniff-en.gif" alt="English walkthrough: open the media panel, select a resource and open a new download task" width="900" /></p>
 
 Demo video: [Sintel](https://www.sintel.org/), Blender Foundation.
 
 The toolbar Popup also lists resources from the current page. “Download all links on this page” opens the whole-page link collection and filtering workflow.
 
-<table><tr><td><img src="README-assets/browser-popup.png" alt="MacIDM extension Popup" width="380" /></td></tr></table>
+<table><tr><td><img src="README-assets/browser-popup-en.png" alt="MacIDM extension Popup in English" width="380" /></td></tr></table>
 
-### The app and a few extras
+### Task management and other features
 
 The main window contains the task list, filters, and download details, including segment progress and a speed graph. When adding a task, you can change the destination, filename, and concurrency. HLS / DASH sources with multiple quality options list them before downloading.
 
-<table><tr><td><img src="README-assets/media-discovery.png" alt="New download task: quality selection and destination" width="520" /></td></tr></table>
-
-There are also proxy settings, global and per-task rate limits, Chinese and English interfaces, a CLI, and a local HTTP API. If you prefer a terminal or scripts, see the command-line section below.
+There are also proxy settings, a global rate limit, Chinese and English interfaces, a CLI, and a local HTTP API. The command-line tools can read status, control tasks, and support automation scripts.
 
 ## How it works
 
+A download goes through discovery, inspection and confirmation, then execution. A detected URL may point to a file, a media manifest, or a site page that needs further extraction.
+
 ```mermaid
-flowchart LR
-    Extension[Chrome extension] --> Host[Native Messaging Host]
-    Host --> App[MacIDM App]
-    App --> Engine[IDMEngine]
-    CLI[macidm CLI] --> Engine
-    App --> Tools[yt-dlp / FFmpeg]
-    Engine --> File[Local files]
-    Tools --> File
+flowchart TD
+    Page[Web requests / player / page data] --> Sniff[Chrome extension: discover, filter, deduplicate]
+    Sniff --> Bridge[Native Messaging Host / authenticated local transport]
+    Bridge --> Inspect[App: identify resource type]
+    URL[Pasted URL] --> Inspect
+    Inspect -->|HTTP / HLS / DASH / Bilibili| NativeInspect[Native probing, manifest parsing, or site adapter]
+    Inspect -->|YouTube / site fallback| SiteInspect[yt-dlp: extract available formats]
+    NativeInspect --> Draft[New task: choose format, filename and destination]
+    SiteInspect --> Draft
+    Draft --> Confirm[User confirms and task enters queue]
+    Confirm --> Route{App selects backend and manages task state}
+    Route -->|Native HTTP| HTTP[Range validation / segments / resume]
+    Route -->|Native HLS / static DASH| Media[Segments / decryption / audio and video tracks]
+    Route -->|Site extractor| YT[yt-dlp: download selected media]
+    Media --> FF[FFmpeg / ffprobe: remux, merge, and verify]
+    YT --> FF
+    HTTP --> Output
+    FF --> Output[Local file and final task state]
 ```
 
-- **Ordinary files**: the engine probes Range support, validates segment responses, and writes at absolute offsets. It supports resume and optional SHA-256 verification.
-- **HLS / static DASH**: downloads media segments, handles HLS AES-128 and byte ranges, and pairs DASH audio/video tracks. FFmpeg handles remuxing or merging when needed. Bilibili has dedicated adapter code.
-- **YouTube and similar pages**: [yt-dlp](https://github.com/yt-dlp/yt-dlp) handles format extraction and downloads. When regular discovery finds no resource on other video sites, its generic extractor is also tried as a fallback. Thanks to the project and its contributors for all that site-support work.
-- **Extension and app**: communicate through a Native Messaging Host and an authenticated local Unix socket. Page candidates are temporary; a download task is created after confirmation.
+**Resource inspection.** Ordinary files are probed for size and Range support; HLS / DASH manifests are parsed for available qualities; Bilibili uses dedicated adapter code. YouTube uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract formats. Its generic extractor is also tried when regular discovery finds no resource on other video sites.
 
-The engine, app, CLI, and bridge are separate Swift targets. Page observation, Popup UI, and shared data handling also live separately in the extension so they can be tested and changed independently.
+**Task execution.** The app selects the download backend and manages queues, concurrency, pause, resume, and final task state. `IDMEngine` handles ordinary HTTP, HLS, and static DASH: it validates HTTP segment responses and writes at absolute offsets, supports HLS AES-128 and byte ranges, and handles separate DASH audio/video tracks. The site-extractor backend uses yt-dlp to download the selected media. HLS, DASH, and site media then use FFmpeg for remuxing or merging as needed and ffprobe for verification. Media buffers are bounded by per-task and global memory budgets.
+
+**Local communication.** The extension communicates through a Native Messaging Host and the app's authenticated Unix socket. Candidates stay in memory until the user confirms a download task. The CLI uses the same download engine independently; the local HTTP API reads and controls tasks in the app.
 
 ## Quick start
 
@@ -103,14 +110,14 @@ The script points the Host manifest at the `macidm-host` inside the installed `M
 ## Usage guide
 
 - **Confirmation window**: before downloading you can change the filename, destination, maximum parallel requests (1–64), and queue priority, and optionally supply an expected SHA-256 for integrity checking; HLS/DASH sources list quality variants first.
-- **Queues and categories**: filter by status, queue, time, and category in the sidebar; set per-queue concurrency and completion actions.
+- **Queues and categories**: filter by status, queue, time, and category in the sidebar; set per-queue concurrency, ordering, and schedule windows.
 - **Rate limiting and proxy**: Settings offers a global token-bucket speed limit and proxy configuration; proxy passwords are stored only in the system Keychain.
 - **Logged-in resources**: for ordinary GET resources that need a session, the extension rebuilds request context only after you explicitly authorize cookies for the current site; POST, Authorization headers, complex custom headers, `blob:`, and DRM degrade safely.
-- **Filename privacy**: enable filename redaction in Settings so the list and detail show task IDs instead of sensitive filenames.
+- **Filename privacy**: enable filename redaction in Settings so the list and detail show job identifiers instead of filenames.
 
 ## CLI and local Agent API
 
-The CLI shares the download engine with the app and is well suited to scripting and automation:
+The CLI uses the same download engine independently of the app and can be used for scripting and automation:
 
 ```bash
 swift build --product macidm
@@ -206,11 +213,11 @@ docs/agent-http-api.md    Local Agent HTTP API reference
 
 Downloads and task management run locally. Filenames can be hidden in Settings, and ordinary logs omit page titles, full URLs, and local paths. A separate local diagnostic log keeps more detail for troubleshooting. Cookies, Authorization headers, proxy passwords, and bridge tokens are not logged verbatim by default.
 
-I also had AI-assisted debugging in mind: checking speed, retries, or task state usually doesn't require sharing the title or address of what's being downloaded. Start with the ordinary log, inspect detailed diagnostics for a specific task when needed, and check the contents before sharing.
+For AI-assisted debugging, checking speed, retries, or task state usually doesn't require sharing the title or address of what's being downloaded. Start with the ordinary log, inspect detailed diagnostics for a specific task when needed, and check the contents before sharing.
 
 ## Acknowledgements and license
 
-- Thanks to the [yt-dlp](https://github.com/yt-dlp/yt-dlp) project and its contributors for providing an essential foundation for site media parsing and video downloads;
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) provides site media extraction and download support;
 - FFmpeg / ffprobe are used for media remuxing and verification, under their own licenses;
 - Other third-party components remain subject to their own licenses.
 
