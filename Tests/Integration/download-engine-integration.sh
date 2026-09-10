@@ -68,11 +68,11 @@ run_download "unknown" "http://127.0.0.1:$TEST_PORT/unknown?size=524288" 8
 
 run_download "signed-foreground" "http://127.0.0.1:$TEST_PORT/range?size=65536&signature=fixture-secret" 4
 [[ "$(shasum -a 256 "$TEST_DIR/signed-foreground.bin" | awk '{print $1}')" == "$(expected_hash 65536)" ]]
-if rg -n "fixture-secret|signature=|\?" "$TEST_DIR/state-signed-foreground" >/dev/null 2>&1; then
+if grep -rnE "fixture-secret|signature=|[?]" "$TEST_DIR/state-signed-foreground" >/dev/null 2>&1; then
   echo "signed URL leaked into CLI state" >&2
   exit 1
 fi
-if ! rg -n '"requiresRefetch"[[:space:]]*:[[:space:]]*true' "$TEST_DIR/state-signed-foreground" >/dev/null 2>&1; then
+if ! grep -rnE '"requiresRefetch"[[:space:]]*:[[:space:]]*true' "$TEST_DIR/state-signed-foreground" >/dev/null 2>&1; then
   echo "signed URL state did not record the refetch boundary" >&2
   exit 1
 fi
@@ -99,7 +99,7 @@ if "$MACIDM_BIN" resume "$SIGNED_FAILURE_ID" \
   echo "CLI resumed a signed URL after process restart" >&2
   exit 1
 fi
-if ! rg -n '"errorCode"[[:space:]]*:[[:space:]]*"NEEDS_REFETCH"' "$SIGNED_FAILURE_RECORD" >/dev/null 2>&1; then
+if ! grep -rnE '"errorCode"[[:space:]]*:[[:space:]]*"NEEDS_REFETCH"' "$SIGNED_FAILURE_RECORD" >/dev/null 2>&1; then
   echo "failed signed URL was not converted to NEEDS_REFETCH" >&2
   exit 1
 fi
@@ -111,7 +111,7 @@ if "$MACIDM_BIN" add "http://127.0.0.1:$TEST_PORT/range?size=65536&signature=fix
   echo "background signed URL was accepted" >&2
   exit 1
 fi
-if rg -n "fixture-secret|signature=" "$TEST_DIR/state-signed-background" >/dev/null 2>&1; then
+if grep -rnE "fixture-secret|signature=" "$TEST_DIR/state-signed-background" >/dev/null 2>&1; then
   echo "rejected signed URL left a state record" >&2
   exit 1
 fi
