@@ -4,6 +4,7 @@ import SwiftUI
 /// Blocking text prompt used for queue create/rename. NSAlert + NSTextField
 /// because SwiftUI's Alert has no text input on macOS; mirrors the existing
 /// filename-conflict retry flow.
+@MainActor
 func promptForQueueName(
     title: String,
     message: String,

@@ -123,7 +123,9 @@ final class DASHStreamingMemoryTests: XCTestCase {
         )
 
         let result = try await executor.download(request)
-        let expectedTotal: Int64 = 4096 + (64 * 1024 * 2) + 2048 + (16 * 1024 * 2)
+        let videoBytes: Int64 = 4096 + (64 * 1024 * 2)
+        let audioBytes: Int64 = 2048 + (16 * 1024 * 2)
+        let expectedTotal: Int64 = videoBytes + audioBytes
         XCTAssertEqual(result.byteCount, expectedTotal)
         XCTAssertEqual(budget.reservedBytes, 0, "DASH 下载完成后预算必须归零")
 
