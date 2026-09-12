@@ -1,160 +1,150 @@
 <div align="center">
   <img src="Resources/AppIcon.iconset/icon_256x256.png" alt="MacIDM" width="96" />
   <h1>MacIDM</h1>
-  <p>用 Swift 写的 macOS 下载器，带一个 Chrome 媒体嗅探扩展。</p>
-  <p><a href="README.en.md">English</a> · <a href="https://github.com/Raters0/MacIDM/releases/tag/v1.0.0">下载 v1.0.0</a> · <a href="#快速开始">快速开始</a></p>
+  <p>A macOS media downloader written in Swift, with a Chrome extension for media sniffing. Optimized specifically for <a href="https://www.bilibili.com/">Bilibili</a> and <a href="https://www.youtube.com/">YouTube</a>.</p>
+  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://github.com/Raters0/MacIDM/releases">Download</a> · <a href="#quick-start">Quick start</a></p>
 </div>
 
-MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 通用下载器，支持浏览器媒体嗅探、分段下载、断点续传、任务队列和限速，并以简洁界面和低内存占用为设计目标。[Internet Download Manager（IDM）](https://www.internetdownloadmanager.com/) [没有 macOS 版本](https://www.internetdownloadmanager.com/register/new_faq/functions2.html)，MacIDM 因此围绕在 Mac 上同时使用浏览器媒体嗅探与本地分段下载的需求开发：Chrome 扩展发现网页中的文件、视频和音频，原生 App 负责资源解析、下载确认和任务管理。
+MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser media sniffing, segmented downloads, resume, and more. [Internet Download Manager (IDM)](https://www.internetdownloadmanager.com/) still [has no macOS version](https://www.internetdownloadmanager.com/register/new_faq/functions2.html), so this project was created as a Chrome extension plus an App.
 
-<p><img src="README-assets/app-overview.png" alt="MacIDM 主窗口：任务列表、轨道进度与速度曲线" width="1000" /></p>
+<p><img src="README-assets/app-overview-en.png" alt="MacIDM main window: task list, track progress and speed graph" width="1000" /></p>
 
-## 功能
+## Features
 
-### 下载与内存
+### Web media sniffing
 
-普通文件支持分段下载、暂停续传、队列和限速。并行请求数可以在 1–64 之间调整；遇到拖慢进度的分段会再切分，服务器返回 429 / 503 时也会调整连接策略。分段和续传前会检查 Range 响应与资源身份，避免拼接出错误文件。
+1. The browser extension discovers and selects resources; downloads run in the local App and its download backends. You can also paste a download link directly in the App.
 
-HLS / DASH 分片采用流式处理，边接收边写盘。缓冲设置任务级和全局上限，并根据机器物理内存调整预算，避免将完整媒体或大分片积压在内存中。
+The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and opening the App's new-task window (currently optimized specifically for [Bilibili](https://www.bilibili.com/) and [YouTube](https://www.youtube.com/)):
 
-### 网页媒体嗅探
+<p><img src="README-assets/page-sniff-en.gif" alt="English walkthrough: open the media panel, select a resource and open a new download task" width="900" /></p>
 
-有些媒体地址能直接从网络请求里找到，有些藏在播放器脚本或接口返回的数据里。扩展同时观察网络请求、fetch / XHR、响应类型与字节头、JSON、DOM 和 Performance，再把找到的候选归一化、去重。
+2. The toolbar Popup lists all media resources on the current page.
 
-扩展会减少重复候选和小音频带来的噪声，对媒体分片归组，并随页面变化更新资源列表。页面负责发现和选择资源，下载由本地 App 及其下载后端执行。
+<table><tr><td><img src="README-assets/browser-popup-en.png" alt="MacIDM extension Popup in English" width="380" /></td></tr></table>
 
-页面里的下载按钮默认折叠。下面依次演示点击悬浮按钮、展开资源、点击下载，以及打开 App 的新建任务窗口：
+### Task management and other features
 
-<p><img src="README-assets/page-sniff.gif" alt="中文操作演示：点击嗅探按钮、选择资源、打开新建下载任务" width="900" /></p>
+- The App main window provides the task list, categories, and download details, including segment progress and a speed graph.
+- When creating a task you can change the save location, filename, and concurrency; HLS / DASH sources with multiple qualities list them first for selection.
+- Proxy, global rate limiting, Chinese and English interfaces, CLI, and a local HTTP API are also supported. The CLI can read status, control tasks, and support automation scripts.
+- Filename hiding is supported, to avoid triggering AI Agent sensitive-word checks.
+- Logs are stored by level; when using AI-assisted debugging, this reduces exposure of sensitive information (such as cookies) to third parties.
 
-演示视频：[Sintel](https://www.sintel.org/)，Blender Foundation。
+### Planned updates
 
-工具栏 Popup 也能查看当前页的资源；“下载本页全部链接”用于收集和筛选整页链接。
+- More AI Agent support, such as MCP and AI resource parsing.
+- Sniffing optimizations for more sites.
 
-<table><tr><td><img src="README-assets/browser-popup.png" alt="MacIDM 扩展 Popup" width="380" /></td></tr></table>
+## How it works
 
-### 任务管理与其他功能
-
-主窗口放任务列表、分类和下载详情，可以查看分段进度和速度曲线。新建任务时能改保存位置、文件名、并发数；HLS / DASH 有多个清晰度时会先列出来供选择。
-
-此外还有代理、全局限速、中英文界面，以及 CLI 和本地 HTTP API。命令行可用于读取状态、控制任务和自动化脚本。
-
-## 工作原理
-
-下载分为资源发现、解析与确认、任务执行三个步骤。嗅探到的地址不一定是最终文件：它可能是媒体清单，也可能需要进一步解析的站点页面。
+A download goes through discovery, inspection and confirmation, then execution. A detected URL may point to a file, a media manifest, or a site page that needs further extraction.
 
 ```mermaid
 flowchart TD
-    Page[网页请求 / 播放器 / 页面数据] --> Sniff[Chrome 扩展：发现、过滤、去重]
-    Sniff --> Bridge[Native Messaging Host / 本地鉴权通信]
-    Bridge --> Inspect[App：识别资源类型]
-    URL[粘贴 URL] --> Inspect
-    Inspect -->|HTTP / HLS / DASH / Bilibili| NativeInspect[原生探测、清单解析或站点适配]
-    Inspect -->|YouTube / 站点兜底| SiteInspect[yt-dlp：提取可用格式]
-    NativeInspect --> Draft[新建任务：选择格式、文件名与保存位置]
+    Page[Web requests / player / page data] --> Sniff[Chrome extension: discover, filter, deduplicate]
+    Sniff --> Bridge[Native Messaging Host / authenticated local transport]
+    Bridge --> Inspect[App: identify resource type]
+    URL[Pasted URL] --> Inspect
+    Inspect -->|HTTP / HLS / DASH / Bilibili| NativeInspect[Native probing, manifest parsing, or site adapter]
+    Inspect -->|YouTube / site fallback| SiteInspect[yt-dlp: extract available formats]
+    NativeInspect --> Draft[New task: choose format, filename and destination]
     SiteInspect --> Draft
-    Draft --> Confirm[用户确认，加入任务队列]
-    Confirm --> Route{App 选择下载后端并管理任务状态}
-    Route -->|原生 HTTP| HTTP[Range 校验 / 分段下载 / 断点续传]
-    Route -->|原生 HLS / 静态 DASH| Media[分片下载 / 解密 / 音视频轨处理]
-    Route -->|站点提取器| YT[yt-dlp：下载所选媒体]
-    Media --> FF[FFmpeg / ffprobe：转封装、合并与校验]
+    Draft --> Confirm[User confirms and task enters queue]
+    Confirm --> Route{App selects backend and manages task state}
+    Route -->|Native HTTP| HTTP[Range validation / segments / resume]
+    Route -->|Native HLS / static DASH| Media[Segments / decryption / audio and video tracks]
+    Route -->|Site extractor| YT[yt-dlp: download selected media]
+    Media --> FF[FFmpeg / ffprobe: remux, merge, and verify]
     YT --> FF
     HTTP --> Output
-    FF --> Output[本地文件与最终任务状态]
+    FF --> Output[Local file and final task state]
 ```
 
-**资源解析。** 普通文件探测大小和 Range 支持；HLS / DASH 解析清单与可用清晰度；Bilibili 使用专门的适配代码。YouTube 调用 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 提取格式；其他视频网站在常规发现未找到资源时，也会尝试 yt-dlp 的通用提取器。
+**Resource inspection.** Ordinary files are probed for size and Range support; HLS / DASH manifests are parsed for available qualities; Bilibili uses dedicated adapter code. YouTube uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract formats. Its generic extractor is also tried when regular discovery finds no resource on other video sites.
 
-**任务执行。** App 选择下载后端，并管理队列、并发、暂停、恢复和最终状态。`IDMEngine` 处理普通 HTTP、HLS 和静态 DASH：校验 HTTP 分段响应并按绝对偏移写盘，支持 HLS AES-128 和 byte-range，并处理 DASH 独立音视频轨。站点提取器后端由 yt-dlp 下载所选媒体；HLS、DASH 和站点媒体随后按需由 FFmpeg 转封装或合并，并用 ffprobe 校验。媒体缓冲受任务级和全局内存预算约束。
+**Task execution.** The app selects the download backend and manages queues, concurrency, pause, resume, and final task state. `IDMEngine` handles ordinary HTTP, HLS, and static DASH: it validates HTTP segment responses and writes at absolute offsets, supports HLS AES-128 and byte ranges, and handles separate DASH audio/video tracks. The site-extractor backend uses yt-dlp to download the selected media. HLS, DASH, and site media then use FFmpeg for remuxing or merging as needed and ffprobe for verification. Media buffers are bounded by per-task and global memory budgets.
 
-**本地通信。** 扩展通过 Native Messaging Host 与 App 的鉴权 Unix socket 通信。发现的候选临时保存在内存中，用户确认后才保存为下载任务。CLI 独立使用同一个下载引擎；本地 HTTP API 则用于读取和控制 App 中的任务。
+**Local communication.** The extension communicates through a Native Messaging Host and the app's authenticated Unix socket. Candidates stay in memory until the user confirms a download task. The CLI uses the same download engine independently; the local HTTP API reads and controls tasks in the app.
 
-## 快速开始
+## Quick start
 
-### 1. 下载 v1.0.0
+### 1. Download
 
-前往 [Release v1.0.0](https://github.com/Raters0/MacIDM/releases/tag/v1.0.0) 下载：
+Go to [Release](https://github.com/Raters0/MacIDM/releases) and download:
 
-- `MacIDM-v1.0.0-macos-development.app.zip`：macOS App；
-- `MacIDM-v1.0.0-chrome-extension.zip`：Chrome 扩展；
-- `SHA256SUMS.txt`：上述文件的 SHA-256 校验值，下载后建议先校验。
+- `MacIDM-*-macos-development.app.zip`: the macOS App;
+- `MacIDM-*-chrome-extension.zip`: the Chrome extension;
+- `SHA256SUMS.txt`: SHA-256 checksums for the files above — verify after downloading.
 
-解压 App 压缩包，把 `MacIDM.app` 放到 `~/Applications/`。下面的 Host 注册脚本默认使用这个位置；如果放在 `/Applications/`，运行注册脚本时加上 `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`。
+Unzip the App archive and put `MacIDM.app` in `~/Applications/`. The Host registration script below uses this location by default; if you put it in `/Applications/`, prefix that script with `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`.
 
-### 2. 加载 Chrome 扩展
+### 2. Load the Chrome extension
 
-1. 打开 Chrome 的 `chrome://extensions`；
-2. 开启右上角"开发者模式"；
-3. 点击"加载已解压的扩展程序"，选择解压后的扩展目录（含 `manifest.json` 的那一层）；
-4. 加载成功后工具栏会出现 MacIDM 图标。
+1. Open `chrome://extensions` in Chrome;
+2. Enable **Developer mode** (top right);
+3. Click **Load unpacked** and select the extracted extension directory (the folder containing `manifest.json`);
+4. Once loaded, the MacIDM icon appears in the toolbar.
 
-### 3. 注册 Native Messaging Host
+### 3. Register the Native Messaging Host
 
-扩展需要通过 Native Messaging Host 与本地 App 通信。在解压的源码仓库中运行：
+The extension reaches the local App through a Native Messaging Host. From the extracted source repository, run:
 
 ```bash
-bash scripts/install-debug-native-host.sh   # 向已安装的 Chromium 系浏览器注册 Host
-bash scripts/check-debug-native-host.sh     # 检查 Host 连通性
+bash scripts/install-debug-native-host.sh   # register the Host with installed Chromium-family browsers
+bash scripts/check-debug-native-host.sh     # verify Host connectivity
 ```
 
-脚本会把 Host 清单指向已安装的 `MacIDM.app` 内的 `macidm-host`。如果你使用自定义 Chromium 配置目录，可用 `MACIDM_NMH_EXTRA_DIRS` 追加；使用动态生成的本地扩展 ID 时，可用 `MACIDM_NMH_ALLOWED_ORIGINS` 追加允许来源。
+The script points the Host manifest at the `macidm-host` inside the installed `MacIDM.app`. For custom Chromium profile directories, append paths with `MACIDM_NMH_EXTRA_DIRS`; for dynamically generated local extension IDs, append allowed origins with `MACIDM_NMH_ALLOWED_ORIGINS`.
 
-### 4. 完成第一次下载
+## Usage guide
 
-- **普通 URL**：在 App 中点击"添加"，粘贴 HTTP(S) 地址并选择保存目录即可；
-- **网页媒体**：打开含音视频的页面（必要时播放一次），点击工具栏 MacIDM 图标或媒体旁的悬浮按钮，在 Popup 中选择候选，然后在 App 确认窗口核对名称、位置与并发数，点击"开始下载"；
-- **整页链接**：右键菜单或 Download All 页面扫描当前页链接，去重筛选后勾选批量提交；
-- **任务控制**：在任务列表或详情中使用暂停、恢复、取消；在设置中调整全局速度限制、同时下载数、队列与代理。
+- **Confirmation window**: before downloading you can change the filename, destination, maximum parallel requests (1–64), and queue priority, and optionally supply an expected SHA-256 for integrity checking; HLS / DASH sources list quality variants first.
+- **Queues and categories**: filter by status, queue, time, and category in the sidebar; set per-queue concurrency, ordering, and schedule windows.
+- **Rate limiting and proxy**: Settings offers a global token-bucket speed limit and proxy configuration; proxy passwords are stored only in the system Keychain.
+- **Logged-in resources**: for ordinary GET resources that need a session, the extension rebuilds request context only after you explicitly authorize cookies for the current site; POST, Authorization headers, complex custom headers, `blob:`, and DRM degrade safely.
+- **Filename privacy**: enable filename redaction in Settings so the list and detail show job identifiers instead of filenames.
 
-## 操作指南
+## CLI and local Agent API
 
-- **确认窗口**：下载前你可以改文件名、保存目录、最大并行请求数（1–64）、队列优先级，并可选填预期 SHA-256 做完整性校验；对 HLS/DASH 会先列出清晰度变体供选择。
-- **队列与分类**：侧栏按状态、队列、时间和分类筛选；可为不同队列设置并发、排序方式和定时窗口。
-- **限速与代理**：设置中提供全局速度限制（token-bucket）与代理配置；代理密码仅存于系统钥匙串。
-- **登录态资源**：对需要登录的普通 GET 资源，只有在你明确授权当前站点 Cookie 后，扩展才会尝试重建请求上下文；POST、Authorization、复杂自定义头、`blob:` 与 DRM 会安全降级。
-- **文件名隐私**：设置中可开启文件名遮罩，列表与详情会显示任务标识而非文件名。
-
-## CLI 与本地 Agent API
-
-CLI 独立使用与 App 相同的下载内核，可用于脚本和自动化：
+The CLI uses the same download engine independently of the App and can be used for scripting and automation:
 
 ```bash
 swift build --product macidm
 export PATH="$PWD/.build/debug:$PATH"
 
 macidm add https://example.com/file.zip --output "$HOME/Downloads/file.zip" --parallel 8
-macidm add https://example.com/file.zip --output /tmp/file.zip --sha256 <64位十六进制> --foreground
-macidm inspect https://example.com/watch --media-kind hls   # 只解析变体，不下载
+macidm add https://example.com/file.zip --output /tmp/file.zip --sha256 <64-hex-digest> --foreground
+macidm inspect https://example.com/watch --media-kind hls   # parse variants without downloading
 macidm status
 macidm status <task-id> --json
 macidm pause <task-id>
 macidm resume <task-id>
 macidm cancel <task-id>
-macidm watch --interval 1.0     # 实时 TUI 监控
-macidm logs --follow --lines 50 # 查看 App 日志
-macidm app-status               # 一次性状态快照
+macidm watch --interval 1.0     # live TUI monitoring
+macidm logs --follow --lines 50 # tail the App log
+macidm app-status               # one-shot state snapshot
 ```
 
-全局选项：`--json` 输出机器可读 JSON；`--state-dir <path>` 覆盖 CLI 状态目录（默认 `~/Library/Application Support/MacIDM/cli/`）。带签名/查询串的 URL 不会被持久化，一次性下载请用 `--foreground`。
+Global options: `--json` for machine-readable output; `--state-dir <path>` to override the CLI state directory (default `~/Library/Application Support/MacIDM/cli/`). Signed/query URLs are never persisted; use `--foreground` for one-process downloads.
 
-**本地 Agent API。** App 在 `127.0.0.1:7831` 暴露一个仅本机的 HTTP API，供脚本与 AI Agent 读取状态、控制任务，无需截图或 UI 自动化。除 `/health` 外均需每次启动生成的 `X-MacIDM-Token`。完整端点与安全边界见 [docs/agent-http-api.md](docs/agent-http-api.md)。
+**Local Agent API.** The App exposes a localhost-only HTTP API on `127.0.0.1:7831` so scripts and AI agents can read state and control tasks without screenshots or UI automation. Every endpoint except `/health` requires the per-launch `X-MacIDM-Token`. Full endpoints and security boundaries are in [docs/agent-http-api.md](docs/agent-http-api.md).
 
-## 从源码构建
+## Building from source
 
-环境要求：macOS 13+；与 `Package.swift` 匹配的 Swift 6 / Xcode Command Line Tools；Node.js（扩展单元测试）；`ffmpeg` / `ffprobe`（HLS/DASH remux 校验）；YouTube 路径需要可解析的 `yt-dlp`（可用 `scripts/fetch-ytdlp.sh` 准备，Release App 已内置）。
+Requirements: macOS 13+; Swift 6 / Xcode Command Line Tools matching `Package.swift`; Node.js (extension unit tests); `ffmpeg` / `ffprobe` (HLS / DASH remux verification); a resolvable `yt-dlp` for the YouTube path (`scripts/fetch-ytdlp.sh` can prepare one; the release App already bundles it).
 
 ```bash
 git clone https://github.com/Raters0/MacIDM.git
 cd MacIDM
 
-swift build                      # 构建全部目标
-swift build --product macidm     # 仅构建 CLI
-swift run macidm --help          # 查看 CLI 用法
-bash scripts/build-debug-app.sh  # 组装本地 MacIDM.app
+swift build                      # build all targets
+swift build --product macidm     # build only the CLI
+swift run macidm --help          # show CLI usage
+bash scripts/build-debug-app.sh  # assemble a local MacIDM.app
 ```
 
-组装本地 App 并安装、注册 Host：
+Assemble, install, and register the Host:
 
 ```bash
 bash scripts/install-debug-app.sh
@@ -163,11 +153,11 @@ bash scripts/check-debug-native-host.sh
 open "$HOME/Applications/MacIDM.app"
 ```
 
-安装脚本会拒绝覆盖正在运行的 MacIDM；请先确认没有活动下载再退出旧进程重试。
+The installer refuses to replace a running MacIDM; make sure no downloads are active, quit the old process, and retry.
 
-## 测试
+## Testing
 
-常用检查：
+Common checks:
 
 ```bash
 swift format lint --recursive --strict --configuration .swift-format Sources Tests Package.swift
@@ -178,47 +168,47 @@ bash Tests/Integration/hls-download-integration.sh
 node --test Tests/BrowserExtensionTests/Unit/*.test.mjs
 ```
 
-按变更范围追加：
+Append checks based on the scope of changes:
 
 ```bash
-# FFmpeg / 本地媒体 remux
+# FFmpeg / local media remux
 bash Tests/Integration/ffmpeg-remux-integration.sh
 bash Tests/Integration/app-media-pipeline-integration.sh
 
-# YouTube / yt-dlp 路径（需要可解析的 yt-dlp；网络失败会被明确报告）
+# YouTube / yt-dlp path (requires a resolvable yt-dlp; network failures are reported explicitly)
 bash Tests/Integration/youtube-ytdlp-integration.sh
 
-# DASH 路由或引擎基础变更
+# DASH routing or engine foundations
 swift test --filter 'DASHParserTests|DASHDownloadExecutorTests|Phase5FoundationTests'
 ```
 
-## 目录结构
+## Repository layout
 
 ```text
 Sources/
-├── IDMEngine/          可复用下载引擎：HTTP、HLS、DASH、FFmpeg 校验
-├── MacIDMApp/          SwiftUI App、任务控制面、持久化与站点服务
-├── MacIDMBridge/       消息协议、校验、鉴权 UDS 与 Native Messaging 帧
-├── MacIDMHost/         Chrome Native Messaging 可执行 Host
-└── MacIDMCLI/          CLI 参数、状态、持久化与 worker 编排
+├── IDMEngine/          Reusable download engine: HTTP, HLS, DASH, FFmpeg validation
+├── MacIDMApp/          SwiftUI App, task control plane, persistence, site services
+├── MacIDMBridge/       Message protocol, validation, authenticated UDS, Native Messaging frames
+├── MacIDMHost/         Chrome Native Messaging executable Host
+└── MacIDMCLI/          CLI arguments, state, persistence, worker orchestration
 
-BrowserExtension/chrome/  Chrome MV3 扩展与生产资源
-Tests/                    Swift/Node 单测、集成测试、fixture 与测试服务器
-Resources/                App 图标、菜单栏资源与本地化
-scripts/                  构建、安装、Host 注册与测试脚本
-docs/agent-http-api.md    本地 Agent HTTP API 参考
+BrowserExtension/chrome/  Chrome MV3 extension and production assets
+Tests/                    Swift/Node unit tests, integration tests, fixtures, test servers
+Resources/                App icons, menu-bar resources, localization
+scripts/                  Build, install, Host registration, and test scripts
+docs/agent-http-api.md    Local Agent HTTP API reference
 ```
 
-## 隐私与本地数据
+## Privacy and local data
 
-下载和任务管理都在本机完成。设置里可以隐藏文件名，普通日志也会省略页面标题、完整 URL 和本地路径；需要详细排障时，另有单独的本地诊断日志。Cookie、Authorization、代理密码和桥接 token 默认不记录原值。
+Downloads and task management run locally. Filenames can be hidden in Settings, and ordinary logs omit page titles, full URLs, and local paths. A separate local diagnostic log keeps more detail for troubleshooting. Cookies, Authorization headers, proxy passwords, and bridge tokens are not logged verbatim by default.
 
-使用 AI 辅助调试时，排查速度、重试或任务状态，通常不需要把下载内容的标题和地址一并交出去。先看普通日志，需要时再按具体任务查看详细诊断；分享日志前检查一下内容即可。
+For AI-assisted debugging, checking speed, retries, or task state usually doesn't require sharing the title or address of what's being downloaded. Start with the ordinary log, inspect detailed diagnostics for a specific task when needed, and check the contents before sharing.
 
-## 致谢与许可证
+## Acknowledgements and license
 
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 提供站点媒体解析与下载支持；
-- FFmpeg / ffprobe 用于媒体转封装与校验，遵循其自身许可证；
-- 其他第三方组件各自遵循其自身许可证。
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) provides site media extraction and download support;
+- FFmpeg / ffprobe are used for media remuxing and verification, under their own licenses;
+- Other third-party components remain subject to their own licenses.
 
-本仓库以 [MIT License](LICENSE) 开源。
+This repository is released under the [MIT License](LICENSE).
