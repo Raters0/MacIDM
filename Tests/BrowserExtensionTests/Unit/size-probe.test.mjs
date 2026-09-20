@@ -84,7 +84,7 @@ test("automatic probes are anonymous and never follow redirects", async () => {
       assert.equal(call.init.credentials, "omit", "probe carried credentials");
       assert.equal(call.init.redirect, "error", "probe followed redirects");
     }
-    assert.deepEqual(result, { size: 4096, mime: "video/mp4" });
+    assert.deepEqual(result, { size: 4096, mime: "video/mp4", cdFilename: null });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -112,6 +112,26 @@ test("a redirecting target settles as unknown instead of following", async () =>
   }
 });
 
+test("Content-Disposition filename is captured as the server-authoritative name", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, {
+    status: 200,
+    headers: {
+      "content-length": "2048",
+      "content-type": "video/mp4",
+      "content-disposition": "attachment; filename*=UTF-8''%E8%A7%86%E9%A2%91.mp4",
+    },
+  });
+  try {
+    const url = `https://cdn.example.com/cd-${Date.now()}.mp4`;
+    const result = await probeResourceSize(url);
+    assert.equal(result.cdFilename, "视频.mp4");
+    assert.equal(cachedProbe(url).cdFilename, "视频.mp4");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("a probed size is served from the cache without another request", async () => {
   // The service allows re-probing the same URL after the page re-reports it
   // (navigation drops the cache along with the size); the precondition for
@@ -129,10 +149,10 @@ test("a probed size is served from the cache without another request", async () 
     const url = `https://cdn.example.com/cached-${Date.now()}.mp4`;
     const first = await probeResourceSize(url);
     const second = await probeResourceSize(url);
-    assert.deepEqual(first, { size: 123456, mime: "video/mp4" });
+    assert.deepEqual(first, { size: 123456, mime: "video/mp4", cdFilename: null });
     assert.deepEqual(second, first);
     assert.deepEqual(calls, ["HEAD"], "第二次取值仍然发出了请求");
-    assert.deepEqual(cachedProbe(url), { size: 123456, mime: "video/mp4" });
+    assert.deepEqual(cachedProbe(url), { size: 123456, mime: "video/mp4", cdFilename: null });
   } finally {
     globalThis.fetch = originalFetch;
   }

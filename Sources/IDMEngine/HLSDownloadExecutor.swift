@@ -63,6 +63,19 @@ public struct HLSStreamToFileResult: Sendable {
     }
 }
 
+public enum HLSDownloadError: Error, Equatable, Sendable {
+    case mergerUnavailable
+}
+
+extension HLSDownloadError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .mergerUnavailable:
+            return "HLS 音视频合并需要已配置的 FFmpeg 合并服务。"
+        }
+    }
+}
+
 public protocol HLSResourceClient: Sendable {
     /// Fetches small metadata such as manifests and keys (strict safety size cap;
     /// must not be used for large media segments).
@@ -178,6 +191,9 @@ public struct HLSDownloadExecutor: Sendable {
     private let verifier: ArtifactVerifier
     private let groupCommitBytesThreshold: Int64
     private let groupCommitTimeThreshold: Duration
+    /// FFmpeg merge service for separate-audio HLS masters (EXT-X-MEDIA
+    /// audio groups). Without a merger, only the video track is downloaded.
+    private let merger: (any FFmpegMerging)?
 
     public init(
         client: any HLSResourceClient = URLSessionHLSResourceClient(),
@@ -186,7 +202,8 @@ public struct HLSDownloadExecutor: Sendable {
         budget: MediaBufferBudget? = nil,
         verifier: ArtifactVerifier = ArtifactVerifier(),
         groupCommitBytesThreshold: Int64 = 8 * 1024 * 1024,
-        groupCommitTimeThreshold: Duration = .seconds(5)
+        groupCommitTimeThreshold: Duration = .seconds(5),
+        merger: (any FFmpegMerging)? = nil
     ) {
         self.client = client
         self.parser = parser
@@ -195,6 +212,7 @@ public struct HLSDownloadExecutor: Sendable {
         self.verifier = verifier
         self.groupCommitBytesThreshold = groupCommitBytesThreshold
         self.groupCommitTimeThreshold = groupCommitTimeThreshold
+        self.merger = merger
     }
 
     public func download(
@@ -251,7 +269,7 @@ public struct HLSDownloadExecutor: Sendable {
             )
         }
 
-        let (plan, contextOriginURL) = try await loadPlan(
+        let (plan, contextOriginURL, separateAudioURL) = try await loadPlan(
             request: request,
             client: effectiveClient,
             control: control
@@ -444,6 +462,14 @@ public struct HLSDownloadExecutor: Sendable {
                 knownSegmentSizes[cIndex] = cBytes
             }
             outputBytes = committer.currentOutputBytes
+            // Flush committed segment details before publishing the completed file.
+            emitHLSProgress(
+                mutableState: mutableState,
+                outputBytes: outputBytes,
+                knownSegmentSizes: knownSegmentSizes,
+                totalUnitCount: totalUnitCount,
+                progress: progress
+            )
         } catch {
             if isCancellationOrPauseError(error) {
                 do {
@@ -470,6 +496,23 @@ public struct HLSDownloadExecutor: Sendable {
             s.lastMaxUncommittedRefs = committer.maxObservedOutOfOrderCount
         }
 
+        // Separate-audio master: the video track finished into the temporary
+        // file; fetch the audio rendition and mux both into the destination
+        // instead of publishing the muted video on its own.
+        if let separateAudioURL, merger != nil {
+            return try await mergeSeparateAudio(
+                audioURL: separateAudioURL,
+                videoTemporary: paths.temporary,
+                videoSidecar: paths.sidecar,
+                videoBytes: outputBytes,
+                resumed: resumed,
+                usedParallelRequests: Swift.min(activeConcurrency, plan.units.count),
+                request: request,
+                control: control,
+                progress: progress
+            )
+        }
+
         defer {
             cleanupUnitTemporaries(matching: paths.unitPrefix, in: paths.directory)
         }
@@ -486,11 +529,176 @@ public struct HLSDownloadExecutor: Sendable {
         )
     }
 
+    /// Downloads the EXT-X-MEDIA audio rendition of a separate-audio HLS
+    /// master and muxes it with the finished video track. Fail-closed: an
+    /// audio-side failure fails the task instead of silently shipping a
+    /// muted video (same contract as the DASH pair executor).
+    private func mergeSeparateAudio(
+        audioURL: URL,
+        videoTemporary: URL,
+        videoSidecar: URL,
+        videoBytes: Int64,
+        resumed: Bool,
+        usedParallelRequests: Int,
+        request: DownloadRequest,
+        control: @escaping @Sendable () -> DownloadControl,
+        progress: @escaping @Sendable (DownloadProgress) -> Void
+    ) async throws -> DownloadResult {
+        guard let merger else { throw HLSDownloadError.mergerUnavailable }
+        let audioTrack = request.destination.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(InputValidator.safeFilename(request.destination.lastPathComponent))"
+                    + ".\(request.taskID.uuidString).audio.macidm.hls.track"
+            )
+        defer { try? removeIfPresent(audioTrack) }
+        let audioResult = try await download(
+            DownloadRequest(
+                url: audioURL,
+                destination: audioTrack,
+                sourceKind: .hls,
+                maximumParallelRequests: max(1, min(4, request.maximumParallelRequests)),
+                taskID: request.taskID,
+                requestContext: request.requestContext,
+                rateLimiter: request.rateLimiter
+            ),
+            control: control
+        ) { value in
+            // 音频阶段的分段索引与视频分段索引在 App 的分段面板里是同一
+            // 序列空间，直接透传会让两组分段串位；只上报聚合值。
+            progress(
+                DownloadProgress(
+                    receivedBytes: videoBytes + value.receivedBytes,
+                    totalBytes: value.totalBytes.map { $0 + videoBytes },
+                    segments: []
+                ))
+        }
+        try checkControl(control)
+        let mergeResult = try await merger.merge(
+            FFmpegMergeRequest(
+                videoURL: videoTemporary,
+                audioURL: audioTrack,
+                outputURL: request.destination,
+                outputKind: .mp4,
+                expectedSHA256: request.expectedSHA256,
+                control: control
+            )
+        )
+        try? removeIfPresent(videoTemporary)
+        try? removeIfPresent(videoSidecar)
+        return DownloadResult(
+            destination: mergeResult.destination,
+            byteCount: mergeResult.byteCount,
+            sha256: mergeResult.sha256,
+            usedParallelRequests: usedParallelRequests,
+            resumed: resumed || audioResult.resumed,
+            verification: "hls-ffmpeg-ffprobe",
+            artifactFormat: .mp4
+        )
+    }
+
+    /// Explicit separate-audio entry point: downloads the variant media
+    /// playlist and the audio rendition playlist, then muxes both into one
+    /// MP4. Used when the extension submits an inspected variant whose
+    /// master declared an audio group.
+    public func downloadPair(
+        _ pair: HLSPairDownloadRequest,
+        control: @escaping @Sendable () -> DownloadControl = { .continue },
+        progress: @escaping @Sendable (DownloadProgress) -> Void = { _ in }
+    ) async throws -> DownloadResult {
+        guard let merger else { throw HLSDownloadError.mergerUnavailable }
+        guard !FileManager.default.fileExists(atPath: pair.destination.path) else {
+            throw IDMError.filenameConflict(pair.destination.path)
+        }
+        let directory = pair.destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(pair.taskID.uuidString).macidm.hls-pair", isDirectory: true)
+        var checkpoint = try MediaPairCheckpoint(
+            directory: directory, videoURL: pair.videoURL, audioURL: pair.audioURL)
+        let videoTrack = directory.appendingPathComponent("video.track")
+        let audioTrack = directory.appendingPathComponent("audio.track")
+        var cleanup = false
+        defer {
+            // Keep the directory on failure so the nested track downloads can
+            // resume from their sidecars on retry; remove after a successful
+            // merge or on explicit cancel.
+            if cleanup || control() == .cancel {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
+        let videoResult: DownloadResult
+        if let existing = try checkpoint.existingTrack(at: videoTrack) {
+            videoResult = existing
+        } else {
+            videoResult = try await download(
+                DownloadRequest(
+                    url: pair.videoURL,
+                    destination: videoTrack,
+                    sourceKind: .hls,
+                    maximumParallelRequests: pair.maximumParallelRequests,
+                    taskID: pair.taskID,
+                    requestContext: pair.requestContext,
+                    rateLimiter: pair.rateLimiter
+                ),
+                control: control,
+                progress: progress
+            )
+            try checkpoint.recordCompleted(at: videoTrack)
+        }
+        try checkControl(control)
+        let videoBytes = videoResult.byteCount
+        let audioResult: DownloadResult
+        if let existing = try checkpoint.existingTrack(at: audioTrack) {
+            audioResult = existing
+        } else {
+            audioResult = try await download(
+                DownloadRequest(
+                    url: pair.audioURL,
+                    destination: audioTrack,
+                    sourceKind: .hls,
+                    maximumParallelRequests: max(1, min(4, pair.maximumParallelRequests)),
+                    taskID: pair.taskID,
+                    requestContext: pair.requestContext,
+                    rateLimiter: pair.rateLimiter
+                ),
+                control: control
+            ) { value in
+                // Report aggregate audio progress while retaining video segment details.
+                progress(
+                    DownloadProgress(
+                        receivedBytes: videoBytes + value.receivedBytes,
+                        totalBytes: value.totalBytes.map { $0 + videoBytes },
+                        segments: []
+                    ))
+            }
+            try checkpoint.recordCompleted(at: audioTrack)
+        }
+        try checkControl(control)
+        let mergeResult = try await merger.merge(
+            FFmpegMergeRequest(
+                videoURL: videoTrack,
+                audioURL: audioTrack,
+                outputURL: pair.destination,
+                outputKind: pair.outputKind,
+                expectedSHA256: pair.expectedSHA256,
+                control: control
+            )
+        )
+        cleanup = true
+        return DownloadResult(
+            destination: mergeResult.destination,
+            byteCount: mergeResult.byteCount,
+            sha256: mergeResult.sha256,
+            usedParallelRequests: pair.maximumParallelRequests,
+            resumed: videoResult.resumed || audioResult.resumed,
+            verification: "hls-pair-ffmpeg-ffprobe",
+            artifactFormat: pair.outputKind == .mp4 ? .mp4 : .unprocessed
+        )
+    }
+
     private func loadPlan(
         request: DownloadRequest,
         client: any HLSResourceClient,
         control: @escaping @Sendable () -> DownloadControl
-    ) async throws -> (HLSDownloadPlan, URL) {
+    ) async throws -> (plan: HLSDownloadPlan, contextOriginURL: URL, separateAudioURL: URL?) {
         try checkControl(control)
         let response = try await client.fetch(
             HLSFetchRequest(
@@ -503,7 +711,7 @@ public struct HLSDownloadExecutor: Sendable {
         let parsed = try parser.parse(playlistText, baseURL: response.finalURL)
         switch parsed {
         case .media(let media):
-            return (try planner.makePlan(media, playlistURL: response.finalURL), request.url)
+            return (try planner.makePlan(media, playlistURL: response.finalURL), request.url, nil)
         case .master(let master):
             guard let variant = master.variants.max(by: { $0.bandwidth < $1.bandwidth }) else {
                 throw HLSParserError.emptyPlaylist
@@ -520,9 +728,18 @@ public struct HLSDownloadExecutor: Sendable {
             guard case .media(let media) = try parser.parse(variantText, baseURL: variantResponse.finalURL) else {
                 throw HLSParserError.emptyPlaylist
             }
+            // Separate-audio master (X/Twitter style): the selected variant's
+            // AUDIO group references an EXT-X-MEDIA rendition playlist. When a
+            // merger is configured the rendition is fetched and muxed in;
+            // without a merger only the video track is downloaded.
+            let separateAudioURL =
+                merger == nil
+                ? nil
+                : HLSAudioRendition.resolve(variant: variant, in: master)?.url
             return (
                 try planner.makePlan(media, playlistURL: variantResponse.finalURL),
-                request.url
+                request.url,
+                separateAudioURL
             )
         }
     }
@@ -683,18 +900,30 @@ public struct HLSDownloadExecutor: Sendable {
         totalUnitCount: Int,
         progress: @escaping @Sendable (DownloadProgress) -> Void
     ) {
-        let segmentProgress = mutableState.units.map { checkpoint in
-            DownloadSegmentProgress(
+        // 分段面板只上报已通过组提交检查点的分段：未提交的分段既没有可信
+        // 字节数也没有总量，展示成「0 KB / 未知 / 0%」占位行只会与总进度
+        // 脱节（分段全 0% 而总进度 100%）；行数随提交进度增长，最终
+        // quiesce 后的全量上报保证收尾时所有分段完整显示。
+        let segmentProgress = mutableState.units.compactMap { checkpoint -> DownloadSegmentProgress? in
+            guard checkpoint.completed else { return nil }
+            return DownloadSegmentProgress(
                 index: checkpoint.unitIndex,
-                receivedBytes: checkpoint.completed ? checkpoint.receivedBytes : 0,
-                totalBytes: checkpoint.completed ? checkpoint.receivedBytes : nil
+                receivedBytes: checkpoint.receivedBytes,
+                totalBytes: checkpoint.receivedBytes
             )
         }
-        let completedCount = mutableState.units.filter { $0.completed }.count
         let knownTotal = knownSegmentSizes.values.reduce(Int64(0), +)
+        // 外推总量的分母用“已抓取段数”（knownSegmentSizes，含已 fetch 但尚未
+        // 组提交的段）而非“已提交段数”。HLS 组提交要攒够字节/时间阈值才
+        // 标记 completed，用已提交段数会让 totalBytes 在下载途中长期为 nil，UI
+        // 进度条只能依赖扩展的初始估算（X.com 分离音视频场景该估算漏算
+        // 音轨而偏小），导致进度条提前满/跳变。改用已抓取段数后，第一批段
+        // 下载完 totalBytes 即出现，进度条能实时反映真实进度。外推值恒 ≥
+        // outputBytes（已抓取 ⊇ 已提交），不会超 100%。
+        let knownCount = knownSegmentSizes.count
         let estimatedTotal: Int64? =
-            completedCount > 0
-            ? Int64((Double(knownTotal) * Double(totalUnitCount) / Double(completedCount)).rounded())
+            knownCount > 0
+            ? Int64((Double(knownTotal) * Double(totalUnitCount) / Double(knownCount)).rounded())
             : nil
         progress(
             DownloadProgress(

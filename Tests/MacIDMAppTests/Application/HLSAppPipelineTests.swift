@@ -70,6 +70,28 @@ final class HLSAppPipelineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: calls[0].inputURL.path))
     }
 
+    func testAlreadyMergedHLSIsPublishedWithoutAnotherRemux() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let remuxer = TestRemuxer()
+        let model = AppModel(
+            storeDirectory: fixture.directory.appendingPathComponent("state"),
+            settings: fixture.settings,
+            downloadRunner: StubHLSDownloadRunner(artifactFormat: .mp4),
+            ffmpegRemuxer: remuxer
+        )
+        let response = await model.handleBrowserBridgeRequest(
+            enqueueRequest(filename: "merged.m3u8"), clientID: "chrome:test",
+            secret: Data(repeating: 2, count: 32))
+        let taskID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(response.payload?["taskId"]?.stringValue)))
+        try await waitUntil { model.tasks.first(where: { $0.id == taskID })?.status == .completed }
+        let calls = await remuxer.calls
+        XCTAssertTrue(calls.isEmpty)
+        let task = try XCTUnwrap(model.tasks.first(where: { $0.id == taskID }))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: task.destinationPath)), Data("raw-ts".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.hlsInputURL(for: task).path))
+    }
+
     func testHLSKeepsRawInputWhenRemuxFailsForRetry() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -343,6 +365,7 @@ final class HLSAppPipelineTests: XCTestCase {
 }
 
 private struct StubHLSDownloadRunner: AppDownloadRunning {
+    var artifactFormat: DownloadArtifactFormat = .unprocessed
     func run(
         _ request: DownloadRequest,
         control: @escaping @Sendable () -> DownloadControl,
@@ -357,7 +380,8 @@ private struct StubHLSDownloadRunner: AppDownloadRunning {
             sha256: "raw",
             usedParallelRequests: 1,
             resumed: false,
-            verification: "segments-and-size"
+            verification: "segments-and-size",
+            artifactFormat: artifactFormat
         )
     }
 }

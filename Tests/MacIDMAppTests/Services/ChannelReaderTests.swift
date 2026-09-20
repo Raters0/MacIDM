@@ -3,7 +3,7 @@ import XCTest
 
 @testable import MacIDMApp
 
-/// `read(2)` 结果分类与输出通道建立的故障语义（docs/AI交接.md §5.3/§8.2）：
+/// `read(2)` 结果分类与输出通道建立的故障语义：
 /// EINTR 必须重试，读错误不得冒充 EOF，pipe 失败必须显式报错且零泄漏。
 final class ChannelReaderTests: XCTestCase {
     func testEINTRIsRetriedAndDataStaysIntact() {

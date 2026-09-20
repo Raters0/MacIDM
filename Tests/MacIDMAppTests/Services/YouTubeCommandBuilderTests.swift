@@ -82,4 +82,68 @@ final class YouTubeCommandBuilderTests: XCTestCase {
         XCTAssertTrue(content.contains(".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc123xyz"))
         XCTAssertTrue(content.contains(".youtube.com\tTRUE\t/\tTRUE\t0\tHSID\tdef456uvw"))
     }
+
+    // MARK: - Cookie argument selection (authorization-driven, no Chrome DB)
+
+    /// Cookie supply is authorization-driven: an explicit Netscape cookie file
+    /// (extension-granted or pasted session) is passed when present. Reading
+    /// Chrome's on-disk Cookies DB (`--cookies-from-browser`) is never used —
+    /// it requires Full Disk Access on macOS Sonoma+ and every ad-hoc rebuild
+    /// invalidates the grant. This test locks the cookie-file branch.
+    func testBuildDownloadArgumentsUsesCookieFileWhenSupplied() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let cookieFile = tempDir.appendingPathComponent("cookies.txt")
+        try Data("# Netscape HTTP Cookie File\n".utf8).write(to: cookieFile)
+
+        let request = DownloadRequest(
+            url: URL(string: "https://www.youtube.com/watch?v=fixture")!,
+            destination: tempDir.appendingPathComponent("video.mp4"),
+            backend: .youtubeExtractor
+        )
+        let arguments = YouTubeCommandBuilder.buildDownloadArguments(
+            downloadURL: request.url,
+            formatString: "bv*+ba/b",
+            workingDirectory: tempDir,
+            cookieFile: cookieFile,
+            request: request
+        )
+
+        // The explicit cookie file must be present exactly once…
+        let cookiesFlagIndices = arguments.indices.filter { arguments[$0] == "--cookies" }
+        XCTAssertEqual(cookiesFlagIndices.count, 1)
+        XCTAssertEqual(arguments[cookiesFlagIndices[0] + 1], cookieFile.path)
+        // …and the Chrome-DB read must never appear.
+        XCTAssertFalse(
+            arguments.contains("--cookies-from-browser"),
+            "--cookies-from-browser must never be passed; it triggers macOS TCC EPERM on Chrome's Cookies DB"
+        )
+    }
+
+    /// With no authorized cookie the runner must degrade to an anonymous
+    /// yt-dlp run (public videos still work) rather than attempting to read
+    /// Chrome's protected Cookies DB.
+    func testBuildDownloadArgumentsRunsAnonymouslyWhenNoCookieFile() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let request = DownloadRequest(
+            url: URL(string: "https://www.youtube.com/watch?v=fixture")!,
+            destination: tempDir.appendingPathComponent("video.mp4"),
+            backend: .youtubeExtractor
+        )
+        let arguments = YouTubeCommandBuilder.buildDownloadArguments(
+            downloadURL: request.url,
+            formatString: "bv*+ba/b",
+            workingDirectory: tempDir,
+            cookieFile: nil,
+            request: request
+        )
+
+        // Anonymous: neither an explicit cookie file nor a browser-DB read.
+        XCTAssertFalse(arguments.contains("--cookies"))
+        XCTAssertFalse(arguments.contains("--cookies-from-browser"))
+    }
 }

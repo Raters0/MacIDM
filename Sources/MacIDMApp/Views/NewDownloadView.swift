@@ -7,6 +7,7 @@ struct NewDownloadView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let initialDraft: DownloadDraft?
+    @State private var isHandBackHovering = false
     /// Set when the view is hosted in a standalone window instead of a sheet:
     /// SwiftUI's `dismiss` environment only closes sheets, so the window
     /// manager injects its own close action.
@@ -85,8 +86,21 @@ struct NewDownloadView: View {
         )
         let pathName = draftURL?.deletingPathExtension().lastPathComponent.removingPercentEncoding
             .map { "\($0).\(outputExtension)" }
+        let draftHint = draft?.filenameHint?.trimmingCharacters(in: .whitespacesAndNewlines)
         let proposedName: String
-        if let title = draft?.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if (draft?.filenameHintSource ?? .urlPath) != .urlPath,
+            let hint = draftHint,
+            !DownloadNaming.isGenericFilename(hint)
+        {
+            // Naming trust model (technical spec §8.1): a browser-resolved or
+            // title-derived hint is authoritative and leads the proposal; a
+            // URL-tail hint never outranks the page title.
+            if URL(fileURLWithPath: hint).pathExtension.isEmpty {
+                proposedName = hint + "." + outputExtension
+            } else {
+                proposedName = hint
+            }
+        } else if let title = draft?.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
             !title.isEmpty
         {
             if URL(fileURLWithPath: title).pathExtension.isEmpty {
@@ -94,7 +108,7 @@ struct NewDownloadView: View {
             } else {
                 proposedName = title
             }
-        } else if let hint = draft?.filenameHint, !DownloadNaming.isGenericFilename(hint) {
+        } else if let hint = draftHint, !DownloadNaming.isGenericFilename(hint) {
             proposedName = hint
         } else {
             proposedName = (pathExtension.isEmpty ? nil : pathName) ?? "download"
@@ -604,9 +618,28 @@ struct NewDownloadView: View {
             // padding.
             Divider()
 
-            HStack {
+            HStack(alignment: .bottom) {
                 Spacer()
-                Button("取消") { closeView() }
+                // Browser-takeover confirmations offer a secondary, non-button
+                // text action to hand the paused download back to the browser;
+                // the primary "取消" now also cancels the browser download.
+                // Underlined and bottom-aligned with the buttons; hover lifts
+                // it to the brand accent like other flat affordances.
+                if isBrowserTakeoverDraft {
+                    Button {
+                        handBackToBrowser()
+                    } label: {
+                        Text("改为浏览器直接下载")
+                            .font(.callout)
+                            .underline()
+                            .foregroundStyle(isHandBackHovering ? AppTheme.accent : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isHandBackHovering = $0 }
+                    .pointerCursorOnHover()
+                    .disabled(isSubmitting)
+                }
+                Button("取消") { cancelConfirmation() }
                     .keyboardShortcut(.cancelAction)
                 Button(startImmediately ? "开始下载" : "加入列表") {
                     submit()
@@ -637,6 +670,32 @@ struct NewDownloadView: View {
         } else {
             dismiss()
         }
+    }
+
+    /// True when this confirmation was opened by a browser takeover, i.e. there
+    /// is a paused browser download whose fate the dismissal decides.
+    private var isBrowserTakeoverDraft: Bool {
+        initialDraft?.takeoverDraftID != nil
+    }
+
+    /// Default dismissal: do not take over AND cancel the paused browser
+    /// download, so nothing keeps downloading anywhere.
+    private func cancelConfirmation() {
+        if isBrowserTakeoverDraft {
+            model.rememberInteractiveCancelOutcome(
+                cancelBrowser: true, for: initialDraft?.takeoverDraftID
+            )
+        }
+        closeView()
+    }
+
+    /// Secondary dismissal: do not take over, but let the browser resume and
+    /// finish the download it already started.
+    private func handBackToBrowser() {
+        model.rememberInteractiveCancelOutcome(
+            cancelBrowser: false, for: initialDraft?.takeoverDraftID
+        )
+        closeView()
     }
 
     private var selectedOptionBinding: Binding<String?> {
@@ -672,7 +731,7 @@ struct NewDownloadView: View {
     /// ends up as .mp4. Returns nil for HTTP direct downloads where no
     /// container conversion takes place.
     private var formatConversionDescription: String? {
-        // YouTube product contract (AI handover doc §4.4): the UI picks a
+        // YouTube product contract (technical-spec §3.4): the UI picks a
         // quality/codec variant, and yt-dlp + FFmpeg uniformly outputs MP4 in
         // the end; the source variant's container (e.g. VP9's WebM) is not the
         // output container.
@@ -724,12 +783,14 @@ struct NewDownloadView: View {
         for draft: DownloadDraft, proposedFilename: String
     ) -> BrowserResolvedAdoption? {
         guard isBrowserResolvedDraft(draft) else { return nil }
-        // Direct-file drafts carry the browser's resolved filename (it honours
-        // Content-Disposition), which beats a page-title-derived name. Media
-        // drafts keep the init-computed name: their hints are often generic
-        // manifest/segment names while the page title is the real one.
+        // Only an authoritative hint (browser-resolved download name or a
+        // title-derived synthesized name) may replace the init-computed
+        // proposal. A URL-tail hint from a sniffed candidate ("407788-1080p
+        // .mp4") carries no authority: the page title the user recognized in
+        // the sniff panel stays the proposed filename (technical spec §8.1).
         var adoptedFilename = InputValidator.safeFilename(proposedFilename)
         if draft.backend != .youtubeExtractor,
+            draft.filenameHintSource != .urlPath,
             let hint = draft.filenameHint?.trimmingCharacters(in: .whitespacesAndNewlines),
             !DownloadNaming.isGenericFilename(hint)
         {
@@ -750,7 +811,7 @@ struct NewDownloadView: View {
                 adoptedFilename = InputValidator.safeFilename(adoptedFilename + "." + mimeExtension)
             }
         }
-        // Product contract (AI handover doc §4.4): YouTube uniformly outputs
+        // Product contract (technical-spec §3.4): YouTube uniformly outputs
         // MP4 in the end; neither the source variant's container nor any other
         // container suffix carried by the title may become the final filename.
         if draft.backend == .youtubeExtractor {
@@ -873,28 +934,47 @@ struct NewDownloadView: View {
         validationMessage = nil
         isInspectingResources = true
 
-        // A paired m4s candidate is already a complete user choice: the
-        // video and audio URLs are transient track URLs, not an MPD playlist.
-        // Re-running the generic DASH inspector against the video track would
-        // reject the confirmation sheet before the pair reaches the App.
-        if sourceKind == .dash, let pairAudioURL {
+        // A paired candidate is already a complete user choice: the video
+        // and audio URLs are transient track URLs (Bilibili m4s) or a variant
+        // media playlist plus its EXT-X-MEDIA audio rendition (X/HLS).
+        // Re-running the generic inspector against them would reject the
+        // confirmation sheet before the pair reaches the App — and for HLS it
+        // would silently drop the audio track (a media playlist inspects to a
+        // single variant without the pair).
+        if (sourceKind == .dash || sourceKind == .hls), let pairAudioURL {
             let option = DownloadMediaOption(
                 url: URL(string: enteredURL) ?? pairAudioURL,
-                sourceKind: .dash,
+                sourceKind: sourceKind,
                 filename: InputValidator.safeFilename(filename),
-                label: String(localized: "DASH 音视频"),
+                label: sourceKind == .hls
+                    ? String(localized: "HLS 音视频")
+                    : String(localized: "DASH 音视频"),
                 pairAudioURL: pairAudioURL,
                 pairCID: pairCID
             )
             resolvedOptions = [option]
             selectedOptionID = option.id
             isInspectingResources = false
-            resourceMessage = String(localized: "已识别音视频分片，将在下载时自动合并为 MP4。")
-            probePairSize(videoURL: option.url, audioURL: pairAudioURL, generation: generation)
+            resourceMessage = String(localized: "已识别音视频，将在下载时自动合并为 MP4。")
+            // HLS 的输入是媒体清单：HEAD 只能拿到清单文本大小（几 KB），不是
+            // 媒体尺寸。这条提交扩展已随候选上报解析后的估算大小
+            // （draft.estimatedSize），直接沿用；DASH m4s 直链仍需探测。
+            if sourceKind == .dash {
+                probePairSize(videoURL: option.url, audioURL: pairAudioURL, generation: generation)
+            } else if let estimated = draftEstimatedSize, estimated > 0 {
+                resolvedOptions = [option.withProbedSize(estimated)]
+            }
             return
         }
 
-        let filenameHint = filenameWasEdited ? filename : nil
+        // Preserve the draft's original hint so re-inspection (Bilibili
+        // playurl resolve, HLS parse) names options consistently with what
+        // the extension's FAB/popup already showed the user. Only a manual
+        // edit outranks it.
+        let filenameHint = filenameWasEdited ? filename : initialDraft?.filenameHint
+        let hintSource: FilenameHintSource =
+            filenameWasEdited
+            ? .userEdited : (initialDraft?.filenameHintSource ?? .urlPath)
         let title = pageTitle
         let context = requestContext
         let declaredMimeType = mimeType
@@ -908,6 +988,9 @@ struct NewDownloadView: View {
                 let options = try await model.resolveDownloadOptions(
                     urlString: enteredURL,
                     filenameHint: filenameHint,
+                    // A name the user typed outranks every automatic source;
+                    // re-inspection must not silently revert it to the title.
+                    filenameHintSource: hintSource,
                     sourceKind: sourceKind,
                     requestContext: context,
                     pageTitle: title,

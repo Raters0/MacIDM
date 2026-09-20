@@ -27,6 +27,7 @@ public enum BridgeError: LocalizedError, Equatable {
 public enum MessageValidator {
     private static let allowedTypes: Set<String> = [
         "ping",
+        "app.activate",
         "download.create",
         "download.enqueue",
         "media.inspect",
@@ -52,6 +53,8 @@ public enum MessageValidator {
             guard request.payload.isEmpty else {
                 throw BridgeError.invalidMessage("ping payload must be empty")
             }
+        case "app.activate":
+            try validateAppActivate(request.payload)
         case "download.create":
             try validateDownloadCreate(request.payload)
         case "download.enqueue":
@@ -69,9 +72,10 @@ public enum MessageValidator {
 
     private static func validateDownloadEnqueue(_ payload: [String: JSONValue]) throws {
         let allowedFields = Set([
-            "url", "filenameHint", "mediaKind", "mime", "totalBytes", "referrer", "requestContext",
-            "tabId", "interactive", "pageTitle", "pairVideoUrl", "pairAudioUrl", "pairCid", "pairNote",
-            "duration", "estimatedSize", "browserDownloadId",
+            "url", "filenameHint", "filenameHintSource", "mediaKind", "mime", "totalBytes",
+            "referrer", "requestContext", "tabId", "interactive", "pageTitle", "pairVideoUrl",
+            "pairAudioUrl", "pairCid", "pairNote", "duration", "estimatedSize",
+            "browserDownloadId", "userInitiated", "poll",
         ])
         guard Set(payload.keys).isSubset(of: allowedFields) else {
             throw BridgeError.invalidMessage("download.enqueue contains unsupported fields")
@@ -92,6 +96,13 @@ public enum MessageValidator {
                 throw BridgeError.invalidMessage("interactive must be a boolean")
             }
         }
+        // Confirmation-poll marker: retries after the first enqueue are
+        // background polls, not fresh user actions.
+        if let poll = normalized.removeValue(forKey: "poll") {
+            guard poll.boolValue != nil else {
+                throw BridgeError.invalidMessage("poll must be a boolean")
+            }
+        }
         if let pageTitle = normalized.removeValue(forKey: "pageTitle") {
             guard let value = pageTitle.stringValue else {
                 throw BridgeError.invalidMessage("pageTitle must be a string")
@@ -103,7 +114,9 @@ public enum MessageValidator {
     }
 
     private static func validateMediaInspect(_ payload: [String: JSONValue]) throws {
-        let allowedFields = Set(["url", "mediaKind", "mime", "referrer", "requestContext", "tabId"])
+        let allowedFields = Set([
+            "url", "mediaKind", "mime", "referrer", "requestContext", "tabId", "userInitiated",
+        ])
         guard Set(payload.keys).isSubset(of: allowedFields) else {
             throw BridgeError.invalidMessage("media.inspect contains unsupported fields")
         }
@@ -118,15 +131,28 @@ public enum MessageValidator {
         try validateDownloadCreate(normalized)
     }
 
+    /// The dedicated "open the App" gesture (the Popup's Open button and the
+    /// overlay's explicit wake). Its payload is empty in practice; the Host
+    /// already treats this type as user-driven, so it may wake an App the
+    /// user previously quit. `userInitiated` is tolerated for forward
+    /// compatibility.
+    private static func validateAppActivate(_ payload: [String: JSONValue]) throws {
+        guard Set(payload.keys).isSubset(of: Set(["userInitiated"])) else {
+            throw BridgeError.invalidMessage("app.activate contains unsupported fields")
+        }
+        try validateOptionalUserInitiated(payload)
+    }
+
     private static func validateDownloadCreate(_ payload: [String: JSONValue]) throws {
         let allowedFields = Set([
-            "browserDownloadId", "url", "filenameHint", "mime", "totalBytes", "referrer",
+            "browserDownloadId", "url", "filenameHint", "filenameHintSource", "mime", "totalBytes", "referrer",
             "requestContext", "tabId", "pageTitle", "pairVideoUrl", "pairAudioUrl", "pairCid", "pairNote",
-            "duration", "estimatedSize",
+            "duration", "estimatedSize", "userInitiated",
         ])
         guard Set(payload.keys).isSubset(of: allowedFields) else {
             throw BridgeError.invalidMessage("download.create contains unsupported fields")
         }
+        try validateOptionalUserInitiated(payload)
         guard let rawURL = payload["url"]?.stringValue,
             let components = URLComponents(string: rawURL),
             let scheme = components.scheme?.lowercased(),
@@ -148,6 +174,17 @@ public enum MessageValidator {
             try validateFilename(filename)
         } else if payload["filenameHint"] != nil {
             throw BridgeError.invalidMessage("filenameHint must be a string")
+        }
+        // Naming trust model (technical spec §8.1): the hint's provenance
+        // decides whether it may outrank the page title. Unknown values are
+        // rejected; a missing field is treated as "urlPath" by the App.
+        if let hintSource = payload["filenameHintSource"] {
+            guard let value = hintSource.stringValue,
+                value == "browserResolved" || value == "titleDerived" || value == "urlPath"
+            else {
+                throw BridgeError.invalidMessage(
+                    "filenameHintSource must be browserResolved, titleDerived, or urlPath")
+            }
         }
         if let pageTitle = payload["pageTitle"] {
             guard let value = pageTitle.stringValue else {
@@ -298,6 +335,15 @@ public enum MessageValidator {
             value.rangeOfCharacter(from: controls) == nil
         else {
             throw BridgeError.invalidMessage("filenameHint contains a path or control character")
+        }
+    }
+
+    /// `userInitiated` distinguishes an explicit user gesture (which may
+    /// wake a deliberately quit App) from background traffic. Optional so
+    /// older extensions keep validating; when present it must be a boolean.
+    private static func validateOptionalUserInitiated(_ payload: [String: JSONValue]) throws {
+        if let userInitiated = payload["userInitiated"], userInitiated.boolValue == nil {
+            throw BridgeError.invalidMessage("userInitiated must be a boolean")
         }
     }
 

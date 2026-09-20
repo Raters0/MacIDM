@@ -9,7 +9,7 @@ const CACHE_TTL_MS = 10 * 60 * 1_000;
 const PROBE_TIMEOUT_MS = 8_000;
 const MAX_CACHE_ENTRIES = 300;
 
-const probeCache = new Map(); // url -> { size, mime, expiresAt }
+const probeCache = new Map(); // url -> { size, mime, cdFilename, expiresAt }
 const inFlight = new Map(); // url -> Promise<{size, mime} | null>
 
 /**
@@ -39,7 +39,7 @@ export function cachedProbe(url) {
     probeCache.delete(url);
     return null;
   }
-  return { size: entry.size, mime: entry.mime };
+  return { size: entry.size, mime: entry.mime, cdFilename: entry.cdFilename ?? null };
 }
 
 /**
@@ -107,9 +107,10 @@ async function runProbe(url, { referer, signal, timeoutMs } = {}) {
   if (head) {
     const size = parseContentLength(head.headers.get("content-length"));
     const mime = normalizeMime(head.headers.get("content-type"));
-    if (size != null || mime) {
+    const cdFilename = parseContentDispositionFilename(head.headers.get("content-disposition"));
+    if (size != null || mime || cdFilename) {
       await discardBody(head);
-      if (size != null) return { size, mime };
+      if (size != null || cdFilename) return { size, mime, cdFilename };
     } else {
       await discardBody(head);
     }
@@ -128,6 +129,7 @@ async function runProbe(url, { referer, signal, timeoutMs } = {}) {
   });
   if (!ranged) return null;
   const mime = normalizeMime(ranged.headers.get("content-type"));
+  const cdFilename = parseContentDispositionFilename(ranged.headers.get("content-disposition"));
   let size = null;
   if (ranged.status === 206) {
     const match = /\/(\d+)\s*$/.exec(ranged.headers.get("content-range") ?? "");
@@ -137,8 +139,8 @@ async function runProbe(url, { referer, signal, timeoutMs } = {}) {
     size = parseContentLength(ranged.headers.get("content-length"));
   }
   await discardBody(ranged);
-  if (size == null && !mime) return null;
-  return { size: Number.isSafeInteger(size) ? size : null, mime };
+  if (size == null && !mime && !cdFilename) return null;
+  return { size: Number.isSafeInteger(size) ? size : null, mime, cdFilename };
 }
 
 async function timedFetch(url, { signal, timeoutMs = PROBE_TIMEOUT_MS, ...init } = {}) {
@@ -199,6 +201,38 @@ function normalizeMime(value) {
   return trimmed.length > 0 && trimmed.length <= 128 ? trimmed : null;
 }
 
+/// Extract the server-authoritative filename from a Content-Disposition
+/// header (RFC 6266). Prefers the RFC 5987 `filename*=UTF-8''…` form, then the
+/// plain `filename="…"` / `filename=…` form. Returns null when absent.
+function parseContentDispositionFilename(value) {
+  if (typeof value !== "string" || !value) return null;
+  const extended = /filename\*\s*=\s*([^;]+)/iu.exec(value);
+  if (extended) {
+    const raw = extended[1].trim();
+    // form: UTF-8''percent-encoded
+    const match = /^[^']*'[^']*'(.+)$/u.exec(raw);
+    if (match) {
+      try {
+        const decoded = decodeURIComponent(match[1].trim());
+        if (decoded) return sanitizeFilename(decoded);
+      } catch {
+        // fall through to the plain form
+      }
+    }
+  }
+  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/iu.exec(value);
+  if (plain) {
+    const raw = (plain[2] ?? plain[1] ?? "").trim();
+    if (raw) return sanitizeFilename(raw);
+  }
+  return null;
+}
+
+function sanitizeFilename(name) {
+  const cleaned = String(name).replace(/[\r\n/\\]/gu, " ").trim().slice(0, 255);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 function storeProbe(url, result) {
   if (probeCache.size >= MAX_CACHE_ENTRIES) {
     const oldest = probeCache.keys().next().value;
@@ -207,6 +241,7 @@ function storeProbe(url, result) {
   probeCache.set(url, {
     size: result?.size ?? null,
     mime: result?.mime ?? null,
+    cdFilename: result?.cdFilename ?? null,
     expiresAt: Date.now() + CACHE_TTL_MS,
   });
 }

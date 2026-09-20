@@ -83,7 +83,7 @@ struct TableHeaderRuleOverlay: NSViewRepresentable {
 
             // Step 2 — draw the full-width hairline at the same position.
             // NSColor.labelColor maps to SwiftUI's Color.primary.
-            NSColor.labelColor.withAlphaComponent(0.08).setFill()
+            NSColor.labelColor.withAlphaComponent(0.045).setFill()
             NSRect(
                 x: 0, y: snappedY,
                 width: bounds.width, height: onePixel

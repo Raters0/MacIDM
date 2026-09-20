@@ -60,6 +60,16 @@ struct MainWindowLayoutConfigurator: NSViewRepresentable {
             window.contentMinSize = MainWindowLayoutConfigurator.minimumSize
             window.setFrameAutosaveName(AppDelegate.mainWindowFrameName)
 
+            // Match the calmer settings-window chrome: an empty native
+            // unified toolbar gives the titlebar controls enough vertical
+            // room while the actual actions remain flat accessory views.
+            if window.toolbar == nil {
+                let titlebarToolbar = NSToolbar(identifier: "MacIDMMainTitlebar")
+                titlebarToolbar.displayMode = .iconOnly
+                titlebarToolbar.showsBaselineSeparator = true
+                window.toolbar = titlebarToolbar
+            }
+            window.toolbarStyle = .unified
             window.titlebarSeparatorStyle = .none
             focusResetter.attach(to: window)
             titleVisibilityKeeper.attach(to: window)

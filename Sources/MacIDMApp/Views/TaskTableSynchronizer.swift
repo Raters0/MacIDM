@@ -105,9 +105,19 @@ final class TaskLiveModel: ObservableObject, Identifiable {
     }
 
     func apply(_ task: AppTask) {
+        let incoming = task.fractionCompleted
+        // 进度条单调不回退：HLS 估算总量会随分段大小波动（甚至短暂 nil），
+        // 直接采用新比例会让进度条倒退/归零（曾出现 100%→0% 跳变）。
+        // 判据：已完成→1.0；比例增长、或已下载字节倒退（任务重试/重置）
+        // →跟随新值；比例下降但字节没退（仅 total 波动）→保持历史进度。
+        // 注意：比较用的是旧的 self.receivedBytes，故须在下方赋值之前。
+        if task.status == .completed {
+            fractionCompleted = 1
+        } else if incoming >= fractionCompleted || task.receivedBytes < receivedBytes {
+            fractionCompleted = incoming
+        }
         status = task.status
         fileMissing = task.fileMissing
-        fractionCompleted = task.fractionCompleted
         receivedBytes = task.receivedBytes
         totalBytes = task.totalBytes
         bytesPerSecond = task.bytesPerSecond

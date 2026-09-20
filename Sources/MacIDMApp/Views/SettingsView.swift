@@ -20,9 +20,14 @@ struct SettingsView: View {
     /// Language picked in the menu but not yet applied; the restart
     /// confirmation gate sits between the Picker and `languagePreference`.
     @State private var pendingLanguage: AppLanguage?
+    /// Error message from the last launch-at-login toggle attempt; nil on
+    /// success. Surfaced inline under the toggle so the user knows why it
+    /// did not stick (e.g. app not in /Applications during development).
+    @State private var launchAtLoginError: String?
     /// Site-session list starts collapsed to the most recent domains;
     /// the in-card toggle expands it to the full list.
     @State private var sessionsExpanded = false
+    @State private var selectedPage: SettingsPage = .general
 
     /// Control-column tiers. A single 300pt column for every control left
     /// large transparent gaps next to toggles and short menus while
@@ -30,7 +35,7 @@ struct SettingsView: View {
     private enum SettingsMetrics {
         static let compactControlColumn: CGFloat = 64
         static let mediumControlColumn: CGFloat = 160
-        static let wideControlColumn: CGFloat = 300
+        static let wideControlColumn: CGFloat = 260
         /// Saved-site rows pin the timestamp and the ellipsis menu to fixed
         /// trailing slots; only the domain column flexes, so a row's expiry
         /// note (rendered under the domain) can never shift the date or the
@@ -47,7 +52,21 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        settingsForm
+        HStack(spacing: 0) {
+            List(SettingsPage.allCases, selection: $selectedPage) { page in
+                Label(page.title, systemImage: page.symbol)
+                    .padding(.vertical, 5)
+                    .tag(page)
+            }
+            .listStyle(.sidebar)
+            .frame(width: 180)
+            .accessibilityLabel("设置分类")
+            Divider()
+            settingsForm
+                .id(selectedPage)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .appWindowSurface()
     }
 
     // MARK: - Form scaffolding
@@ -58,19 +77,27 @@ struct SettingsView: View {
     /// Sections are caption titles + rows separated by hairlines.
     private var settingsForm: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 34) {
-                downloadSection
-                categoryPathsSection
-                notificationSection
-                appearanceSection
-                proxySection
-                browserSection
-                ytdlpSection
-                sessionControlsSection
-                savedSitesSection
-                generalSection
-                diagnosticsSection
-                aboutSection
+            VStack(alignment: .leading, spacing: 24) {
+                switch selectedPage {
+                case .general:
+                    generalSection
+                    notificationSection
+                case .downloads:
+                    downloadSection
+                    categoryPathsSection
+                case .network:
+                    proxySection
+                case .browser:
+                    browserSection
+                    sessionControlsSection
+                    savedSitesSection
+                case .appearance:
+                    appearanceSection
+                case .advanced:
+                    ytdlpSection
+                    diagnosticsSection
+                    aboutSection
+                }
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,10 +153,17 @@ struct SettingsView: View {
 
     private func settingsSection<Rows: View>(
         _ title: LocalizedStringKey,
-        trailingValue: Text?,
+        titleSuffix: Text?,
+        trailingAction: AnyView?,
         @ViewBuilder rows: () -> Rows
     ) -> some View {
-        settingsSection(title, trailingValue: trailingValue, rows: rows, footer: { EmptyView() })
+        settingsSection(
+            title,
+            titleSuffix: titleSuffix,
+            trailingAction: trailingAction,
+            rows: rows,
+            footer: { EmptyView() }
+        )
     }
 
     /// Section-level explanatory copy lives OUTSIDE the card as a caption
@@ -138,25 +172,29 @@ struct SettingsView: View {
     /// last row's 12pt bottom padding plus its own 8pt top padding and
     /// read as a stray 20pt gap.
     ///
-    /// `trailingValue` renders a secondary value flush right of the title
-    /// (e.g. the saved-sites count) instead of squeezing it into the title
-    /// with parentheses.
+    /// `titleSuffix` keeps compact metadata attached to the section title,
+    /// while `trailingAction` reserves the far edge for a section-level
+    /// action without turning it into another settings row.
     private func settingsSection<Rows: View, Footer: View>(
         _ title: LocalizedStringKey,
-        trailingValue: Text? = nil,
+        titleSuffix: Text? = nil,
+        trailingAction: AnyView? = nil,
         @ViewBuilder rows: () -> Rows,
         @ViewBuilder footer: () -> Footer
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(title)
-                    .font(.callout.weight(.semibold))
+                    .font(.headline)
                     .foregroundStyle(Color.primary)
-                Spacer(minLength: 8)
-                if let trailingValue {
-                    trailingValue
-                        .font(.callout)
+                if let titleSuffix {
+                    titleSuffix
+                        .font(.headline)
                         .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if let trailingAction {
+                    trailingAction
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
@@ -230,7 +268,55 @@ struct SettingsView: View {
         ) {
             Toggle("", isOn: isOn)
                 .labelsHidden()
+                .accessibilityLabel(Text(title))
                 .pointerCursorOnHover()
+        }
+    }
+
+    /// Launch-at-login toggle. Unlike a plain `toggleRow`, this one calls
+    /// `SMAppService.register/unregister` and surfaces errors inline (e.g.
+    /// "app not in /Applications" during development, or the user denied
+    /// the system prompt so the state is `.requiresApproval`).
+    private var launchAtLoginRow: some View {
+        let manager = model.launchAtLoginManager
+        let isOn = Binding<Bool>(
+            get: {
+                manager.state == .enabled || manager.state == .requiresApproval
+            },
+            set: { newValue in
+                launchAtLoginError = manager.setEnabled(newValue)
+            }
+        )
+        return settingRow(
+            "开机自启动",
+            description: launchAtLoginDescription(for: manager.state),
+            controlColumnWidth: SettingsMetrics.compactControlColumn
+        ) {
+            VStack(alignment: .trailing, spacing: 4) {
+                Toggle("", isOn: isOn)
+                    .labelsHidden()
+                    .accessibilityLabel("开机自启动")
+                    .pointerCursorOnHover()
+                if let error = launchAtLoginError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+        }
+    }
+
+    private func launchAtLoginDescription(for state: LaunchAtLoginManager.State) -> LocalizedStringKey {
+        switch state {
+        case .enabled:
+            return "登录时自动启动 MacIDM 并常驻菜单栏。"
+        case .requiresApproval:
+            return "已注册但被系统阻止；请在“系统设置 → 通用 → 登录项”中重新启用。"
+        case .disabled:
+            return "登录时自动启动 MacIDM 并常驻菜单栏。"
+        case .unavailable(let reason):
+            return LocalizedStringKey(reason)
         }
     }
 
@@ -350,23 +436,43 @@ struct SettingsView: View {
     }
 
     private var appearanceSection: some View {
-        settingsSection("外观") {
-            settingRow("主题") {
-                Picker("", selection: $settings.colorScheme) {
-                    ForEach(AppColorScheme.allCases) { scheme in
-                        Text(scheme.title).tag(scheme)
+        settingsSection("主题") {
+            HStack(spacing: 12) {
+                ForEach(AppColorScheme.allCases) { scheme in
+                    Button {
+                        settings.colorScheme = scheme
+                    } label: {
+                        VStack(spacing: 12) {
+                            Image(systemName: themeSymbol(scheme))
+                                .font(.system(size: 26, weight: .light))
+                                .frame(height: 44)
+                            Text(scheme.title)
+                                .font(.body.weight(.medium))
+                            Image(systemName: settings.colorScheme == scheme ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(settings.colorScheme == scheme ? AppTheme.accent : Color.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                        .background(
+                            settings.colorScheme == scheme ? AppTheme.accent.opacity(0.08) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 10)
+                        )
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(scheme.title)
+                    .accessibilityAddTraits(settings.colorScheme == scheme ? .isSelected : [])
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 280)
-                .pointerCursorOnHover()
-                // AppKit's segmented picker keeps an invisible 32-point
-                // trailing layout inset. Compensate it so the visible bezel,
-                // not merely the transparent layout frame, aligns with the
-                // other controls on the right edge.
-                .offset(x: 32)
             }
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func themeSymbol(_ scheme: AppColorScheme) -> String {
+        switch scheme {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max"
+        case .dark: "moon"
         }
     }
 
@@ -378,10 +484,10 @@ struct SettingsView: View {
             ) {
                 Label(
                     model.browserBridgeStatus.title,
-                    systemImage: model.browserBridgeStatus.isAvailable
-                        ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                    systemImage: model.browserBridgeStatus == .connected
+                        ? "checkmark.circle.fill" : "network"
                 )
-                .foregroundStyle(model.browserBridgeStatus.isAvailable ? AppTheme.success : AppTheme.warning)
+                .foregroundStyle(model.browserBridgeStatus == .connected ? AppTheme.success : Color.secondary)
             }
             if let logURL = model.takeoverLogURL {
                 rowDivider
@@ -497,6 +603,8 @@ struct SettingsView: View {
             toggleRow("删除记录时保留到历史（可重新下载）", isOn: $settings.archiveOnDelete)
             rowDivider
             toggleRow("App 激活时检测剪贴板中的下载链接", isOn: $settings.clipboardAutoDetect)
+            rowDivider
+            launchAtLoginRow
             rowDivider
             toggleRow(
                 "关闭主窗口后仅保留菜单栏图标",
@@ -639,15 +747,14 @@ struct SettingsView: View {
         }
     }
 
-    /// Group 2 — the saved objects themselves. The count rides the section
-    /// title as a secondary value; per-object actions live behind a compact
-    /// ellipsis menu; expansion is a borderless disclosure row; the
-    /// destructive bulk action sits at the very bottom as its own row.
+    /// Group 2 — the saved objects themselves. The count is secondary text
+    /// attached to the title; the destructive bulk action is a compact
+    /// title-row control; per-object actions remain in ellipsis menus.
     private var savedSitesSection: some View {
         settingsSection(
             "已保存的站点",
-            trailingValue: model.sessionStore.sessions.isEmpty
-                ? nil : Text("\(model.sessionStore.sessions.count)").monospacedDigit()
+            titleSuffix: Text("（\(model.sessionStore.sessions.count)）").monospacedDigit(),
+            trailingAction: AnyView(clearSessionsButton)
         ) {
             if model.sessionStore.sessions.isEmpty {
                 Text("尚未保存任何站点会话")
@@ -664,8 +771,6 @@ struct SettingsView: View {
                     rowDivider
                     sessionDisclosureRow
                 }
-                rowDivider
-                clearSessionsRow
             }
         }
     }
@@ -687,30 +792,31 @@ struct SettingsView: View {
                     .font(.caption2.weight(.semibold))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 6)
+            .padding(.vertical, 12)
             .contentShape(Rectangle())
         }
         .buttonStyle(DisclosureRowButtonStyle())
         .accessibilityValue(sessionsExpanded ? Text("已展开") : Text("已折叠"))
     }
 
-    /// Destructive bulk action as a standard settings row at the bottom of
-    /// the list, separated from paste/per-object flows. Warning-toned text
-    /// instead of a filled red button.
-    private var clearSessionsRow: some View {
-        settingRow(
-            "清除所有已保存会话",
-            description: "删除所有站点的已保存 Cookie。",
-            controlColumnWidth: SettingsMetrics.mediumControlColumn
-        ) {
-            Button {
-                model.sessionStore.removeAll()
-            } label: {
-                Text("清除全部")
-                    .foregroundStyle(AppTheme.warning)
-            }
-            .fixedSize(horizontal: true, vertical: false)
+    private var clearSessionsButton: some View {
+        Button {
+            model.sessionStore.removeAll()
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(
+                    model.sessionStore.sessions.isEmpty
+                        ? Color.secondary.opacity(0.35) : AppTheme.danger
+                )
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(model.sessionStore.sessions.isEmpty)
+        .pointerCursorOnHover()
+        .help("删除所有站点的已保存 Cookies")
+        .accessibilityLabel("删除所有站点的已保存 Cookies")
     }
 
     /// One saved site: the domain with its expiry note rendered directly

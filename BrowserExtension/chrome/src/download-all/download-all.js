@@ -22,7 +22,7 @@ const selected = new Set();
 initialize();
 window.addEventListener("beforeunload", () => keepAlivePort.disconnect());
 // The selection page is the scan's owner: closing or navigating away means
-// the signed-URL list must be deleted immediately (spec §4.2), including
+// the signed-URL list must be deleted immediately (chrome-extension-spec §5.5), including
 // when the SW was evicted earlier — this message wakes it for the cleanup.
 window.addEventListener("pagehide", () => {
   if (!scanID) return;

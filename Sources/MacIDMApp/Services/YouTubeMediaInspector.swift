@@ -244,8 +244,6 @@ struct YouTubeMediaInspector: MediaInspecting {
         let cookieFile = try? writeCookieFile(requestContext?.cookie, domain: hostOf(lookupURL))
         if let cookieFile {
             arguments += ["--cookies", cookieFile.path]
-        } else {
-            arguments += ["--cookies-from-browser", "chrome"]
         }
         defer {
             if let cookieFile {
@@ -279,8 +277,8 @@ struct YouTubeMediaInspector: MediaInspecting {
         /// The extension supplied a cookie context and the temp cookie file
         /// was created.
         case explicitFile
-        /// No explicit cookie; falls back to reading the local Chrome cookie store.
-        case browserFallback
+        /// No cookie was supplied; yt-dlp runs anonymously (no Chrome DB read).
+        case anonymous
     }
 
     private func runListFormats(
@@ -306,10 +304,8 @@ struct YouTubeMediaInspector: MediaInspecting {
         let cookieFile = try writeCookieFile(requestContext?.cookie, domain: hostOf(url))
         if let cookieFile {
             arguments += ["--cookies", cookieFile.path]
-        } else {
-            arguments += ["--cookies-from-browser", "chrome"]
         }
-        let cookieMode: CookieMode = cookieFile != nil ? .explicitFile : .browserFallback
+        let cookieMode: CookieMode = cookieFile != nil ? .explicitFile : .anonymous
         defer {
             if let cookieFile {
                 do {

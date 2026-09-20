@@ -271,6 +271,12 @@ public struct DownloadProgress: Sendable {
     }
 }
 
+/// Identifies a completed container without inferring format from a temporary filename.
+public enum DownloadArtifactFormat: Sendable {
+    case unprocessed
+    case mp4
+}
+
 public struct DownloadResult: Sendable {
     public let destination: URL
     public let byteCount: Int64
@@ -278,6 +284,7 @@ public struct DownloadResult: Sendable {
     public let usedParallelRequests: Int
     public let resumed: Bool
     public let verification: String
+    public let artifactFormat: DownloadArtifactFormat
 
     public init(
         destination: URL,
@@ -285,7 +292,8 @@ public struct DownloadResult: Sendable {
         sha256: String? = nil,
         usedParallelRequests: Int,
         resumed: Bool,
-        verification: String
+        verification: String,
+        artifactFormat: DownloadArtifactFormat = .unprocessed
     ) {
         self.destination = destination
         self.byteCount = byteCount
@@ -293,6 +301,7 @@ public struct DownloadResult: Sendable {
         self.usedParallelRequests = usedParallelRequests
         self.resumed = resumed
         self.verification = verification
+        self.artifactFormat = artifactFormat
     }
 }
 

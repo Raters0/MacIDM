@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-// Self-contained tests for the MAIN world player bridge (AI handover doc
-// §4.3): dedup must be guaranteed by the bridge itself — the fingerprint
+// Self-contained tests for the MAIN world player bridge (chrome-extension-spec
+// §5.8): dedup must be guaranteed by the bridge itself — the fingerprint
 // must not contain dynamic timestamps, a stable page stays silent, and any
 // real change to videoId, live status, or the format set publishes
 // immediately. Earlier content-script tests only re-dispatched the same

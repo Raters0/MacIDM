@@ -272,6 +272,57 @@ final class MediaInspectorTests: XCTestCase {
             }
         }
     }
+
+    /// 浏览器桥接是严格串行的请求/响应通道，一次卡住的播放列表抓取会把
+    /// ping、app.activate 与 download.enqueue 全部堵在后面；扩展 15s 就放弃，
+    /// 所以 App 必须先给出可重试的网络失败。
+    func testCompositeInspectionAbandonsAStalledFetchWithinItsBudget() async throws {
+        let url = URL(string: "https://media.example.test/master.m3u8")!
+        let inspector = CompositeMediaInspector(
+            client: StalledClient(),
+            inspectionBudget: 0.2
+        )
+
+        let started = Date()
+        do {
+            _ = try await inspector.inspect(url: url, requestContext: nil, mediaKind: .hls)
+            XCTFail("a stalled playlist fetch must not hang the bridge")
+        } catch let error as MediaInspectionError {
+            if case .networkOrProxyFailure = error {
+                // expected
+            } else {
+                XCTFail("unexpected media inspection error: \(error)")
+            }
+        }
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started),
+            5,
+            "预算到期后必须立即返回，不得等待底层 URLSession 超时"
+        )
+    }
+
+    /// 预算不得掩盖快速失败：解析错误要原样上报，否则用户看到的是“网络超时”
+    /// 而不是真实原因。
+    func testCompositeInspectionReportsParseFailureBeforeTheBudgetExpires() async throws {
+        let url = URL(string: "https://media.example.test/master.m3u8")!
+        let inspector = CompositeMediaInspector(
+            client: InspectorClient(
+                response: HLSFetchResponse(data: Data("not a playlist".utf8), finalURL: url)
+            ),
+            inspectionBudget: 5
+        )
+
+        do {
+            _ = try await inspector.inspect(url: url, requestContext: nil, mediaKind: .hls)
+            XCTFail("a non-playlist body must be rejected")
+        } catch let error as MediaInspectionError {
+            if case .invalidPlaylist = error {
+                // expected
+            } else {
+                XCTFail("unexpected media inspection error: \(error)")
+            }
+        }
+    }
 }
 
 private actor InspectorClient: HLSResourceClient {
@@ -299,5 +350,13 @@ private actor ScriptedClient: HLSResourceClient {
             throw URLError(.fileDoesNotExist)
         }
         return response
+    }
+}
+
+/// 模拟一个卡死的 CDN：远超任何检查预算才失败，用于验证预算能提前放手。
+private actor StalledClient: HLSResourceClient {
+    func fetch(_ request: HLSFetchRequest) async throws -> HLSFetchResponse {
+        try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+        throw URLError(.timedOut)
     }
 }

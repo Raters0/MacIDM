@@ -48,6 +48,9 @@ final class AppModel: ObservableObject {
     let bilibiliAdapter: BilibiliPlayurlAdapter
     let browserBridge = AppBrowserBridge()
     let ytdlpManager = YTDlpManager()
+    /// Manages the "launch at login" registration via SMAppService.
+    /// Exposed so SettingsView can bind a toggle and surface errors.
+    let launchAtLoginManager = LaunchAtLoginManager()
     /// Per-site persisted login sessions (cookie headers). Successful
     /// browser-extension downloads archive their session here; manually
     /// added URLs reuse it, and auth failures flag it as expired.
@@ -91,6 +94,10 @@ final class AppModel: ObservableObject {
     var transientPairCIDs: [UUID: String] = [:]
     var transientRequestContexts: [UUID: TransientRequestContext] = [:]
     var pendingInteractiveTakeovers: [String: PendingInteractiveTakeover] = [:]
+    /// Per-draft outcome chosen when the user dismisses a browser-takeover
+    /// confirmation: true = also cancel the paused browser download (the
+    /// default "取消"), false = hand control back so the browser resumes.
+    var interactiveCancelOutcomes: [String: Bool] = [:]
     var pendingDownloadDrafts: [String: DownloadDraft] = [:]
     /// Bumped by every start(id:); stale engine callbacks whose generation
     /// no longer matches must not mutate the replacement execution's state.
@@ -176,6 +183,13 @@ final class AppModel: ObservableObject {
     // allow stored properties in extensions, so they live here.
     var pendingPersistenceKind: PersistenceKind = .progress
     var fileCheckCursor = 0
+    /// Completed task IDs captured when this session's file sweep started. A
+    /// destination that is already missing for one of them is pre-existing
+    /// state rather than an event, so it is rendered in the table without a
+    /// notification or a per-task log line (see `checkCompletedTaskFiles`).
+    var fileCheckBaselineTaskIDs: Set<UUID> = []
+    /// Task IDs whose destination has already been checked once this session.
+    var fileCheckSeenTaskIDs: Set<UUID> = []
     /// Signature of the last proxy configuration pushed into the engine, so
     /// the settings observer only reconfigures (and resets the connection
     /// learner) when proxy fields actually change.
@@ -725,7 +739,10 @@ final class AppModel: ObservableObject {
         let takeover = try takeoverDraftID.map { try validatedInteractiveTakeover($0) }
         let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmedURL) else { throw IDMError.invalidURL }
-        if pairAudioURL != nil, sourceKind != .dash {
+        // 带音轨的提交合法形态：.dash（Bilibili m4s 直链 pair）与 .hls
+        // （EXT-X-MEDIA 音频组，输入是媒体清单，HLS pair 执行器负责下载
+        // + 合并）。其余 sourceKind 与音轨互斥。
+        if pairAudioURL != nil, sourceKind != .dash, sourceKind != .hls {
             throw IDMError.invalidURL
         }
         if let pairAudioURL {
@@ -920,6 +937,7 @@ final class AppModel: ObservableObject {
     func resolveDownloadOptions(
         urlString: String,
         filenameHint: String? = nil,
+        filenameHintSource: FilenameHintSource = .urlPath,
         sourceKind: DownloadSourceKind = .http,
         requestContext: DownloadRequestContext? = nil,
         pageTitle: String? = nil,
@@ -944,7 +962,8 @@ final class AppModel: ObservableObject {
                         filenameHint: filenameHint,
                         pageTitle: option.title,
                         resourceInfo: nil,
-                        label: displayLabel
+                        label: displayLabel,
+                        hintSource: filenameHintSource
                     ),
                     label: displayLabel,
                     encoding: encoding,
@@ -967,7 +986,8 @@ final class AppModel: ObservableObject {
                         filenameHint: filenameHint,
                         pageTitle: title,
                         resourceInfo: nil,
-                        label: title
+                        label: title,
+                        hintSource: filenameHintSource
                     ),
                     label: String(localized: "YouTube 视频"),
                     requestContext: requestContext,
@@ -997,7 +1017,8 @@ final class AppModel: ObservableObject {
                         filenameHint: filenameHint,
                         pageTitle: title,
                         resourceInfo: nil,
-                        label: variant.label
+                        label: variant.label,
+                        hintSource: filenameHintSource
                     ),
                     label: variant.label,
                     encoding: MediaVariantLabel.family(forCodecs: variant.codecs),
@@ -1014,6 +1035,7 @@ final class AppModel: ObservableObject {
                 url: url,
                 sourceKind: inferredKind,
                 filenameHint: filenameHint,
+                filenameHintSource: filenameHintSource,
                 pageTitle: pageTitle,
                 requestContext: requestContext
             )
@@ -1029,7 +1051,8 @@ final class AppModel: ObservableObject {
                         sourceKind: .http,
                         filenameHint: filenameHint,
                         pageTitle: pageTitle,
-                        resourceInfo: nil
+                        resourceInfo: nil,
+                        hintSource: filenameHintSource
                     ),
                     label: String(localized: "直链")
                 )
@@ -1056,7 +1079,8 @@ final class AppModel: ObservableObject {
                         sourceKind: .http,
                         filenameHint: filenameHint,
                         pageTitle: pageTitle,
-                        resourceInfo: info
+                        resourceInfo: info,
+                        hintSource: filenameHintSource
                     ),
                     label: String(localized: "直链"),
                     // A probed Content-Length is the real size; hand it to the
@@ -1072,6 +1096,13 @@ final class AppModel: ObservableObject {
             url: url,
             requestContext: requestContext
         )
+        // A raw <title> usually carries the site brand ("… - Hanime1.me");
+        // strip it against the page hosts before it becomes the filename base.
+        let strippedDiscoveryTitle = DownloadNaming.semanticPageTitle(
+            discovery?.title,
+            hosts: [url.host, discovery?.pageURL.host]
+        )
+        let discoveredTitle = strippedDiscoveryTitle ?? pageTitle
         var options: [DownloadMediaOption] = []
         for candidate in discovery?.candidates ?? [] {
             if candidate.sourceKind == .hls || candidate.sourceKind == .dash {
@@ -1079,7 +1110,7 @@ final class AppModel: ObservableObject {
                     url: candidate.url,
                     sourceKind: candidate.sourceKind,
                     filenameHint: nil,
-                    pageTitle: discovery?.title ?? pageTitle,
+                    pageTitle: discoveredTitle,
                     requestContext: requestContext
                 )
                 options.append(contentsOf: inspected)
@@ -1095,7 +1126,7 @@ final class AppModel: ObservableObject {
                             // page-discovered resource. The URL filename is
                             // only a fallback when the page has no title.
                             filenameHint: nil,
-                            pageTitle: discovery?.title ?? pageTitle,
+                            pageTitle: discoveredTitle,
                             resourceInfo: nil
                         ),
                         label: candidate.label
@@ -1110,6 +1141,7 @@ final class AppModel: ObservableObject {
             let fallback = await ytdlpGenericFallback(
                 url: url,
                 filenameHint: filenameHint,
+                filenameHintSource: filenameHintSource,
                 pageTitle: pageTitle,
                 requestContext: requestContext
             )
@@ -1127,6 +1159,7 @@ final class AppModel: ObservableObject {
     private func ytdlpGenericFallback(
         url: URL,
         filenameHint: String?,
+        filenameHintSource: FilenameHintSource = .urlPath,
         pageTitle: String?,
         requestContext: DownloadRequestContext?
     ) async -> [DownloadMediaOption]? {
@@ -1151,7 +1184,8 @@ final class AppModel: ObservableObject {
                     sourceKind: .http,
                     filenameHint: filenameHint,
                     pageTitle: title,
-                    resourceInfo: nil
+                    resourceInfo: nil,
+                    hintSource: filenameHintSource
                 ),
                 label: String(localized: "yt-dlp 提取"),
                 requestContext: requestContext,
@@ -1344,6 +1378,7 @@ final class AppModel: ObservableObject {
         url: URL,
         sourceKind: DownloadSourceKind,
         filenameHint: String?,
+        filenameHintSource: FilenameHintSource = .urlPath,
         pageTitle: String?,
         requestContext: DownloadRequestContext?
     ) async throws -> [DownloadMediaOption] {
@@ -1362,7 +1397,8 @@ final class AppModel: ObservableObject {
                     filenameHint: filenameHint,
                     pageTitle: pageTitle,
                     resourceInfo: nil,
-                    label: variant.label
+                    label: variant.label,
+                    hintSource: filenameHintSource
                 ),
                 label: variant.label,
                 estimatedSize: variant.estimatedSize,
@@ -1464,13 +1500,28 @@ final class AppModel: ObservableObject {
         return url.path == "/watch" || url.path.hasPrefix("/shorts/")
     }
 
+    /// .m3u8 媒体清单/master playlist 判据（URL 路径扩展名，不含查询串）。
+    func isHLSPlaylistURL(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "m3u8"
+    }
+
     func effectiveSourceKind(
         for url: URL,
         requested: DownloadSourceKind,
         pairAudioURL: URL?,
         allowPageAdapters: Bool = false
     ) -> DownloadSourceKind {
-        if pairAudioURL != nil { return .dash }
+        // 带音轨的提交有两种：Bilibili m4s（DASH pair，直链分片）与
+        // HLS 独立音轨变体（EXT-X-MEDIA 音频组，输入是媒体清单）。误判
+        // .dash 会把 m3u8 清单当直链分片下载，FFmpeg 报
+        // 「Not detecting m3u8/hls…」。
+        if let pairAudioURL {
+            // URL 判据优先于扩展的 mediaKind：任一侧是 .m3u8 媒体清单就是
+            // HLS pair——候选 format 在观察链上可能被兜底成 video，不能依赖
+            // 它做类型判断。
+            if isHLSPlaylistURL(url) || isHLSPlaylistURL(pairAudioURL) { return .hls }
+            return requested == .hls ? .hls : .dash
+        }
         guard requested == .http else { return requested }
         if allowPageAdapters, BilibiliPlayurlAdapter.supports(url) { return .dash }
         return sourceKindForURL(url)

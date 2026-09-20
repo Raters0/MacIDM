@@ -88,6 +88,26 @@ public actor DownloadEngine {
         progress: @escaping @Sendable (DownloadProgress) -> Void
     ) async throws -> DownloadResult {
         if request.sourceKind == .hls {
+            // Separate-audio master inspected by the extension: the variant
+            // media playlist carries a pairAudioURL (EXT-X-MEDIA rendition),
+            // so both tracks are fetched and muxed into one MP4.
+            if let pairAudioURL = request.pairAudioURL {
+                return try await hlsExecutor.downloadPair(
+                    HLSPairDownloadRequest(
+                        videoURL: request.url,
+                        audioURL: pairAudioURL,
+                        destination: request.destination,
+                        outputKind: .mp4,
+                        maximumParallelRequests: request.maximumParallelRequests,
+                        taskID: request.taskID,
+                        requestContext: request.requestContext,
+                        rateLimiter: request.rateLimiter,
+                        expectedSHA256: request.expectedSHA256
+                    ),
+                    control: control,
+                    progress: progress
+                )
+            }
             return try await hlsExecutor.download(
                 request,
                 control: control,

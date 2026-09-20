@@ -63,7 +63,25 @@ public enum InputValidator {
         if result.isEmpty || result == "." || result == ".." {
             result = "download"
         }
+        // 255-byte filesystem limit: truncate the stem, never the extension.
+        // A long CJK title would otherwise silently lose its ".mp4" tail
+        // because the old loop removed characters from the very end.
         while result.utf8.count > 255 {
+            if let dot = result.lastIndex(of: "."),
+                dot > result.startIndex,
+                dot < result.index(before: result.endIndex)
+            {
+                let ext = String(result[dot...])
+                let stemBudget = 255 - ext.utf8.count
+                if stemBudget >= 1 {
+                    var stem = String(result[..<dot])
+                    while stem.utf8.count > stemBudget {
+                        stem.removeLast()
+                    }
+                    result = stem + ext
+                    continue
+                }
+            }
             result.removeLast()
         }
         return result

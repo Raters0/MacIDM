@@ -56,6 +56,91 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func testSuggestedFilenameTrustOrderKeepsURLTailHintBelowPageTitle() throws {
+        // hanime1 回归（技术规范 §8.1 命名可信度模型）：嗅探候选的 URL 尾段
+        // hint（如 "407788-1080p.mp4"）不得压过用户在嗅探面板认出的标题。
+        let streamURL = URL(string: "https://vdownload.example.com/407788-1080p.mp4?secure=abc")!
+        XCTAssertEqual(
+            DownloadNaming.suggestedFilename(
+                url: streamURL,
+                sourceKind: .http,
+                filenameHint: "407788-1080p.mp4",
+                pageTitle: "Chika Fujiwara - Kaguya-sama",
+                resourceInfo: nil
+            ),
+            "Chika Fujiwara - Kaguya-sama.mp4"
+        )
+        // 没有标题时，URL 尾段 hint 仍然可用。
+        XCTAssertEqual(
+            DownloadNaming.suggestedFilename(
+                url: streamURL,
+                sourceKind: .http,
+                filenameHint: "407788-1080p.mp4",
+                pageTitle: nil,
+                resourceInfo: nil
+            ),
+            "407788-1080p.mp4"
+        )
+        // 权威来源（浏览器解析名）的 hint 仍然压过标签页标题。
+        XCTAssertEqual(
+            DownloadNaming.suggestedFilename(
+                url: URL(string: "https://example.com/file.zip")!,
+                sourceKind: .http,
+                filenameHint: "release-1.2.3.zip",
+                pageTitle: "Download Page - Example",
+                resourceInfo: nil,
+                hintSource: .browserResolved
+            ),
+            "release-1.2.3.zip"
+        )
+    }
+
+    func testGenericFilenameListCoversPlaylistPlaceholderNames() throws {
+        // 与扩展 JS 侧 smartMediaName 的泛化清单保持一致（双端锁定测试在
+        // Tests/BrowserExtensionTests/Unit/filename-naming-trust.test.mjs）。
+        for generic in [
+            "download", "media.mp4", "video", "audio.m4a",
+            "index.m3u8", "master.m3u8", "playlist.m3u8", "manifest.mpd",
+        ] {
+            XCTAssertTrue(DownloadNaming.isGenericFilename(generic), "\(generic) 应判为泛化占位名")
+        }
+        XCTAssertFalse(DownloadNaming.isGenericFilename("407788-1080p.mp4"))
+        XCTAssertFalse(DownloadNaming.isGenericFilename("release-1.2.3.zip"))
+    }
+
+    func testSemanticPageTitleStripsOnlyHostMatchingBrandSuffix() throws {
+        // 品牌尾巴与页面 host 匹配才剥离；真实标题中的分隔符不受影响。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle(
+                "[Dorozz] Chika Fujiwara - Kaguya-sama - H動漫/裏番/線上看 - Hanime1.me",
+                hosts: ["hanime1.me", nil]
+            ),
+            "[Dorozz] Chika Fujiwara - Kaguya-sama - H動漫/裏番/線上看"
+        )
+        // host 首标签也参与匹配（去 www、去 TLD 后的 "Hanime1"）。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 - Hanime1", hosts: [nil, "www.hanime1.me"]),
+            "某视频"
+        )
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("Love is War - Episode 3", hosts: ["example.com"]),
+            "Love is War - Episode 3"
+        )
+        // Bilibili's og:title uses "标题_bilibili"; underscore must be a
+        // recognized separator so the App-side mirror of stripBrandSuffix
+        // stays aligned with the extension (technical spec §8.1).
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频_bilibili", hosts: ["www.bilibili.com"]),
+            "某视频"
+        )
+        // A real underscore inside the title (no host-matching tail) survives.
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("Episode_1", hosts: ["example.com"]),
+            "Episode_1"
+        )
+        XCTAssertNil(DownloadNaming.semanticPageTitle("   ", hosts: ["example.com"]))
+    }
+
     func testFilenameRecoveredFromContentDispositionQueryParameter() throws {
         // 签名 blob URL：路径末尾是 UUID，真名藏在
         // response-content-disposition 查询参数里。
@@ -1129,6 +1214,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(captured.value?.url.absoluteString, "https://example.com/video.mp4?token=temporary")
         XCTAssertEqual(captured.value?.filenameHint, "课程标题.mp4")
         XCTAssertEqual(captured.value?.pageTitle, "课程标题")
+        // 未标注来源的旧版扩展 payload 保守降级为 urlPath。
+        XCTAssertEqual(captured.value?.filenameHintSource, .urlPath)
         XCTAssertTrue(model.tasks.isEmpty)
 
         let duplicateResponse = await model.handleBrowserBridgeRequest(
@@ -1178,6 +1265,69 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(captured.value?.estimatedSize)
         XCTAssertEqual(captured.value?.sizeProbed, false)
         XCTAssertTrue(model.tasks.isEmpty)
+    }
+
+    func testInteractiveDraftRecordsHintSourceAndStripsSiteBrandFromTitle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMInteractiveHintSourceTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        let captured = DraftBox()
+        model.newDownloadPresenter = { captured.value = $0 }
+
+        // hanime1 场景：URL 尾段 hint + 带站点品牌尾巴的标题，referer 提供
+        // 页面 host 供品牌剥离交叉验证。
+        let request = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:interactive-hint-source",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://vdownload.example.com/407788-1080p.mp4?secure=abc"),
+                "filenameHint": .string("407788-1080p.mp4"),
+                "filenameHintSource": .string("urlPath"),
+                "mediaKind": .string("http"),
+                "interactive": .bool(true),
+                "pageTitle": .string("Chika Fujiwara - Kaguya-sama - Hanime1.me"),
+                "requestContext": .object([
+                    "referer": .string("https://hanime1.me/watch?v=407788")
+                ]),
+            ]
+        )
+        let response = await model.handleBrowserBridgeRequest(
+            request,
+            clientID: "chrome:test",
+            secret: Data(repeating: 1, count: 32)
+        )
+
+        XCTAssertEqual(response.type, "media.downloadRequested")
+        XCTAssertEqual(captured.value?.filenameHintSource, .urlPath)
+        XCTAssertEqual(captured.value?.pageTitle, "Chika Fujiwara - Kaguya-sama")
+        XCTAssertTrue(model.tasks.isEmpty)
+
+        // 接管类 payload 的 browserResolved 来源必须原样进入草稿。
+        let takeoverRequest = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:interactive-hint-source-takeover",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://example.com/file.zip"),
+                "filenameHint": .string("release-1.2.3.zip"),
+                "filenameHintSource": .string("browserResolved"),
+                "mediaKind": .string("http"),
+                "interactive": .bool(true),
+                "pageTitle": .string("Download Page"),
+            ]
+        )
+        _ = await model.handleBrowserBridgeRequest(
+            takeoverRequest,
+            clientID: "chrome:test",
+            secret: Data(repeating: 1, count: 32)
+        )
+        XCTAssertEqual(captured.value?.filenameHintSource, .browserResolved)
     }
 
     func testWebPageLinkResolvesDiscoveredMediaWithoutOpeningThePage() async throws {
@@ -1513,7 +1663,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(cancelled.errorMessage)
     }
 
-    /// 产品契约（docs/AI交接.md §4.4）：YouTube 下载的源变体容器（如
+    /// 产品契约（technical-spec §3.4）：YouTube 下载的源变体容器（如
     /// VP9 的 webm）不是最终输出容器；最终文件统一输出 MP4，标题自带的
     /// 容器后缀也被覆盖。普通直链保持自身扩展名不受影响。
     func testYouTubeOutputFilenameIsAlwaysMP4RegardlessOfSourceContainer() throws {
@@ -1604,5 +1754,104 @@ private struct FakeBilibiliClient: HLSResourceClient {
             return HLSFetchResponse(data: Data(), finalURL: request.url, statusCode: 404)
         }
         return HLSFetchResponse(data: data, finalURL: request.url, statusCode: 200)
+    }
+}
+
+// 回归：带音轨提交的 sourceKind 改判。Bilibili m4s（requested .dash 或
+// .http 推断）维持 DASH pair；X 的 HLS 独立音轨变体（requested .hls）必须
+// 保持 .hls 走 HLS pair 执行器——误判 .dash 会把 m3u8 清单当直链分片下载，
+// FFmpeg 报「Not detecting m3u8/hls with non standard extension」。
+@MainActor
+final class EffectiveSourceKindTests: XCTestCase {
+    private func makeModel() -> AppModel {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMSourceKindTests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: makeIsolatedDefaults())
+        )
+    }
+
+    func testHLSPairKeepsHLS() {
+        let model = makeModel()
+        let variant = URL(string: "https://video.twimg.com/amplify_video/1/pl/avc1/720x1280/x.m3u8")!
+        let audio = URL(string: "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/y.m3u8")!
+        XCTAssertEqual(
+            model.effectiveSourceKind(for: variant, requested: .hls, pairAudioURL: audio),
+            .hls
+        )
+    }
+
+    func testNonHLSPairFallsBackToDASH() {
+        let model = makeModel()
+        let video = URL(string: "https://upos-sz-mirror08c.bilivideo.com/123/video.m4s")!
+        let audio = URL(string: "https://upos-sz-mirror08c.bilivideo.com/123/audio.m4s")!
+        XCTAssertEqual(
+            model.effectiveSourceKind(for: video, requested: .dash, pairAudioURL: audio),
+            .dash
+        )
+        XCTAssertEqual(
+            model.effectiveSourceKind(for: video, requested: .http, pairAudioURL: audio),
+            .dash
+        )
+    }
+
+    func testHLSAddDownloadAcceptsPairAudioURL() throws {
+        // addDownload 的第二道闸：.hls + pairAudioURL 必须被接受（此前
+        // 只允许 .dash，确认窗提交会在任务创建前直接抛 invalidURL）。
+        let model = makeModel()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMSourceKindAdd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try model.addDownload(
+            urlString: "https://video.twimg.com/amplify_video/1/pl/avc1/720x1280/x.m3u8",
+            destination: directory.appendingPathComponent("out.mp4"),
+            maximumParallelRequests: 4,
+            expectedSHA256: nil,
+            startImmediately: false,
+            sourceKind: .hls,
+            pairAudioURL: URL(string: "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/y.m3u8")
+        )
+    }
+}
+
+// URL 判据兜底：扩展候选 format 被观察链兜底成 video 时 mediaKind 会是
+// "video"→解析回落 http→改判 DASH→m3u8 文本当分片下载失败。任一侧 URL
+// 是 .m3u8 媒体清单必须走 HLS pair，不依赖 mediaKind。
+@MainActor
+final class HLSPlaylistURLEnforcementTests: XCTestCase {
+    private func makeModel() -> AppModel {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMHLSURLTests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: makeIsolatedDefaults())
+        )
+    }
+
+    func testM3U8PairURLForcesHLSRegardlessOfMediaKind() {
+        let model = makeModel()
+        let variant = URL(string: "https://video.twimg.com/amplify_video/1/pl/avc1/720x1280/x.m3u8")!
+        let audio = URL(string: "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/y.m3u8")!
+        for requested in [DownloadSourceKind.http, .dash, .hls] {
+            XCTAssertEqual(
+                model.effectiveSourceKind(for: variant, requested: requested, pairAudioURL: audio),
+                .hls,
+                "requested=\(requested) 时 .m3u8 pair 都应保持 .hls"
+            )
+        }
+    }
+
+    func testM4SPairURLStillUsesDASH() {
+        let model = makeModel()
+        let video = URL(string: "https://upos-sz-mirror08c.bilivideo.com/123/video.m4s")!
+        let audio = URL(string: "https://upos-sz-mirror08c.bilivideo.com/123/audio.m4s")!
+        XCTAssertEqual(
+            model.effectiveSourceKind(for: video, requested: .http, pairAudioURL: audio),
+            .dash
+        )
     }
 }

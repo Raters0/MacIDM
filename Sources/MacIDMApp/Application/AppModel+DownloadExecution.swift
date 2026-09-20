@@ -234,31 +234,18 @@ extension AppModel {
                     case .cancel: throw IDMError.cancelled
                     case .continue: break
                     }
-                    guard let ffmpegRemuxer, let hlsInput else {
+                    guard let ffmpegRemuxer, hlsInput != nil else {
                         throw AppModelError.ffmpegUnavailable
                     }
-                    let remuxed = try await ffmpegRemuxer.remux(
-                        FFmpegRemuxRequest(
-                            inputURL: hlsInput,
-                            outputURL: URL(fileURLWithPath: record.destinationPath),
-                            outputKind: .mp4,
-                            control: { control.read() }
-                        )
+                    let published = try await HLSArtifactPublisher.publish(
+                        result,
+                        destination: URL(fileURLWithPath: record.destinationPath),
+                        expectedSHA256: record.expectedSHA256,
+                        remuxer: ffmpegRemuxer,
+                        control: { control.read() }
                     )
                     guard self.isCurrentExecution(id, executionGeneration) else { return }
-                    try? FileManager.default.removeItem(at: hlsInput)
-                    self.finish(
-                        id,
-                        result: DownloadResult(
-                            destination: remuxed.destination,
-                            byteCount: remuxed.byteCount,
-                            sha256: remuxed.sha256,
-                            usedParallelRequests: result.usedParallelRequests,
-                            resumed: result.resumed,
-                            verification: "ffmpeg-ffprobe"
-                        ),
-                        execution: executionGeneration
-                    )
+                    self.finish(id, result: published, execution: executionGeneration)
                 } else {
                     self.finish(id, result: result, execution: executionGeneration)
                 }
@@ -651,7 +638,7 @@ extension AppModel {
                 ? Double(result.byteCount) / activeSeconds
                 : (duration > 0 ? Double(result.byteCount) / duration : nil)
         }
-        // Unified dual-channel path (AI handover doc §3.2): the ordinary log
+        // Unified dual-channel path (technical-spec §3.1.7): the ordinary log
         // records only structured fields such as the task ID and byte counts;
         // the title-derived filename stays in the private log only.
         let record = task(with: id)
@@ -712,7 +699,7 @@ extension AppModel {
             cleanUpExecution(id)
             return
         }
-        // Failure-path dual channel (AI handover doc §3.2): the ordinary log
+        // Failure-path dual channel (technical-spec §3.1.7): the ordinary log
         // keeps only the sanitized error summary and fingerprint; the
         // title-derived filename, full path and full error description go to
         // the private log only.
@@ -913,7 +900,7 @@ extension AppModel {
             renamed != current
         else { return false }
         autoRenameAttempts[id, default: 0] += 1
-        // Filenames are often derived from video titles (AI handover doc
+        // Filenames are often derived from video titles (technical-spec §10
         // §3.2): the ordinary log keeps only the task ID and fingerprint; the
         // old and new filenames stay in the private log under the same
         // event id.

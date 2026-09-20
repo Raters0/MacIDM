@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   rememberBackgroundCandidate,
   takeBackgroundCandidates,
+  normalizeCandidates,
 } from "../../../BrowserExtension/chrome/src/background/media-observation.js";
 
 test("background media observations are released to the matching page origin", () => {
@@ -259,6 +260,7 @@ test("alignMediaTabStateWithLiveURL: 同一视频参数变化（live B&t + cache
   const cachedB = {
     pageUrl: URL_B,
     title: "Why Streamers HATE my Mei...",
+    titleSource: "content",
     candidates: [
       {
         url: URL_B,
@@ -274,6 +276,7 @@ test("alignMediaTabStateWithLiveURL: 同一视频参数变化（live B&t + cache
   const alignedBParam = alignMediaTabStateWithLiveURL(cachedB, URL_B_PARAM);
   assert.equal(alignedBParam.pageUrl, URL_B_PARAM, "pageUrl 对齐到实时 URL");
   assert.equal(alignedBParam.title, "Why Streamers HATE my Mei...", "保留已确认标题");
+  assert.equal(alignedBParam.titleSource, "content", "保留标题时来源必须随行");
   assert.equal(alignedBParam.candidates.length, 1);
   assert.equal(alignedBParam.candidates[0].url, URL_B_PARAM, "候选 URL 对齐到实时 URL");
   assert.equal(alignedBParam.candidates[0].size, 165675008, "估算大小保留");
@@ -288,6 +291,7 @@ test("alignMediaTabStateWithLiveURL: 非 YouTube 页面跨 URL（live page2 + ca
   const cached1 = {
     pageUrl: PAGE_1,
     title: "Article 1",
+    titleSource: "card",
     candidates: [{ url: "https://example.com/video1.mp4", format: "video" }],
     filteredSummary: { diagnosticAudio: 0, streamSegments: 0 },
   };
@@ -295,5 +299,60 @@ test("alignMediaTabStateWithLiveURL: 非 YouTube 页面跨 URL（live page2 + ca
   const aligned2 = alignMediaTabStateWithLiveURL(cached1, PAGE_2);
   assert.equal(aligned2.pageUrl, PAGE_2);
   assert.equal(aligned2.title, "", "非 YouTube 换 URL 后不得返回旧标题");
+  assert.equal(aligned2.titleSource, "document", "标题被清空后来源必须回到 document，不得残留 card");
   assert.deepEqual(aligned2.candidates, [], "非 YouTube 换 URL 后不得返回旧候选");
+
+  // 同页返回：卡片级来源标记必须原样传给 Popup，否则画廊每行都会
+  // 把单卡标题当页面级标题盖上去（全部同名回归的根因）。
+  const alignedSame = alignMediaTabStateWithLiveURL(cached1, PAGE_1);
+  assert.equal(alignedSame.title, "Article 1");
+  assert.equal(alignedSame.titleSource, "card", "同页对齐必须透传 titleSource");
+});
+
+test("mergeCandidates: 后到的快照归属升级已存网络候选（cardTitle/hint/展示名），不被旧壳永久遮蔽", async () => {
+  const { mergeCandidates } = await import("../../../BrowserExtension/chrome/src/background/media-observation.js");
+  const url = "https://v26-web-sz.douyinvod.com/6aaa/media-video-hvc1";
+  // 先：网络观测壳（有 size、无身份）；后：卡片播放后的快照（带归属）。
+  const network = [{ url, size: 12345, displayName: "媒体资源", supported: true }];
+  const snapshot = [{ url, size: null, displayName: "猕猴桃卡片.mp4", cardTitle: "猕猴桃卡片", filenameHint: "kiwi.mp4", filenameHintSource: "titleDerived", supported: true }];
+  const merged = mergeCandidates(network, snapshot);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].size, 12345, "已有 size 不被未知覆盖");
+  assert.equal(merged[0].cardTitle, "猕猴桃卡片", "后到归属必须升级已存行");
+  assert.equal(merged[0].filenameHint, "kiwi.mp4");
+  assert.equal(merged[0].filenameHintSource, "titleDerived");
+  assert.equal(merged[0].displayName, "猕猴桃卡片.mp4", "占位展示名可被真实展示名替换");
+  // 反方向：带归属的先到，无归属的后到不得覆盖已有身份。
+  const merged2 = mergeCandidates(snapshot, network);
+  assert.equal(merged2[0].cardTitle, "猕猴桃卡片");
+  assert.equal(merged2[0].size, 12345, "size 仍按缺失时补齐");
+});
+
+// 回归：X 的 HLS master 候选（webRequest 观察，无显式 format）曾被一律
+// 兜底成 "video" → 提交 mediaKind="video" → App 解析失败回落 http →
+// 带音轨提交被误改判 DASH pair → FFmpeg 把 m3u8 文本当分片合并失败。
+// 缺 format 时必须按 URL/MIME 推断，与 media-utils mediaFormat 同判据。
+test("normalizeCandidates 对缺 format 的 m3u8 候选推断为 hls", () => {
+  const normalized = normalizeCandidates([
+    {
+      url: "https://video.twimg.com/amplify_video/1/pl/ILEhdo8JQNMg-7Ns.m3u8?tag=29",
+      mime: "application/vnd.apple.mpegurl",
+    },
+    {
+      url: "https://cdn.example.com/manifest.mpd",
+      mime: "application/dash+xml",
+    },
+    {
+      url: "https://cdn.example.com/clip.mp4",
+      mime: "video/mp4",
+    },
+  ]);
+  assert.equal(normalized[0].format, "hls");
+  assert.equal(normalized[1].format, "dash");
+  assert.equal(normalized[2].format, "video");
+  // 显式 format 仍被保留（不被推断覆盖）
+  const explicit = normalizeCandidates([
+    { url: "https://cdn.example.com/blob-player", mime: "", format: "blob" },
+  ]);
+  assert.equal(explicit[0].format, "blob");
 });

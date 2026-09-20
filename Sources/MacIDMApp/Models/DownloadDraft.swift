@@ -1,11 +1,32 @@
 import Foundation
 import IDMEngine
 
+/// Provenance of a `filenameHint` (technical spec §8.1 naming trust model).
+/// The source decides whether the hint may outrank the page title when the
+/// final on-disk filename is resolved.
+enum FilenameHintSource: String, Sendable {
+    /// Resolved by the browser download item itself, usually from a
+    /// Content-Disposition header; authoritative like the browser shelf name.
+    case browserResolved
+    /// Synthesized from the page title or link text (site-adapter candidates,
+    /// m4s pairs, Download-All anchor text); semantically equivalent to a title.
+    case titleDerived
+    /// Derived only from the URL path tail; never outranks the page title.
+    /// Also the conservative default for payloads from older extensions.
+    case urlPath
+    /// The user typed this name in the confirmation window. Internal-only
+    /// (never a wire value — MessageValidator whitelists the three cases
+    /// above); it tops the trust chain so a re-inspection never overwrites
+    /// an explicit user edit.
+    case userEdited
+}
+
 /// A transient, user-editable download request. Browser credentials stay in
 /// memory and are never written to the task store.
 struct DownloadDraft: Equatable, Sendable {
     let url: URL
     let filenameHint: String?
+    let filenameHintSource: FilenameHintSource
     let sourceKind: DownloadSourceKind
     let requestContext: DownloadRequestContext?
     let pageTitle: String?
@@ -24,6 +45,7 @@ struct DownloadDraft: Equatable, Sendable {
     init(
         url: URL,
         filenameHint: String? = nil,
+        filenameHintSource: FilenameHintSource = .urlPath,
         sourceKind: DownloadSourceKind = .http,
         requestContext: DownloadRequestContext? = nil,
         pageTitle: String? = nil,
@@ -38,6 +60,7 @@ struct DownloadDraft: Equatable, Sendable {
     ) {
         self.url = url
         self.filenameHint = filenameHint
+        self.filenameHintSource = filenameHintSource
         self.sourceKind = sourceKind
         self.requestContext = requestContext
         self.pageTitle = pageTitle

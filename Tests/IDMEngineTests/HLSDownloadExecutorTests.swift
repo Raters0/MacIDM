@@ -347,8 +347,77 @@ final class HLSDownloadExecutorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
+    /// 回归（②）：旧逻辑用“已提交段数”做外推分母，组提交攒批期间
+    /// completedCount=0 → totalBytes 全程 nil，进度条只能依赖扩展初始估算
+    /// （X.com 漏算音轨偏小）。改用“已抓取段数”后，第一批段下载完
+    /// totalBytes 即出现，且全程 received ≤ total（进度条不谎报 >100%）。
+    func testProgressReportsTotalBeforeFinalGroupCommit() async throws {
+        let playlistURL = URL(string: "https://cdn.example.test/early-total.m3u8")!
+        let segmentCount = 4
+        var lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:4", "#EXT-X-PLAYLIST-TYPE:VOD"]
+        var responses: [String: HLSFetchResponse] = [:]
+        for index in 1...segmentCount {
+            let segmentURL = URL(string: "https://cdn.example.test/s\(index).ts")!
+            lines.append("#EXTINF:4,")
+            lines.append("s\(index).ts")
+            responses[segmentURL.absoluteString] = HLSFetchResponse(
+                data: Data(repeating: UInt8(index), count: 100),
+                finalURL: segmentURL)
+        }
+        lines.append("#EXT-X-ENDLIST")
+        responses[playlistURL.absoluteString] = HLSFetchResponse(
+            data: Data(lines.joined(separator: "\n").utf8), finalURL: playlistURL)
+
+        let client = ScriptedHLSClient(responses: responses)
+        let destination = try makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        let request = DownloadRequest(
+            url: playlistURL,
+            destination: destination,
+            maximumParallelRequests: 1,
+            taskID: UUID()
+        )
+        let box = HLSProgressBox()
+        // 组提交阈值拉到极大：下载途中绝不触发 commit（completedCount 恒 0），
+        // 只有 quiesce 才一次性提交。旧逻辑此时途中 totalBytes 全为 nil。
+        _ = try await HLSDownloadExecutor(
+            client: client,
+            groupCommitBytesThreshold: Int64.max,
+            groupCommitTimeThreshold: .seconds(3600)
+        ).download(request, progress: { box.append($0) })
+
+        let events = box.values
+        XCTAssertFalse(events.isEmpty)
+        // 途中事件（排除最后一个 quiesce 后的）就应出现非 nil 的 totalBytes。
+        XCTAssertTrue(
+            events.dropLast().contains { $0.totalBytes != nil },
+            "下载途中 totalBytes 不应全程为 nil（旧 bug：组提交前 completedCount=0）"
+        )
+        // 全程 received ≤ total：进度条不会谎报 >100%。
+        for progress in events {
+            if let total = progress.totalBytes {
+                XCTAssertLessThanOrEqual(progress.receivedBytes, total)
+            }
+        }
+    }
+
     private func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private final class HLSProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [DownloadProgress] = []
+    func append(_ value: DownloadProgress) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored.append(value)
+    }
+    var values: [DownloadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
 

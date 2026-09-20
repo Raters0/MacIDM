@@ -35,6 +35,21 @@ final class InputValidatorTests: XCTestCase {
         XCTAssertEqual(InputValidator.safeFilename("dir/sub/file.zip"), "file.zip")
     }
 
+    func testSafeFilenameTruncationPreservesTheExtension() {
+        // 长 CJK 标题超过 255 字节时，截断只缩短词干，扩展名必须存活；
+        // 旧实现从尾部砍字符会把 ".mp4" 一起砍掉。
+        let longTitle = String(repeating: "长", count: 120) + ".mp4"
+        let truncated = InputValidator.safeFilename(longTitle)
+        XCTAssertLessThanOrEqual(truncated.utf8.count, 255)
+        XCTAssertTrue(truncated.hasSuffix(".mp4"))
+        XCTAssertGreaterThan(truncated.utf8.count, 250)
+        // 扩展名自身超长时仍须安全终止且不超限。
+        let hugeExtension = "file." + String(repeating: "x", count: 300)
+        let clipped = InputValidator.safeFilename(hugeExtension)
+        XCTAssertLessThanOrEqual(clipped.utf8.count, 255)
+        XCTAssertFalse(clipped.isEmpty)
+    }
+
     func testRequestContextRejectsHeaderInjection() throws {
         let directory = FileManager.default.temporaryDirectory
         let request = DownloadRequest(

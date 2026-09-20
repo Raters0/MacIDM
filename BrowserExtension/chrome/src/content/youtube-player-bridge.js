@@ -1,4 +1,4 @@
-// YouTube MAIN-world player data bridge (AI handover doc §5.1, spec §5.8).
+// YouTube MAIN-world player data bridge (chrome-extension-spec §5.8).
 //
 // DOM-element JS properties (ytd-watch-flexy.playerData) and
 // window.ytInitialPlayerResponse only exist in the MAIN world; ISOLATED
@@ -54,7 +54,7 @@
   // first (survives SPA navigation), then the app-level getter, then the
   // initial response which goes stale after SPA navigation.
   // Identity may only come from the unified parsing rules for the current
-  // URL (AI handover doc §3.1): home/search and other non-single-video
+  // URL (chrome-extension-spec §5.8): home/search and other non-single-video
   // pages that yield no videoId must fail closed — components left over
   // after SPA navigation such as ytd-watch-flexy.playerData must not be
   // read, selected, or published; the bridge stays silent on non-video
@@ -96,7 +96,7 @@
 
   // Field whitelist extraction: quality parsing needs format metadata only.
   // url/signatureCipher/cipher are deliberately absent from this shape.
-  // title is length-capped attribution evidence (AI handover doc §3): it
+  // title is length-capped attribution evidence (chrome-extension-spec §5.8): it
   // comes from a player response that already passed the videoId check and
   // lets the content script confirm the new page's title; signed media
   // URLs, cipher and other unapproved fields are still never forwarded.
@@ -118,7 +118,7 @@
   }
 
   /// Stable business payload: contains no timestamps and is the sole input
-  /// to the dedupe fingerprint (AI handover doc §4). capturedAt is appended
+  /// to the dedupe fingerprint (chrome-extension-spec §5.8). capturedAt is appended
   /// only after publishing is confirmed needed and must not take part in
   /// the fingerprint — otherwise every poll would change it, dedupe would
   /// be defeated, and a steady page would still resend the full snapshot

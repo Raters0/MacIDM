@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MacIDM Development Extension",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local development extension for MacIDM",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA995DgavkIxEzFG1QxNK9r3ZQjD3NesbqQtS+TjKdkMqwRk01SLO8eXowGKhqm4KnI15cxmlDG2LJbCm1DKZMwNJbFOCQ9jN7uSv/zimZsfCGwlJFeEPTF5SJ4LnwZxWNkXld1sm/nHOXBvZDZh7lyPDO+47PLcTQR0o8dL5yQjXhOCu6BqMoww5lLMOeRDBPc3dTPhCLnWlwdT/r7O8HATG/wWPmzuE9VVE/nKhF2pIFmdQbZWbQ0fJZ9vvPLmPky2mj1HM6huQs3igykWk0PbuVhnUw7EiSIcnFpQ8CG5pWiIsJNdTN9PMHzlM07nfROFzrLEGZ0SZTfYtQgchAawIDAQAB",
   "background": {
@@ -43,6 +43,8 @@
         "src/shared/media-utils.js",
         "src/shared/youtube-format-utils.js",
         "src/shared/media-presentation.js",
+        "src/shared/media-metadata-probe.js",
+        "src/shared/douyin-detail-cache.js",
         "src/shared/sniff-governance.js",
         "src/shared/category.js",
         "src/shared/i18n.js",
@@ -52,6 +54,7 @@
         "src/shared/slim-scrollbar.js",
         "src/content/discovery.js",
         "src/content/content-script.js",
+        "src/content/media-element-scope.js",
         "src/content/overlay.js"
       ],
       "run_at": "document_idle",
@@ -63,6 +66,7 @@
         "https://*/*"
       ],
       "js": [
+        "src/content/media-source-observer.js",
         "src/content/fetch-interceptor.js"
       ],
       "run_at": "document_start",

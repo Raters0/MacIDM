@@ -9,57 +9,100 @@ struct TaskDetailView: View {
     /// like the new-download dialog's advanced options.
     @State private var isSegmentsExpanded = false
 
+    @State private var isTechnicalDetailsExpanded = false
+
     var body: some View {
-        ScrollView {
-            // Sections are separated by generous whitespace instead of a
-            // hairline after every block — the previous divider-per-section
-            // filled the panel with horizontal lines and destroyed the
-            // hierarchy. The caption section titles carry the grouping now.
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                if task.fileMissing && task.status == .completed {
-                    fileMissingNotice
-                }
-                section("总进度") {
-                    totalProgressContent
-                }
-                if task.segments.count > 1 {
-                    section(isTrackPair ? "轨道进度" : "分段进度") {
-                        segmentProgressContent
+        VStack(spacing: 0) {
+            header
+                .padding(20)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if task.fileMissing && task.status == .completed {
+                        fileMissingNotice
                     }
-                }
-                if !task.speedHistory.isEmpty {
-                    section("下载速度") {
-                        SpeedHistoryView(
-                            samples: task.speedHistory,
-                            isFrozen: task.status.freezesSpeedChart
-                        )
-                        .frame(height: 130)
+                    if let errorMessage = task.errorMessage, showsErrorPanel {
+                        errorPanel(errorMessage)
                     }
+                    if task.isCLIManaged {
+                        Label("此任务由 macidm CLI 控制，请在终端执行暂停、继续或取消。", systemImage: "terminal")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    if task.status.showsTransferProgress {
+                        section("总进度") {
+                            totalProgressContent
+                            if task.status == .running {
+                                HStack {
+                                    Text(DisplayFormatting.speed(task.bytesPerSecond))
+                                    Spacer()
+                                    if task.bytesPerSecond > 0, let total = task.totalBytes, total > task.receivedBytes
+                                    {
+                                        Text(
+                                            "剩余约 \(DisplayFormatting.duration(Double(total - task.receivedBytes) / task.bytesPerSecond))"
+                                        )
+                                    }
+                                }
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if task.status.isActive && !task.speedHistory.isEmpty {
+                        speedSection
+                    }
+                    section("文件信息") {
+                        metadataGrid
+                    }
+                    DisclosureGroup("技术详情", isExpanded: $isTechnicalDetailsExpanded) {
+                        VStack(alignment: .leading, spacing: 20) {
+                            HStack {
+                                Text("任务ID")
+                                Spacer()
+                                Text(task.jobID).monospaced().textSelection(.enabled)
+                                CopyJobIDButton(jobID: task.jobID)
+                            }
+                            if task.segments.count > 1 {
+                                section(isTrackPair ? "轨道进度" : "分段进度") {
+                                    segmentProgressContent
+                                }
+                            }
+                            if !task.status.isActive && !task.speedHistory.isEmpty {
+                                speedSection
+                            }
+                            if let message = task.errorMessage, showsErrorPanel {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("错误详情").font(.callout.weight(.semibold))
+                                    Text(message)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            if let sha256 = task.sha256 {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("SHA-256").foregroundStyle(.secondary)
+                                    Text(sha256).font(.caption.monospaced()).textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .padding(.top, 12)
+                    }
+                    .font(.callout)
                 }
-                // The alert area belongs to real failures only: pause and
-                // cancel are user control actions and must not render an
-                // error card here.
-                if let errorMessage = task.errorMessage, showsErrorPanel {
-                    errorPanel(errorMessage)
-                }
-                if task.isCLIManaged {
-                    Label("此任务由 macidm CLI 控制，请在终端执行暂停、继续或取消。", systemImage: "terminal")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                section("任务信息") {
-                    metadataGrid
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
             }
-            // Stretch every section to the column width: inside a ScrollView
-            // children keep their ideal size, so without this the layout
-            // freezes at the width it had when first laid out and stops
-            // following window resizes.
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(26)
+            .background(LightScrollerConfigurator())
         }
-        .background(LightScrollerConfigurator())
+    }
+
+    private var speedSection: some View {
+        section("下载速度") {
+            SpeedHistoryView(samples: task.speedHistory, isFrozen: task.status.freezesSpeedChart)
+                .frame(height: 130)
+        }
     }
 
     // MARK: - Header
@@ -68,13 +111,35 @@ struct TaskDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(task.displayName(redacted: model.settings.redactFilenames))
                 .font(.title3.bold())
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
                 .textSelection(.enabled)
-            if task.status == .completed {
-                completedActions
-                    .frame(height: 34)
+                .help(task.displayName(redacted: model.settings.redactFilenames))
+            HStack {
+                StatusLabel(status: task.status)
+                Spacer()
+                Text(DisplayFormatting.byteCount(task.totalBytes ?? task.receivedBytes))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .font(.callout)
+            if showsFileActions {
+                fileActions
+            } else if !task.isCLIManaged {
+                HStack(spacing: 12) {
+                    if [.queued, .probing, .running, .verifying].contains(task.status) {
+                        Button("暂停") { model.pause(task.id) }
+                    }
+                    if [.paused, .cancelled].contains(task.status) {
+                        Button("继续") { model.resume(task.id) }
+                    }
+                    if [.queued, .probing, .running, .paused].contains(task.status) {
+                        Button("取消") { model.cancel(task.id) }
+                    }
+                }
+                .buttonStyle(.bordered)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Section scaffolding
@@ -125,49 +190,52 @@ struct TaskDetailView: View {
         )
     }
 
-    /// Three completed-task actions on one full-width row, no card box —
-    /// flat by design, matching the window's other hairline rules. The
-    /// buttons hug their content; four equal flexible spacers keep each
-    /// hairline divider exactly midway between its neighboring buttons, and
-    /// the outer button edges align with the sections below.
-    private var completedActions: some View {
+    private var showsFileActions: Bool {
+        task.status == .completed
+            || [.failed, .storageError, .needsRestart, .filenameConflict, .takeoverConflict]
+                .contains(task.status)
+    }
+
+    private var fileActions: some View {
         HStack(spacing: 0) {
             StatsActionButton(title: "打开文件", systemImage: "play.circle") {
                 model.openFile(task.id)
             }
+            .disabled(!canUseDownloadedFile)
 
             actionSpacer
-
             actionSeparator
-
             actionSpacer
 
             StatsActionButton(title: "在访达中显示", systemImage: "folder") {
                 model.revealInFinder(task.id)
             }
+            .disabled(!canUseDownloadedFile)
 
             actionSpacer
-
             actionSeparator
-
             actionSpacer
 
             StatsActionButton(title: "复制路径", systemImage: "doc.on.doc") {
                 model.copyDestinationPath(task.id)
             }
+            .disabled(!canUseDownloadedFile)
         }
         .frame(maxWidth: .infinity)
     }
 
+    private var canUseDownloadedFile: Bool {
+        task.status == .completed && !task.fileMissing
+    }
+
     private var actionSpacer: some View {
-        Spacer(minLength: 10)
+        Spacer(minLength: 8)
     }
 
     private var actionSeparator: some View {
         Rectangle()
             .fill(AppTheme.hairline)
-            .frame(width: 1)
-            .padding(.vertical, 8)
+            .frame(width: 1, height: 24)
     }
 
     // MARK: - Progress
@@ -396,8 +464,12 @@ struct TaskDetailView: View {
                 .foregroundStyle(AppTheme.danger)
             Text(friendly.message)
                 .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3)
                 .textSelection(.enabled)
+            Button("查看错误详情") {
+                isTechnicalDetailsExpanded = true
+            }
+            .buttonStyle(.borderless)
             if let recommendation = task.errorRecommendation, !recommendation.isEmpty {
                 Text("建议：\(recommendation)")
                     .font(.callout)
@@ -405,7 +477,9 @@ struct TaskDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            errorActionButtons
+            if !task.isCLIManaged {
+                errorActionButtons
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -441,39 +515,64 @@ struct TaskDetailView: View {
     /// bordered control, so they sit quietly inside the danger card.
     @ViewBuilder
     private var errorActionButtons: some View {
-        let retryableStatuses: [AppTaskStatus] = [.failed, .needsRestart, .storageError, .paused]
-        HStack(spacing: 8) {
-            if retryableStatuses.contains(task.status) {
-                Button("重试") { model.resume(task.id) }
+        let actions = availableErrorActions
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 20) {
+                ForEach(actions) { action in
+                    DetailTextActionButton(title: action.title, action: action.perform)
+                }
             }
-            if task.errorCategory == "authentication" {
-                Button("粘贴 Cookie") {
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(actions) { action in
+                    DetailTextActionButton(title: action.title, action: action.perform)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var availableErrorActions: [DetailErrorAction] {
+        let retryableStatuses: [AppTaskStatus] = [.failed, .needsRestart, .storageError, .paused]
+        var actions: [DetailErrorAction] = []
+        if retryableStatuses.contains(task.status) {
+            actions.append(DetailErrorAction(id: "retry", title: "重试") { model.resume(task.id) })
+        }
+        if task.errorCategory == "authentication" {
+            actions.append(
+                DetailErrorAction(id: "cookie", title: "粘贴 Cookie") {
                     model.cookiePasteRetryTaskID = task.id
                     let host =
                         task.pageURL.flatMap { URLComponents(string: $0)?.host }
                         ?? URLComponents(string: task.sourceURL)?.host
                     model.cookiePasteDomain = host ?? ""
-                }
-            }
-            if task.errorCategory == "rateLimit" {
-                Button("降低并行数重试") { model.reduceParallelismAndRetry(task.id) }
-            }
-            if canRetryWithYtdlp {
-                Button("用 yt-dlp 重试") { model.retryWithYtdlp(task.id) }
-            }
-            if task.errorCode == "NEEDS_REFETCH"
-                || (task.errorCategory == "media" && task.pageURL != nil)
-            {
-                Button("重新提交") {
+                })
+        }
+        if task.errorCategory == "rateLimit" {
+            actions.append(
+                DetailErrorAction(id: "parallel", title: "降低并行数重试") {
+                    model.reduceParallelismAndRetry(task.id)
+                })
+        }
+        if canRetryWithYtdlp {
+            actions.append(
+                DetailErrorAction(id: "ytdlp", title: "用 yt-dlp 重试") {
+                    model.retryWithYtdlp(task.id)
+                })
+        }
+        if task.errorCode == "NEEDS_REFETCH"
+            || (task.errorCategory == "media" && task.pageURL != nil)
+        {
+            actions.append(
+                DetailErrorAction(id: "resubmit", title: "重新提交") {
                     let raw = task.pageURL ?? task.sourceURL
                     if let draft = DownloadDraft(urlString: raw) {
                         model.presentNewDownload(draft: draft)
                     }
-                }
-            }
+                })
         }
-        .buttonStyle(FlatHoverButtonStyle())
-        .padding(.top, 2)
+        return actions
     }
 
     // MARK: - Metadata
@@ -483,27 +582,23 @@ struct TaskDetailView: View {
     /// inset from the box edges instead of touching them.
     private var metadataGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
-            GridRow {
-                rowLabel("任务ID")
-                HStack(spacing: 6) {
-                    Text(task.jobID)
-                        .monospaced()
-                        .textSelection(.enabled)
-                    CopyJobIDButton(jobID: task.jobID)
-                }
-            }
-            metadataDivider
-            // Two-line URL display: the preserved page URL (what the
-            // user submitted, e.g. a YouTube watch page with its video
-            // ID) plus the actual download source when it differs.
             if task.pageURL != nil {
-                detailRow("页面", task.redactedSourceURL)
+                GridRow(alignment: .top) {
+                    rowLabel("页面")
+                    CompactLinkView(value: task.redactedSourceURL)
+                }
                 if task.redactedRawSourceURL != task.redactedSourceURL {
                     metadataDivider
-                    detailRow("来源", task.redactedRawSourceURL)
+                    GridRow(alignment: .top) {
+                        rowLabel("来源")
+                        CompactLinkView(value: task.redactedRawSourceURL)
+                    }
                 }
             } else {
-                detailRow("来源", task.redactedSourceURL)
+                GridRow(alignment: .top) {
+                    rowLabel("来源")
+                    CompactLinkView(value: task.redactedSourceURL)
+                }
             }
             // Filename redaction hides the destination path too: the
             // directory and file name together would re-identify the
@@ -539,12 +634,6 @@ struct TaskDetailView: View {
                 .labelsHidden()
                 .pointerCursorOnHover()
             }
-            if task.sha256 != nil {
-                metadataDivider
-            }
-            if let sha256 = task.sha256 {
-                detailRow("SHA-256", sha256)
-            }
         }
         .textSelection(.enabled)
     }
@@ -579,12 +668,13 @@ struct TaskDetailView: View {
     }
 
     private func detailRow(_ label: LocalizedStringKey, _ value: String) -> some View {
-        GridRow {
+        GridRow(alignment: .top) {
             rowLabel(label)
             Text(value)
                 .font(.callout)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3)
+                .truncationMode(.middle)
+                .help(value)
         }
     }
 }
@@ -632,13 +722,14 @@ private struct StatsActionButton: View {
     let title: LocalizedStringKey
     let systemImage: String
     let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .font(.subheadline)
-                .foregroundStyle(isHovering ? AppTheme.accent : Color.primary)
+                .foregroundStyle(labelColor)
                 .lineLimit(1)
                 // No horizontal padding: this row is boxless, and the outer
                 // buttons' labels must sit flush with the section cards and
@@ -649,10 +740,40 @@ private struct StatsActionButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            isHovering = hovering
+            isHovering = hovering && isEnabled
         }
-        .pointerCursorOnHover()
+        .pointerCursorOnHover(isEnabled: isEnabled)
         .help(title)
+    }
+
+    private var labelColor: Color {
+        guard isEnabled else { return .secondary.opacity(0.55) }
+        return isHovering ? AppTheme.accent : Color.primary
+    }
+}
+
+private struct DetailErrorAction: Identifiable {
+    let id: String
+    let title: LocalizedStringKey
+    let perform: () -> Void
+}
+
+private struct DetailTextActionButton: View {
+    let title: LocalizedStringKey
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(isHovering ? AppTheme.accent : Color.primary)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .pointerCursorOnHover()
     }
 }
 

@@ -6,7 +6,7 @@ extension AppModel {
     func pause(_ id: UUID) {
         guard let task = task(with: id), !task.isCLIManaged else { return }
         // Filenames are often derived from video titles: the ordinary log
-        // records only the task ID (AI handover doc §3.2).
+        // records only the task ID (technical-spec §3.1.7).
         AppLogger.shared.info(.download, "paused task=\(id)")
         switch task.status {
         case .queued:

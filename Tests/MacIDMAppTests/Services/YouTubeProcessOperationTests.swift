@@ -4,7 +4,7 @@ import XCTest
 
 @testable import MacIDMApp
 
-/// 下载 runner 进程操作的 FD、取消竞态与通道回退收口（docs/AI交接.md §8）。
+/// 下载 runner 进程操作的 FD、取消竞态与通道回退收口（technical-spec §3.4）。
 final class YouTubeProcessOperationTests: XCTestCase {
     private var directories: [URL] = []
 

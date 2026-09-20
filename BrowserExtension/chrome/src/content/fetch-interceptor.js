@@ -746,6 +746,65 @@
     }
   }
 
+  // ===== 抖音 aweme/detail 预加载捕获 =====
+  // 抖音精选的 feed 路由在页面加载时预加载详情数据（含视频直链），弹窗
+  // 打开后不再发请求：候选合成只能依赖这份响应（shared/douyin-detail-
+  // cache.js 的解析逻辑与此处保持 verbatim 同步，双方都无法共享模块）。
+  const DOUYIN_DETAIL_RE = /aweme\/v1\/web\/aweme\/detail\//i;
+  const DOUYIN_DETAIL_MESSAGE = "macidm.douyin.detail";
+
+  function parseDouyinDetailPayload(text) {
+    if (typeof text !== "string" || text.length === 0 || text.length > 4 * 1024 * 1024) return null;
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    const aweme = json?.aweme_detail ?? json;
+    const video = aweme?.video;
+    if (!aweme?.aweme_id || !video) return null;
+    const seen = new Set();
+    const urls = [];
+    const push = (addr) => {
+      const url = addr?.url_list?.find((candidate) => /^https?:/i.test(candidate));
+      const size = addr?.data_size;
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      urls.push({ url, size: Number.isSafeInteger(size) && size > 0 ? size : null });
+    };
+    push(video.play_addr);
+    const rates = Array.isArray(video.bit_rate) ? video.bit_rate : [];
+    for (const rate of rates) {
+      push(rate?.play_addr);
+      if (urls.length >= 8) break;
+    }
+    if (urls.length === 0) return null;
+    const durationMs = Number(aweme.duration);
+    return {
+      awemeId: String(aweme.aweme_id),
+      desc: String(aweme.desc ?? ""),
+      duration: Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : null,
+      urls,
+    };
+  }
+
+  function postDouyinDetail(parsed) {
+    const postFn = typeof global.postMessage === "function"
+      ? global.postMessage
+      : (typeof window !== "undefined" && typeof window.postMessage === "function" ? window.postMessage : null);
+    if (!postFn) return;
+    postFn({ type: DOUYIN_DETAIL_MESSAGE, ...parsed }, "*");
+  }
+
+  function captureDouyinDetail(response) {
+    if (!response || typeof response.clone !== "function") return;
+    response.clone().text().then((text) => {
+      const parsed = parseDouyinDetailPayload(text);
+      if (parsed) postDouyinDetail(parsed);
+    }).catch(() => {});
+  }
+
   // ===== fetch patch =====
 
   try {
@@ -770,6 +829,13 @@
         return originalFetch.apply(this, args).then((response) => {
           try {
             inspectFetchResponse(response, requestURL);
+          } catch {
+            // Never disturb the original response.
+          }
+          try {
+            if (requestURL && DOUYIN_DETAIL_RE.test(requestURL)) {
+              captureDouyinDetail(response);
+            }
           } catch {
             // Never disturb the original response.
           }
@@ -805,6 +871,28 @@
         try {
           const captured = this.__macidmURL;
           if (captured && isMediaLikeURL(captured)) notify(captured);
+          if (captured && DOUYIN_DETAIL_RE.test(captured)) {
+            // XHR 通道：detail 响应体较小（<4MB）。页面的 XHR 可能设置
+            // responseType="json"/"arraybuffer"，responseText 会直接抛错——
+            // 按实际 responseType 取 response 再序列化。
+            this.addEventListener("load", () => {
+              try {
+                let text = null;
+                if (!this.responseType || this.responseType === "text") {
+                  text = this.responseText;
+                } else if (this.responseType === "json") {
+                  text = this.response ? JSON.stringify(this.response) : null;
+                } else if (this.responseType === "arraybuffer" && this.response) {
+                  text = new TextDecoder().decode(new Uint8Array(this.response));
+                }
+                if (!text) return;
+                const parsed = parseDouyinDetailPayload(text);
+                if (parsed) postDouyinDetail(parsed);
+              } catch {
+                // Never disturb the page.
+              }
+            });
+          }
         } catch {
           // Sniffing must never abort the page's request.
         }

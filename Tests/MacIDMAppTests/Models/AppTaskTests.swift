@@ -162,6 +162,27 @@ final class AppTaskTests: XCTestCase {
         XCTAssertEqual(task.fractionCompleted, 1, accuracy: 0.0001)
     }
 
+    func testFractionCompletedCapsAt99PercentUntilCompleted() {
+        // 回归（X.com HLS“卡验证”根因之一）：估算总量偏小时 receivedBytes
+        // 会超过 totalBytes，旧逻辑 min(1,…) 让进度条提前谎报 100%，用户
+        // 以为下载完成，实际引擎还在下音频轨/尾段。非完成态封顶 0.99，
+        // 100% 只属于 completed，配合“正在验证”文案传达“接近完成、收尾中”。
+        var task = makeTask()
+        task.status = .running
+        task.overallProgressFraction = nil
+        task.receivedBytes = 6_500_000  // 超过偏小的估算总量
+        task.totalBytes = 6_000_000
+        XCTAssertEqual(task.fractionCompleted, 0.99, accuracy: 0.0001)
+
+        // stage-aware 比例路径同样封顶 0.99。
+        task.overallProgressFraction = 1.0
+        XCTAssertEqual(task.fractionCompleted, 0.99, accuracy: 0.0001)
+
+        // 只有真正完成才允许 100%。
+        task.status = .completed
+        XCTAssertEqual(task.fractionCompleted, 1.0, accuracy: 0.0001)
+    }
+
     func testSettleSegmentProgressRepairsStaleSplitParentsOnCompletedTasks() {
         // Reproduces the split-parent snapshot bug: the coordinator divided
         // segments 4, 8, and 9 mid-transfer, but their totals kept the

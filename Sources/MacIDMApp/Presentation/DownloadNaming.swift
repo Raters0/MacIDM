@@ -3,6 +3,10 @@ import IDMEngine
 import UniformTypeIdentifiers
 
 enum DownloadNaming {
+    /// Placeholder base names shared with the extension's `smartMediaName`
+    /// generic filter (technical spec §8.1): a hint whose stem is one of these
+    /// carries no information and never wins over the page title. The two
+    /// lists must stay identical; cross-end tests lock them together.
     static func isGenericFilename(_ value: String?) -> Bool {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
             !value.isEmpty
@@ -11,12 +15,44 @@ enum DownloadNaming {
             .deletingPathExtension()
             .lastPathComponent
             .lowercased()
-        return ["download", "media", "video", "audio"].contains(base)
+        return [
+            "download", "media", "video", "audio",
+            "index", "master", "playlist", "manifest",
+        ].contains(base)
     }
 
     static func nonEmptyPageTitle(_ value: String?) -> String? {
         let title = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return title?.isEmpty == false ? title : nil
+    }
+
+    /// Strips a trailing site-brand segment (" - Hanime1.me", "| Example",
+    /// "_bilibili") from a page title before it enters the naming chain. The
+    /// segment is removed only when it matches one of the page hosts (full
+    /// host, host without "www.", or the host's first label), so real titles
+    /// containing separators ("Love is War - Episode 3") are never truncated.
+    /// Underscore is included because Bilibili's og:title/document.title uses
+    /// "标题_哔哩哔哩_bilibili"; the extension's stripBrandSuffix mirrors this
+    /// rule so the two ends stay aligned (technical spec §8.1).
+    static func semanticPageTitle(_ value: String?, hosts: [String?]) -> String? {
+        guard let title = nonEmptyPageTitle(value) else { return nil }
+        let separators: Set<Character> = ["-", "\u{2013}", "\u{2014}", "|", "_"]
+        guard let separatorIndex = title.lastIndex(where: { separators.contains($0) }) else {
+            return title
+        }
+        let suffix = title[title.index(after: separatorIndex)...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = title[..<separatorIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty, stem.count >= 3 else { return title }
+        let hostTokens = hosts.compactMap { $0?.lowercased() }.flatMap { host -> [String] in
+            let withoutWWW = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            let firstLabel = withoutWWW.split(separator: ".").first.map(String.init) ?? withoutWWW
+            return [host, withoutWWW, firstLabel]
+        }
+        guard hostTokens.contains(where: { !$0.isEmpty && $0 == suffix.lowercased() }) else {
+            return title
+        }
+        return stem
     }
 
     static func filenameWithOutputExtension(
@@ -33,7 +69,7 @@ enum DownloadNaming {
         case .hls, .dash:
             extensionName = "mp4"
         case .http:
-            // Product contract (AI handover doc §4.4): YouTube downloads are
+            // Product contract (technical-spec §3.4): YouTube downloads are
             // uniformly output as MP4 by yt-dlp + FFmpeg; the UI picks a
             // quality/codec variant, and the source variant's container (e.g.
             // VP9's webm) must not enter the final filename — a container
@@ -70,15 +106,22 @@ enum DownloadNaming {
         filenameHint: String?,
         pageTitle: String?,
         resourceInfo: ResourceInfo?,
-        label: String? = nil
+        label: String? = nil,
+        hintSource: FilenameHintSource = .urlPath
     ) -> String {
         let rawHint = filenameHint?.trimmingCharacters(in: .whitespacesAndNewlines)
         let isGeneric = Self.isGenericFilename(rawHint)
+        // Naming trust model (technical spec §8.1): only a browser-resolved or
+        // title-derived hint outranks the page title. A URL-tail hint (sniffed
+        // candidates like "407788-1080p.mp4") ranks below it — the title is what
+        // the user recognized in the sniff panel, so it must also be the name
+        // that lands on disk.
         var candidate: String?
-        if !isGeneric { candidate = rawHint }
+        if !isGeneric && hintSource != .urlPath { candidate = rawHint }
         if candidate == nil {
             candidate = pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if candidate == nil, !isGeneric { candidate = rawHint }
         if candidate == nil {
             candidate = resourceInfo?.suggestedFilename
         }

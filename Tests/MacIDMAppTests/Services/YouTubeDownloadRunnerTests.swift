@@ -563,7 +563,7 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
     func testFormatSelectorDistinguishesSameHeightCodecs() {
         // 1080 H.264 (progressive-audio itag would be different; 137 is
         // video-only) vs 1080 VP9: the selectors must differ and each must
-        // pin exactly the chosen itag (docs/AI交接.md §2 acceptance).
+        // pin exactly the chosen itag (technical-spec §3.4 acceptance).
         let h264 = YouTubeDownloadRunner.formatSelector(
             itag: 137, hasAudio: false, heightConstraint: "[height<=1080]")
         let vp9 = YouTubeDownloadRunner.formatSelector(
@@ -951,7 +951,7 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
     }
 
     func testStalledDownloadKillsProcessTreeBeforeNextAttempt() async throws {
-        // docs/AI交接.md §2：停滞重试前上一轮进程树必须已经真正退出；
+        // technical-spec §3.4：停滞重试前上一轮进程树必须已经真正退出；
         // 每次尝试派生长寿命后代，结束后不得残留，且尝试次数不得重叠。
         let directory = try makeRunnerDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1021,7 +1021,7 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
     }
 
     /// 构造按 `--simulate` 分流的假 yt-dlp：探测（直播语义）输出指定 JSON，
-    /// 下载分支写入媒体文件并留下 marker（docs/AI交接.md §3.3）。
+    /// 下载分支写入媒体文件并留下 marker（technical-spec §3.4）。
     private func makeLiveBranchingExecutable(
         directory: URL,
         probeJSON: String,
@@ -1121,7 +1121,7 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
-    /// 输出容器契约（docs/AI交接.md §4.4）：选择 VP9（源容器 webm）变体
+    /// 输出容器契约（technical-spec §3.4）：选择 VP9（源容器 webm）变体
     /// 时，yt-dlp 选择器仍精确锁定 itag，而最终输出容器统一为 MP4：
     /// `--merge-output-format mp4`、`--remux-video mp4` 与 FFmpeg outputKind。
     func testOutputContractSelectsItagButAlwaysPublishesMP4() async throws {

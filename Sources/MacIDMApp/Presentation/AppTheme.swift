@@ -55,6 +55,62 @@ extension View {
     }
 }
 
+/// macOS 26+ draws window chrome out of glass materials: a window built
+/// with the newer SDK no longer gets the legacy opaque white surface but a
+/// translucent grey one, which broke the flat light-mode look (grey app
+/// background under white cards). Paint an explicit surface under the
+/// whole window content — pure white in light mode, the system material
+/// in dark — so cards and hairlines keep their contrast regardless of the
+/// system's default window material.
+struct AppWindowSurface: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content.background(
+            colorScheme == .dark
+                ? Color(nsColor: .windowBackgroundColor)
+                : Color.white
+        )
+    }
+}
+
+extension View {
+    func appWindowSurface() -> some View { modifier(AppWindowSurface()) }
+}
+
+/// macOS 26/27 SDK 下详情列 ScrollView 的内容延伸到统一 toolbar 之下，
+/// 顶部区段（标题/总进度）被遮挡且滚不出来；给滚动内容显式顶部边距。
+/// 旧 SDK 无 contentMargins 行为，保持原样。
+struct ScrollTopMargin: ViewModifier {
+    var top: CGFloat = 24
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.contentMargins(.top, top, for: .scrollContent)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func scrollTopMargin(_ top: CGFloat = 24) -> some View {
+        modifier(ScrollTopMargin(top: top))
+    }
+}
+
+extension AppTheme {
+    /// Dynamic NSWindow surface for hand-built AppKit windows (new-download
+    /// confirmation, countdown): white in light mode, the system window
+    /// material in dark. Hand-built windows under the macOS 26+ SDK inherit
+    /// the grey glass default, which clashed with the light theme.
+    static let windowSurfaceNSColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .windowBackgroundColor
+            : .white
+    }
+}
+
 /// One source of truth for every scrollbar in the app. Configures the
 /// system overlay scroller — thin, semi-transparent, auto-hiding, and
 /// draggable — so the entire app shares one consistent look without custom

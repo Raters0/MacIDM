@@ -2,7 +2,7 @@ import Foundation
 import MacIDMBridge
 
 private enum HostConfiguration {
-    static let version = "1.0.0"
+    static let version = "1.0.1"
     static let expectedExtensionID = "obaipbnfoifafgcpekkfkapjifjgbjag"
     static let expectedOrigin = "chrome-extension://\(expectedExtensionID)/"
     static let clientInstanceID = "chrome:\(expectedExtensionID)"
@@ -66,7 +66,7 @@ struct MacIDMHost {
         }
     }
 
-    private static func connectToApp() throws -> UDSBridgeClient {
+    private static func connectToApp(userInitiated: Bool) throws -> UDSBridgeClient {
         let secret = try BridgeSecretStore().load(createIfMissing: true)
         let client = UDSBridgeClient(
             secret: secret,
@@ -74,7 +74,24 @@ struct MacIDMHost {
         )
         do {
             try client.connect()
+            return client
         } catch {
+            // The App is unreachable. Decide whether this request may wake
+            // it: a deliberate quit (marker present) must not be undone by
+            // background traffic — only an explicit user action relaunches.
+            // Without this the Host, which outlives the App, resurrects an
+            // App the user just closed from the menu bar.
+            let quitIntentPresent = BridgeLaunchIntent.hasQuitIntent()
+            let shouldRelaunch = BridgeLaunchIntent.shouldRelaunchApp(
+                quitIntentPresent: quitIntentPresent,
+                requestUserInitiated: userInitiated
+            )
+            guard shouldRelaunch else { throw BridgeError.connectionFailed }
+            if quitIntentPresent {
+                // The user asked to wake the App again; the stale quit
+                // marker no longer reflects their intent.
+                BridgeLaunchIntent.clearQuitIntent()
+            }
             try launchDebugApp()
             var connected = false
             for _ in 0..<50 {
@@ -88,8 +105,8 @@ struct MacIDMHost {
                 }
             }
             guard connected else { throw BridgeError.connectionFailed }
+            return client
         }
-        return client
     }
 
     private static func validateBrowserOrigin(_ origin: String?) throws {
@@ -112,6 +129,8 @@ struct MacIDMHost {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        // Launch normally so interactive confirmation can take focus. The App
+        // applies its own preference for hiding the main window to the menu bar.
         process.arguments = [appURL.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -142,14 +161,18 @@ struct MacIDMHost {
         private var client: UDSBridgeClient?
 
         func send(_ request: MessageRequest) throws -> MessageResponse {
+            // Classify once: only an explicit user gesture may relaunch a
+            // deliberately quit App; background traffic (status ping,
+            // automatic inspection) must not.
+            let userInitiated = BridgeLaunchIntent.isUserInitiatedRequest(request)
             if client == nil {
-                client = try MacIDMHost.connectToApp()
+                client = try MacIDMHost.connectToApp(userInitiated: userInitiated)
             }
             do {
                 return try client!.send(request)
             } catch {
                 client?.close()
-                client = try MacIDMHost.connectToApp()
+                client = try MacIDMHost.connectToApp(userInitiated: userInitiated)
                 return try client!.send(request)
             }
         }

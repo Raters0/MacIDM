@@ -9,6 +9,7 @@
 "未知错误" = "Unknown error";
 "重试" = "Retry";
 "取消" = "Cancel";
+"改为浏览器直接下载" = "Let the browser download it instead";
 "好" = "OK";
 "保存" = "Save";
 "删除" = "Delete";
@@ -299,6 +300,7 @@
 "已折叠" = "Collapsed";
 "清除所有已保存会话" = "Clear all saved sessions";
 "删除所有站点的已保存 Cookie。" = "Deletes the saved cookies for all sites.";
+"删除所有站点的已保存 Cookies" = "Delete saved cookies for all sites";
 "清除全部" = "Clear All";
 "更新" = "Update";
 "启用下载代理" = "Enable download proxy";
@@ -827,3 +829,31 @@
 "当前活动任务的总下载速度" = "Total download speed of the active tasks";
 "%lld 个文件已丢失" = "%lld files missing";
 "Chrome 接管：%@" = "Chrome takeover: %@";
+
+"设置分类" = "Settings categories";
+
+"网络" = "Network";
+
+"浏览器与站点" = "Browser & Sites";
+
+"高级与关于" = "Advanced & About";
+
+"文件信息" = "File Information";
+
+"技术详情" = "Technical Details";
+
+"复制链接" = "Copy Link";
+
+"收起链接" = "Collapse Link";
+
+"展开链接" = "Expand Link";
+
+"下载已完成，但原始文件已删除或移动" = "Download completed, but the original file was removed or moved";
+
+"已传输字节；任务尚未完成" = "Bytes transferred; task has not completed";
+
+"剩余约 %@" = "About %@ remaining";
+
+"错误详情" = "Error Details";
+
+"查看错误详情" = "Show Error Details";

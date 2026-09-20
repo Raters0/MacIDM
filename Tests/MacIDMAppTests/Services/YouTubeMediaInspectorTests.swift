@@ -6,7 +6,7 @@ import XCTest
 final class YouTubeMediaInspectorTests: XCTestCase {
     /// 构造一个假的 yt-dlp 可执行文件：向 stderr 输出指定文本并以
     /// status 退出。用于驱动 classifyProcessFailure 的错误归类
-    /// （docs/AI交接.md §5.2）。
+    /// （technical-spec §3.4）。
     private func makeFailingExecutable(
         stderr: String,
         status: Int32 = 1,
@@ -33,7 +33,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
 
     func testLiveURLsAreRecognizedAsYouTubePages() {
         // /live/<id> 与 /watch、/shorts 同为单视频页：已结束直播的回放
-        // 允许进入检查链路；无效路径仍然拒绝（docs/AI交接.md §5）。
+        // 允许进入检查链路；无效路径仍然拒绝（technical-spec §3.4）。
         XCTAssertTrue(
             YouTubeMediaInspector.isYouTubePage(
                 URL(string: "https://www.youtube.com/live/liv3id99")!))
@@ -156,7 +156,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
     func testInspectClassifiesUnusableCookieFile() async throws {
         // yt-dlp 拒绝临时 cookie file（invalid Netscape format）时归类为
         // cookieContextUnavailable，而不是泛化的 invalidPlaylist
-        // （docs/AI交接.md §5.2）。
+        // （technical-spec §3.4）。
         let (inspector, directory) = try makeFailingExecutable(
             stderr: """
                 http/cookiejar.py:2079: UserWarning: http.cookiejar bug!
@@ -255,7 +255,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
 
     func testExplicitCookieContextUsesTemporaryCookieFileAndCleansUp() async throws {
         // 显式 Cookie 存在时：yt-dlp 收到 --cookies <临时文件>，文件在
-        // 进程运行期间存在，inspect 结束后被删除（docs/AI交接.md §6 Swift-3）。
+        // 进程运行期间存在，inspect 结束后被删除。
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMInspectorCookieTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -305,8 +305,11 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         )
     }
 
-    func testWithoutCookieContextFallsBackToBrowserCookies() async throws {
-        // 无 Cookie：按规格回退 --cookies-from-browser chrome（§6 Swift-4）。
+    func testWithoutCookieContextRunsAnonymouslyWithoutBrowserCookies() async throws {
+        // 无 Cookie：匿名运行。规格已移除 --cookies-from-browser 回退
+        // （§6 Swift-4）：读 Chrome 的 Cookies DB 需要 macOS Full Disk
+        // Access 且每次 ad-hoc 重建都失效，因此无授权 Cookie 时不得传任何
+        // Cookie 参数，让 yt-dlp 匿名提取（公开视频仍可用）。
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMInspectorNoCookieTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -321,10 +324,13 @@ final class YouTubeMediaInspectorTests: XCTestCase {
             mediaKind: .http
         )
 
+        // 匿名：假 yt-dlp 只在收到 --cookies / --cookies-from-browser 时写
+        // marker；两者都不应出现，故 marker 不存在。
         let marker = directory.appendingPathComponent("cookie-args")
-        let recorded = try String(contentsOf: marker, encoding: .utf8)
-        XCTAssertTrue(recorded.contains("browserFallback=chrome"), "expected the browser fallback")
-        XCTAssertFalse(recorded.contains("cookieFileExists="), "no cookie file without a supplied cookie")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: marker.path),
+            "anonymous inspect must not pass any cookie argument (no Chrome DB read)"
+        )
     }
 
     func testInspectCancellationTerminatesChildProcessPromptly() async throws {
@@ -418,7 +424,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
     }
 
     func testInspectCancellationAlsoTerminatesLongLivedDescendant() async throws {
-        // docs/AI交接.md §2：yt-dlp 会再派生长寿命后代（JS 运行时）；取消必须结束
+        // technical-spec §3.4：yt-dlp 会再派生长寿命后代（JS 运行时）；取消必须结束
         // 整棵进程树，只杀直接子进程会把后代留守成孤儿进程。
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMInspectorDescendantTests-\(UUID().uuidString)")
@@ -564,7 +570,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         // 720 progressive(22)、720 mp4(136)。
         XCTAssertEqual(inspection.variants.count, 4)
         let estimates = inspection.variants.map(\.estimatedSize)
-        // 预估镜像用户实际选中的 itag（docs/AI交接.md §2）：变体 URL 带
+        // 预估镜像用户实际选中的 itag（technical-spec §3.4）：变体 URL 带
         // itag 时按「该轨自身大小 + 无音轨则叠加最优 m4a」计算。
         // 1080 mp4(137)：60M + m4a 140 的 1.8M。
         XCTAssertEqual(estimates[0], 60_000_000 + 1_800_000)
@@ -610,7 +616,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         XCTAssertEqual(inspection.variants.first?.estimatedSize, 6_250_000)
     }
 
-    // MARK: - Live status（docs/AI交接.md §3.3）
+    // MARK: - Live status（technical-spec §3.4）
 
     /// 构造输出固定 `-J` JSON 的假 yt-dlp。
     private func makeJSONExecutable(json: String, directory: URL) throws -> URL {
@@ -762,7 +768,7 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         XCTAssertFalse(YouTubeLiveClassifier.isBlocked(.unknown))
     }
 
-    // MARK: - inspect 双日志（docs/AI交接.md §3.1）
+    // MARK: - inspect 双日志（technical-spec §3.1.7）
 
     func testInspectFailureWritesDualLogsWithSharedEventID() async throws {
         // 常规日志只有安全摘要；私密日志按同一 event id 保留完整 URL 与

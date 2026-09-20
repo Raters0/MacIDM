@@ -184,6 +184,10 @@ public struct HLSMediaInspector: MediaInspecting {
                         width: variant.width,
                         height: variant.height,
                         codecs: variant.codecs,
+                        // Separate-audio master (X/Twitter style): expose the
+                        // EXT-X-MEDIA rendition so the submission carries
+                        // pairAudioUrl and the executor muxes both tracks.
+                        pairAudioURL: HLSAudioRendition.resolve(variant: variant, in: master)?.url,
                         estimatedSize: MediaVariant.estimatedSize(
                             bandwidth: variant.bandwidth > 0 ? variant.bandwidth : nil,
                             duration: sharedDuration
@@ -375,14 +379,31 @@ public struct DASHMediaInspector: MediaInspecting {
 public struct CompositeMediaInspector: MediaInspecting {
     private let hls: HLSMediaInspector
     private let dash: DASHMediaInspector
+    /// Wall-clock ceiling for one playlist inspection.
+    ///
+    /// The browser bridge is a strictly serial request/response channel (every
+    /// secure frame carries the next sequence number), so a single slow
+    /// inspection also holds up pings, activations and enqueues queued behind
+    /// it. The extension abandons an inspection after 15s, so the App has to
+    /// answer first: on expiry the caller gets a retryable network failure
+    /// instead of a wedged bridge.
+    private let inspectionBudget: TimeInterval
+
+    /// Default budget shared by the fetch timeout and the overall deadline; a
+    /// caller that injects its own client keeps full control of the transport.
+    public static let defaultInspectionBudget: TimeInterval = 12
 
     public init(
-        client: any HLSResourceClient = URLSessionHLSResourceClient(),
+        client: any HLSResourceClient = URLSessionHLSResourceClient(
+            requestTimeout: CompositeMediaInspector.defaultInspectionBudget
+        ),
         hlsParser: HLSParser = HLSParser(),
-        dashParser: DASHParser = DASHParser()
+        dashParser: DASHParser = DASHParser(),
+        inspectionBudget: TimeInterval = CompositeMediaInspector.defaultInspectionBudget
     ) {
         hls = HLSMediaInspector(client: client, parser: hlsParser)
         dash = DASHMediaInspector(client: client, parser: dashParser)
+        self.inspectionBudget = inspectionBudget
     }
 
     public func inspect(
@@ -390,10 +411,33 @@ public struct CompositeMediaInspector: MediaInspecting {
         requestContext: DownloadRequestContext?,
         mediaKind: DownloadSourceKind
     ) async throws -> MediaInspection {
+        let inspector: any MediaInspecting
         switch mediaKind {
-        case .hls: return try await hls.inspect(url: url, requestContext: requestContext, mediaKind: .hls)
-        case .dash: return try await dash.inspect(url: url, requestContext: requestContext, mediaKind: .dash)
+        case .hls: inspector = hls
+        case .dash: inspector = dash
         case .http: throw MediaInspectionError.invalidPlaylist("直链不需要播放列表检查")
+        }
+        let budget = inspectionBudget
+        return try await withThrowingTaskGroup(of: MediaInspection.self) { group in
+            group.addTask {
+                try await inspector.inspect(
+                    url: url,
+                    requestContext: requestContext,
+                    mediaKind: mediaKind
+                )
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(budget * 1_000_000_000))
+                throw MediaInspectionError.networkOrProxyFailure
+            }
+            // Whichever child finishes first decides the outcome: a fast parse
+            // error must not be masked by the deadline, and an expired deadline
+            // must not leave the fetch running against the serial bridge.
+            defer { group.cancelAll() }
+            guard let inspection = try await group.next() else {
+                throw MediaInspectionError.networkOrProxyFailure
+            }
+            return inspection
         }
     }
 }

@@ -144,6 +144,24 @@ export function extensionFromCandidate(candidate) {
   return "";
 }
 
+/// 候选缺 format 时的推断，与 shared/media-utils.js 的 mediaFormat 保持
+/// 同一判据：缺省一律 "video" 会把 X 的 HLS master 标成 video，提交时
+/// mediaKind 解析失败回落 http → 带音轨提交被误改判 DASH pair。
+export function inferMediaFormat(value, mime = "") {
+  const lower = String(value ?? "").toLowerCase();
+  const type = String(mime ?? "").toLowerCase();
+  if (/\.m3u8(?:$|[?#])/iu.test(lower) || type.includes("mpegurl")) return "hls";
+  if (/\.mpd(?:$|[?#])/iu.test(lower) || type.includes("dash+xml")) return "dash";
+  if (type.startsWith("image/")
+      || /\.(?:jpg|jpeg|png|gif|webp|avif|svg|bmp|ico|tiff|heic|heif)(?:$|[?#])/iu.test(lower)) {
+    return "image";
+  }
+  if (type.startsWith("audio/") || /\.(?:mp3|m4a|aac|flac|ogg|opus|wav)(?:$|[?#])/iu.test(lower)) {
+    return "audio";
+  }
+  return "video";
+}
+
 export function normalizeCandidates(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -158,7 +176,7 @@ export function normalizeCandidates(raw) {
         mime: String(candidate.mime ?? "").slice(0, 256),
         format: ["hls", "dash", "dash-json", "video", "audio", "image", "blob"].includes(candidate.format)
           ? candidate.format
-          : "video",
+          : inferMediaFormat(candidate.url, candidate.mime),
         fileExtension: normalizeFileExtension(candidate.fileExtension)
           ?? extensionFromCandidate(candidate),
         supported: candidate.supported !== false && !String(candidate.url).startsWith("blob:"),
@@ -198,6 +216,12 @@ export function normalizeCandidates(raw) {
       if (typeof candidate.qualityLabel === "string") {
         normalized.qualityLabel = candidate.qualityLabel.slice(0, 60);
       }
+      if (candidate.filenameHintSource === "titleDerived" || candidate.filenameHintSource === "urlPath") {
+        normalized.filenameHintSource = candidate.filenameHintSource;
+      }
+      if (typeof candidate.cardTitle === "string" && candidate.cardTitle) {
+        normalized.cardTitle = candidate.cardTitle.slice(0, 120);
+      }
       if (candidate.siteAdapter === "bilibili" || candidate.siteAdapter === "youtube") {
         normalized.siteAdapter = candidate.siteAdapter;
       }
@@ -223,9 +247,28 @@ export function mergeCandidates(existing, incoming) {
       const earlier = merged[index];
       const earlierHasSize = Number.isSafeInteger(earlier?.size) && earlier.size >= 0;
       const candidateHasSize = Number.isSafeInteger(candidate?.size) && candidate.size >= 0;
-      if (!earlierHasSize && candidateHasSize) {
-        merged[index] = candidate;
+      const rank = entry => entry?.siteAdapter ? 3 : entry?.pairKind === "m4s-pair" ? 2 : 1;
+      let next = rank(candidate) > rank(earlier) ? candidate
+        : rank(candidate) < rank(earlier) ? earlier
+          : !earlierHasSize && candidateHasSize ? candidate : earlier;
+      // A later observation may carry identity the first one lacked: a
+      // network-only row (no name) must adopt the per-card cardTitle, hint
+      // and labels the snapshot reports once the card plays — and a size
+      // update replacing the row must not drop the identity it carried.
+      const donor = next === candidate ? earlier : candidate;
+      if (donor) {
+        const upgrades = {};
+        for (const key of ["cardTitle", "filenameHint", "filenameHintSource", "qualityLabel", "duration"]) {
+          if (next[key] == null && donor[key] != null) upgrades[key] = donor[key];
+        }
+        if ((next.displayName == null || next.displayName === t("common.mediaResource"))
+          && donor.displayName
+          && donor.displayName !== next.displayName) {
+          upgrades.displayName = donor.displayName;
+        }
+        if (Object.keys(upgrades).length > 0) next = { ...next, ...upgrades };
       }
+      merged[index] = next;
       continue;
     }
     seen.set(url, merged.length);
@@ -310,9 +353,16 @@ export function mergeTabMediaCache(existing, incoming, frameId = 0) {
     : null;
   const filteredSummary = incomingSummary ?? existing?.filteredSummary ?? { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 };
 
+  // Provenance of the page-level title: "card" means it describes one card on
+  // a gallery page and must not name other cards' resources in consumers.
+  const titleSource = isMainFrame && typeof incoming.titleSource === "string"
+    ? incoming.titleSource
+    : (existing?.titleSource ?? "document");
+
   return {
     pageUrl,
     title,
+    titleSource,
     candidates,
     filteredSummary,
   };
@@ -342,6 +392,10 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
   const cachedVideoId = videoIdOf(cached?.pageUrl);
 
   const fallbackSummary = { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 };
+  // Title provenance must travel with the title it describes: dropping it
+  // here would make the Popup treat one gallery card's caption as the
+  // page-level title and stamp it onto every row.
+  const cachedTitleSource = typeof cached?.titleSource === "string" ? cached.titleSource : "document";
 
   if (liveVideoId) {
     // Live URL is a YouTube video (e.g. video B):
@@ -368,6 +422,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
         ok: true,
         pageUrl: targetPageUrl,
         title: typeof cached.title === "string" ? cached.title : "",
+        titleSource: cachedTitleSource,
         candidates: candidates.length > 0 ? candidates : [buildSafeYouTubeCandidate(targetPageUrl)],
         filteredSummary: cached.filteredSummary ?? fallbackSummary,
       };
@@ -380,6 +435,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
       ok: true,
       pageUrl: targetPageUrl,
       title: "",
+      titleSource: "document",
       candidates: [buildSafeYouTubeCandidate(targetPageUrl)],
       filteredSummary: fallbackSummary,
     };
@@ -394,6 +450,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
         ok: true,
         pageUrl: targetPageUrl,
         title: "",
+        titleSource: "document",
         candidates: [],
         filteredSummary: fallbackSummary,
       };
@@ -404,6 +461,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
         ok: true,
         pageUrl: targetPageUrl,
         title: typeof cached.title === "string" ? cached.title : "",
+        titleSource: cachedTitleSource,
         candidates: Array.isArray(cached.candidates) ? cached.candidates : [],
         filteredSummary: cached.filteredSummary ?? fallbackSummary,
       };
@@ -412,6 +470,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
       ok: true,
       pageUrl: targetPageUrl,
       title: "",
+      titleSource: "document",
       candidates: [],
       filteredSummary: fallbackSummary,
     };
@@ -421,6 +480,7 @@ export function alignMediaTabStateWithLiveURL(cached, livePageUrl) {
     ok: true,
     pageUrl: null,
     title: "",
+    titleSource: "document",
     candidates: [],
     filteredSummary: fallbackSummary,
   };

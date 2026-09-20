@@ -1,9 +1,11 @@
 import { addAuthorizedOrigin, isOriginAuthorized } from "../shared/cookie-authorization.js";
 import { t, i18n, hydrateDocument } from "../shared/i18n-access.js";
+import { STORAGE_SETTINGS_KEY } from "../shared/constants.js";
 
 const hostStatus = document.querySelector("#host-status");
 const takeoverToggle = document.querySelector("#takeover-toggle");
 const governanceToggle = document.querySelector("#sniff-governance-toggle");
+const previewToggle = document.querySelector("#preview-toggle");
 const minSizeInput = document.querySelector("#min-size-input");
 const audioMinInput = document.querySelector("#audio-min-input");
 const segmentMaxInput = document.querySelector("#segment-max-input");
@@ -15,6 +17,7 @@ const cookieStatus = document.querySelector("#cookie-status");
 const cookieRow = document.querySelector("#cookie-row");
 const cookieShortcut = document.querySelector("#cookie-authorize-shortcut");
 const mediaCount = document.querySelector("#media-count");
+const mediaLoading = document.querySelector("#media-loading");
 const filteredNote = document.querySelector("#filtered-note");
 const mediaList = document.querySelector("#media-list");
 const languageSelect = document.querySelector("#language-select");
@@ -27,11 +30,52 @@ globalThis.MacIDMSlimScrollbar?.attach?.(menu);
 let currentOrigin = null;
 let currentTabID = null;
 let currentMedia = { pageUrl: null, title: "", candidates: [], filteredSummary: { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 } };
+
+// Gallery pages: the page-level title belongs to one hovered card only; rows
+// without their own identity use their stamped card title (else their display
+// name), never another card's caption.
+function rowBaseTitle(candidate) {
+  const ownTitle = String(candidate?.cardTitle ?? "").trim();
+  if (ownTitle) return ownTitle;
+  const isImage = candidate?.format === "image" || String(candidate?.mime ?? "").startsWith("image/");
+  if (isImage) return "";
+  if (currentMedia?.titleSource === "card") {
+    const own = String(candidate?.cardTitle ?? "").trim();
+    if (own) return own;
+    const display = String(candidate?.displayName ?? "").trim();
+    // The normalized placeholder is not an identity: drop it so the row
+    // reads by its own URL-tail name instead of a repeated generic prefix.
+    return display && display !== t("common.mediaResource") ? display : "";
+  }
+  return String(currentMedia?.title ?? "").trim();
+}
+// Sniffing progress for the header spinner. "Done" means: no site adapter
+// is still parsing (inspecting), no http candidate waits on a size/metadata
+// probe (resolved or explicitly failed), and the page produced at least one
+// resource — an empty list only right after opening the Popup still counts
+// as sniffing (the page may not have surfaced media yet).
+const metadataPending = new Set();
+const popupOpenedAt = Date.now();
+const EMPTY_SNIFF_GRACE_MS = 8_000;
+function updateSniffingIndicator(candidates) {
+  const pendingProbe = candidates.some((candidate) =>
+    candidate.inspecting === true
+    || (
+      candidate.supported !== false && !candidate.siteAdapter && !candidate.pairKind
+      && !Number.isSafeInteger(candidate.size)
+      && candidate.sizeProbeFailed !== true
+      && /^https?:/iu.test(String(candidate.url ?? ""))
+    ));
+  const sniffing = candidates.some(c => metadataPending.has(c.url)) || pendingProbe
+    || (candidates.length === 0 && Date.now() - popupOpenedAt < EMPTY_SNIFF_GRACE_MS);
+  mediaLoading.hidden = !sniffing;
+  if (sniffing) mediaLoading.title = t("popup.sniffing");
+}
 let mediaRefreshTimer;
 let fragmentGroupExpanded = false;
 let lastRenderFingerprint = "";
 // Previous page's YouTube videoId: a same-video parameter change is not a
-// transition (AI handover doc §2).
+// transition (chrome-extension-spec §5.8).
 let lastSyncedVideoID = "";
 // Candidate URL whose quality accordion is expanded (one at a time).
 let openAccordionUrl = null;
@@ -40,8 +84,13 @@ let openAppInFlight = false;
 // clicking the row requests the permission or merely re-parses.
 let cookieGranted = false;
 let cookieRowInFlight = false;
+// Inline media preview (opt-in): allocates a decoder per open preview, so it
+// is off by default and gated behind the menu toggle.
+let previewEnabled = false;
+let previewVideo = null;
+let previewHls = null;
 const autoInspectedUrls = new Set();
-// YouTube shared-inspection snapshots (AI handover doc §5.1–5.2):
+// YouTube shared-inspection snapshots (chrome-extension-spec §5.8):
 // candidate url -> snapshot. Snapshots come from the background
 // coordinator; closing the Popup does not cancel the inspection, and
 // reopening reads the latest state.
@@ -49,7 +98,7 @@ const youTubeInspections = new Map();
 
 initialize();
 
-// Unified YouTube page identity (AI handover doc §2): the primary key for
+// Unified YouTube page identity (chrome-extension-spec §5.8): the primary key for
 // inspection snapshots, auto-inspection dedupe and expand state is the
 // videoId, not the changeable full URL; non-YouTube candidates keep using
 // the original URL key. Normalization is only for state association and
@@ -103,7 +152,30 @@ async function initialize() {
     if (!snapshot || snapshot.tabId !== currentTabID) return;
     applyYouTubeSnapshot(snapshot);
   });
-  await Promise.allSettled([refreshPermission(), refreshStatus(), refreshMediaCandidates()]);
+  previewToggle.addEventListener("change", () => {
+    previewEnabled = previewToggle.checked;
+    chrome.storage.local
+      .get(STORAGE_SETTINGS_KEY)
+      .then((stored) => {
+        const settings = { ...(stored?.[STORAGE_SETTINGS_KEY] || {}), previewEnabled };
+        return chrome.storage.local.set({ [STORAGE_SETTINGS_KEY]: settings });
+      })
+      .catch(() => {});
+    releasePreview();
+    lastRenderFingerprint = "";
+    renderMediaCandidates(currentMedia);
+  });
+  await Promise.allSettled([refreshPermission(), refreshStatus(), loadPreviewSetting(), refreshMediaCandidates()]);
+  // Once hls.js is available, re-render so HLS candidates can be probed and
+  // previewed (the first render happened before the lib finished loading).
+  ensureHlsLib()
+    .then((Hls) => {
+      if (Hls) {
+        lastRenderFingerprint = "";
+        renderMediaCandidates(currentMedia);
+      }
+    })
+    .catch(() => {});
   mediaRefreshTimer = window.setInterval(refreshMediaCandidates, 1_200);
 }
 
@@ -303,7 +375,16 @@ async function refreshStatus() {
     const online = status?.connected === true;
     hostStatus.classList.toggle("online", online);
     hostStatus.classList.toggle("offline", !online);
-    hostStatus.title = online ? t("popup.hostConnected") : t("popup.hostDisconnected");
+    // An unreachable App is a state with a remedy, not a fault: name the
+    // remedy in the dot's tooltip (launch the App vs. install the Host)
+    // instead of the generic "not connected".
+    hostStatus.title = online
+      ? t("popup.hostConnected")
+      : status?.unreachableReason === "hostMissing"
+        ? t("popup.hostNotInstalled")
+        : status?.unreachableReason === "appNotRunning"
+          ? t("popup.appNotRunning")
+          : t("popup.hostDisconnected");
     takeoverToggle.checked = status?.takeoverEnabled === true;
     governanceToggle.checked = status?.sniffGovernanceEnabled === true;
     // Threshold input backfill: popup.status carries the full governance
@@ -404,17 +485,24 @@ function mergeMediaCandidates(payload) {
   const resolvedTitle = incomingTitle
     ? payload.title
     : ((sameYouTubeVideo || isExactSamePage) && previousTitle ? currentMedia.title : "");
+  // Title provenance travels with the title it describes: a retained
+  // previous title keeps the previous source.
+  const incomingTitleSource = typeof payload.titleSource === "string" ? payload.titleSource : "document";
+  const resolvedTitleSource = incomingTitle || !previousTitle
+    ? incomingTitleSource
+    : (currentMedia.titleSource ?? "document");
 
   currentMedia = {
     pageUrl: incomingPageUrl,
     title: resolvedTitle,
+    titleSource: resolvedTitleSource,
     candidates,
     filteredSummary: normalizeFilteredSummary(payload.filteredSummary),
   };
   // After SPA navigation (A→B) the page's candidates are replaced
   // wholesale; clear the inspection dedupe set so returning to A
   // re-inspects, and the old video's variant data is dropped along with
-  // the candidate objects (AI handover doc §6.3). A same-video parameter
+  // the candidate objects (chrome-extension-spec §5.8). A same-video parameter
   // change is not a transition (§2): videoId-keyed inspection state stays
   // usable.
   if (currentMedia.pageUrl !== previousPageUrl) {
@@ -462,6 +550,7 @@ function renderMediaCandidates(payload) {
   mediaCount.textContent = candidates.length > 0
     ? t("popup.resourceCount", { count: candidates.length })
     : t("popup.noResources");
+  updateSniffingIndicator(candidates);
   // Redacted count feedback for false-positive suppression: appears only
   // when something was actually filtered and does not take part in the
   // DOM-rebuild skip logic below (updated directly like mediaCount).
@@ -474,12 +563,16 @@ function renderMediaCandidates(payload) {
     filteredNote.hidden = true;
   }
   const title = String(payload.title ?? "").trim();
+  // Host of the sniffed page (not the extension page): the shared naming
+  // rules mirror the App's host-matched brand-suffix strip and need it.
+  let pageHostname = "";
+  try { pageHostname = new URL(payload.pageUrl || "").hostname; } catch { pageHostname = ""; }
   // Skip the expensive DOM rebuild when nothing material has changed. This
   // preserves <details> open state, scroll position, and focus that would
   // otherwise be destroyed by the 1.2s auto-refresh timer.
   const fingerprint = candidates
     .map((c) =>
-      `${c.url}|${c.filenameHint}|${c.supported}|${c.inspecting}|${c.enqueued}|${c.size ?? ""}|${c.inspectError ?? ""}|${c.pairNote ?? ""}|${c.variants?.length ?? 0}|${youTubeInspections.get(candidateKey(c))?.stage ?? ""}|${youTubeInspections.get(candidateKey(c))?.variantCount ?? 0}`,
+      `${c.url}|${c.cardTitle ?? ""}|${c.mime ?? ""}|${c.fileExtension ?? ""}|${c.filenameHint}|${c.supported}|${c.inspecting}|${c.enqueued}|${c.size ?? ""}|${c.inspectError ?? ""}|${c.pairNote ?? ""}|${c.variants?.length ?? 0}|${youTubeInspections.get(candidateKey(c))?.stage ?? ""}|${youTubeInspections.get(candidateKey(c))?.variantCount ?? 0}|${probeFingerprint(c)}`,
     )
     .join("\n") + "\n" + title + "\n" + i18n.currentLanguage()
     // Accordion open state participates in the fingerprint so toggling a
@@ -505,7 +598,7 @@ function renderMediaCandidates(payload) {
   for (const candidate of candidates) {
     if (isCollapsedSegment(candidate)) continue;
     const name = globalThis.MacIDMMediaUtils?.smartMediaName
-      ? globalThis.MacIDMMediaUtils.smartMediaName(candidate, title, candidates.length)
+      ? globalThis.MacIDMMediaUtils.smartMediaName(candidate, rowBaseTitle(candidate), candidates.length, pageHostname)
       : (candidate.filenameHint || candidate.displayName || t("common.mediaResource"));
     nameCount.set(name, (nameCount.get(name) || 0) + 1);
   }
@@ -544,6 +637,160 @@ function renderMediaCandidates(payload) {
     const c = candidate;
     setTimeout(() => inspectCandidate(c), 200);
   }
+
+  // Real-media metadata probe (duration/resolution/codec): fills gaps the URL
+  // cannot provide. Runs after render; when metadata lands we re-render so the
+  // meta row picks it up (the probe result participates in the fingerprint).
+  scheduleMetadataProbe(candidates);
+
+  // Release any preview decoder when no drawer is open (popup compact/closed).
+  if (!openAccordionUrl) releasePreview();
+}
+
+// URLs we already attempted this popup lifetime: a failed probe must not be
+// retried on every auto-refresh tick.
+const metadataProbeAttempted = new Set();
+function probeFingerprint(candidate) {
+  const meta = globalThis.MacIDMMediaMetadataProbe?.cached?.(candidate.url);
+  if (!meta) return "";
+  return `${meta.duration ?? ""}|${meta.width ?? ""}|${meta.height ?? ""}|${meta.codec ?? ""}`;
+}
+function scheduleMetadataProbe(candidates) {
+  const probe = globalThis.MacIDMMediaMetadataProbe;
+  if (!probe?.probeCandidates) return;
+  const targets = (Array.isArray(candidates) ? candidates : [])
+    .filter((c) => probe.needsProbe?.(c) && !metadataProbeAttempted.has(c.url));
+  if (targets.length === 0) return;
+  for (const c of targets) { metadataProbeAttempted.add(c.url); metadataPending.add(c.url); }
+  updateSniffingIndicator(candidates);
+  setTimeout(async () => {
+    try {
+      // Request one result per message so a slow resource cannot hold back
+      // metadata already available for another row. The page owns scheduling.
+      await Promise.all(targets.map(async candidate => {
+        try {
+          let result = null;
+          if (currentTabID != null) {
+            try {
+              const response = await chrome.tabs.sendMessage(currentTabID, {
+                type: "macidm.probeMediaMeta", urls: [candidate.url],
+              });
+              result = response?.results?.find(item => item.url === candidate.url && item.meta);
+            } catch { /* Use the local loader if the content script is unavailable. */ }
+          }
+          if (!result) {
+            [result] = await probe.probeCandidates([candidate], {
+              priority: "interactive",
+              onResult(value) {
+                if (value?.meta) probe.store?.(value.url, value.meta);
+                metadataPending.delete(candidate.url);
+                renderMediaCandidates(currentMedia ?? { candidates: [] });
+              },
+            });
+          }
+          if (result?.meta) probe.store?.(result.url, result.meta);
+        } finally {
+          metadataPending.delete(candidate.url);
+          renderMediaCandidates(currentMedia ?? { candidates: [] });
+        }
+      }));
+    } finally {
+      for (const c of targets) metadataPending.delete(c.url);
+      updateSniffingIndicator(currentMedia?.candidates ?? []);
+    }
+  }, 150);
+}
+
+// ---- inline media preview (opt-in) ----
+// hls.js is vendored under lib/ and injected on demand; when the file is
+// absent (not yet fetched) HLS probe/preview degrade gracefully to disabled.
+let hlsLoadPromise = null;
+function ensureHlsLib() {
+  if (globalThis.Hls) return Promise.resolve(globalThis.Hls);
+  if (hlsLoadPromise) return hlsLoadPromise;
+  hlsLoadPromise = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("lib/hls.light.min.js");
+    script.onload = () => resolve(globalThis.Hls ?? null);
+    script.onerror = () => resolve(null);
+    document.head.appendChild(script);
+  });
+  return hlsLoadPromise;
+}
+
+async function loadPreviewSetting() {
+  try {
+    const stored = await chrome.storage.local.get(STORAGE_SETTINGS_KEY);
+    previewEnabled = stored?.[STORAGE_SETTINGS_KEY]?.previewEnabled === true;
+    previewToggle.checked = previewEnabled;
+  } catch {
+    previewEnabled = false;
+  }
+}
+
+function releasePreview() {
+  if (previewHls) {
+    try { previewHls.destroy(); } catch { /* ignore */ }
+    previewHls = null;
+  }
+  if (previewVideo) {
+    try {
+      previewVideo.pause();
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+    } catch { /* ignore */ }
+    previewVideo = null;
+  }
+}
+
+function isPreviewable(candidate) {
+  if (!candidate || candidate.supported === false) return false;
+  const url = candidate.url || "";
+  if (!/^https?:/i.test(url)) return false;
+  if (candidate.format === "dash" || candidate.format === "dash-json") return false;
+  const isHls = candidate.format === "hls" || /\.m3u8(?:[?#]|$)/i.test(url);
+  if (isHls) return Boolean(globalThis.Hls && globalThis.Hls.isSupported?.());
+  return true;
+}
+
+function buildPreviewElement(candidate) {
+  if (!isPreviewable(candidate)) return null;
+  releasePreview();
+  const wrap = document.createElement("div");
+  wrap.className = "pv-preview";
+  const video = document.createElement("video");
+  video.controls = true;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  previewVideo = video;
+  const url = candidate.url;
+  const isHls = candidate.format === "hls" || /\.m3u8(?:[?#]|$)/i.test(url);
+  if (isHls && globalThis.Hls) {
+    const hls = new globalThis.Hls({ enableWorker: false });
+    previewHls = hls;
+    hls.on(globalThis.Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      const levels = data?.levels || [];
+      if (levels.length > 0) {
+        // Auto-select the highest-bitrate level for preview.
+        let best = 0;
+        for (let i = 1; i < levels.length; i += 1) {
+          if ((levels[i].bitrate || 0) > (levels[best].bitrate || 0)) best = i;
+        }
+        hls.currentLevel = best;
+      }
+      video.play?.().catch(() => {});
+    });
+    hls.on(globalThis.Hls.Events.ERROR, (_event, data) => {
+      if (data?.fatal) hls.stopLoad();
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+  } else {
+    video.src = url;
+  }
+  wrap.append(video);
+  return wrap;
 }
 
 function renderFragmentGroup(fragments) {
@@ -600,13 +847,24 @@ function renderCandidate(candidate, nameCount) {
   content.className = "media-content";
   const title = document.createElement("strong");
   const smartName = globalThis.MacIDMMediaUtils?.smartMediaName
-    ? globalThis.MacIDMMediaUtils.smartMediaName(candidate, currentMedia.title ?? "", currentMedia.candidates?.length ?? 1)
+    ? globalThis.MacIDMMediaUtils.smartMediaName(
+      candidate,
+      rowBaseTitle(candidate),
+      currentMedia.candidates?.length ?? 1,
+      (() => {
+        try { return new URL(currentMedia.pageUrl || "").hostname; } catch { return ""; }
+      })(),
+    )
     : (candidate.filenameHint || candidate.displayName || t("common.mediaResource"));
   // B2: For same-named but different-URL resources (e.g. X HLS variants),
   // append the resolution/quality label to the title for differentiation.
   let displayName = smartName;
   if (nameCount && (nameCount.get(smartName) || 0) > 1) {
-    const resLabel = candidate.qualityLabel || "";
+    // Bitrate is a meta slot, not a name: "标题 · 3422 kbps" reads as part
+    // of the title. Only resolution-style labels differentiate rows.
+    const resLabel = candidate.qualityLabel && !/kbps|Mbps/iu.test(candidate.qualityLabel)
+      ? candidate.qualityLabel
+      : "";
     if (resLabel) displayName = `${smartName} · ${resLabel}`;
   }
   title.textContent = displayName;
@@ -617,6 +875,15 @@ function renderCandidate(candidate, nameCount) {
   // shown, avoiding whole-row noise.
   const metaSlots = [formatLabel(candidate)];
   if (candidate.qualityLabel) metaSlots.push(candidate.qualityLabel);
+  // Real-media probe metadata (resolution/codec, and duration below) fills
+  // gaps the URL cannot provide; it never overrides an already-known value.
+  const probeMeta = globalThis.MacIDMMediaMetadataProbe?.cached?.(candidate.url) ?? null;
+  const probeWidth = probeMeta?.width || 0;
+  const probeHeight = probeMeta?.height || 0;
+  const resolutionSlot = (!candidate.qualityLabel && probeHeight)
+    ? (globalThis.MacIDMMediaUtils?.resolutionLabel?.(probeWidth, probeHeight) || "")
+    : "";
+  if (resolutionSlot) metaSlots.push(resolutionSlot);
   const sizeSlot = formatSize(candidate);
   const hiddenSizeSlots = [
     t("common.unknown"),
@@ -627,8 +894,10 @@ function renderCandidate(candidate, nameCount) {
   if (!hiddenSizeSlots.includes(sizeSlot)) {
     metaSlots.push(sizeSlot);
   }
-  const durationSlot = formatDuration(candidate.duration);
+  const durationSlot = formatDuration(candidate.duration ?? probeMeta?.duration ?? null);
   if (durationSlot) metaSlots.push(durationSlot);
+  const codecSlot = globalThis.MacIDMMediaUtils?.codecFamily?.(probeMeta?.codec) || "";
+  if (codecSlot) metaSlots.push(codecSlot);
 
   const isDashJson = candidate.format === "dash-json";
   const isManifest = candidate.format === "hls" || candidate.format === "dash";
@@ -676,6 +945,9 @@ function renderCandidate(candidate, nameCount) {
   // marker and pair note all go into the whole-row tooltip.
   const tooltipParts = [displayName];
   if (candidate.displayURL) tooltipParts.push(candidate.displayURL);
+  if (candidate.serverFilename) {
+    tooltipParts.push(t("popup.serverFilename", { name: candidate.serverFilename }));
+  }
   if (candidate.confidence === "extension") tooltipParts.push(t("popup.metaInferred"));
   if (candidate.pairNote) tooltipParts.push(candidate.pairNote);
 
@@ -702,7 +974,10 @@ function renderCandidate(candidate, nameCount) {
   // "Authorize Cookie" button (permission requests must be triggered by a
   // user gesture) and expand too: the drawer keeps the error message and
   // download entry without losing the expanded state early.
-  const stateKey = candidateKey(candidate);
+  // Accordion key includes format/pairKind: same-URL candidates of different
+  // formats (site-adapter row + raw track row on Bilibili watch pages) must
+  // expand independently instead of opening together.
+  const stateKey = `${candidateKey(candidate)}|${candidate.format ?? ""}|${candidate.pairKind ?? ""}`;
   const isOpen = openAccordionUrl === stateKey;
   if (isOpen) row.classList.add("open");
   row.classList.add("clickable");
@@ -749,6 +1024,11 @@ function renderCandidate(candidate, nameCount) {
 function renderQualityAccordion(candidate) {
   const sub = document.createElement("div");
   sub.className = "pv-sub";
+  // Opt-in inline preview at the top of the expanded drawer.
+  if (previewEnabled) {
+    const preview = buildPreviewElement(candidate);
+    if (preview) sub.append(preview);
+  }
   // YouTube goes through the shared coordinator snapshot:
   // stages/partial results/failures and retries all update in place
   // inside the drawer.
@@ -897,6 +1177,27 @@ function renderYouTubeAccordion(candidate, sub) {
     });
     sub.append(retry);
   }
+  if ((stage === "partial" || stage === "failed") && !cookieGranted && currentOrigin) {
+    // Login-state qualities need an authorized site cookie: the App no longer
+    // reads Chrome's on-disk Cookies DB (Full Disk Access), so YouTube falls
+    // back to anonymous extraction without a granted cookie. Offer the same
+    // per-origin authorization entry used by failed generic inspections, then
+    // re-run the shared YouTube inspection with the granted cookie.
+    const authorize = document.createElement("div");
+    authorize.className = "pv-opt";
+    authorize.setAttribute("role", "button");
+    authorize.setAttribute("tabindex", "0");
+    authorize.textContent = t("popup.authorizeCookieShort");
+    const doAuthorize = () => authorizeCookieAndRetry(candidate, authorize);
+    authorize.addEventListener("click", doAuthorize);
+    authorize.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        doAuthorize();
+      }
+    });
+    sub.append(authorize);
+  }
   return sub;
 }
 
@@ -912,6 +1213,21 @@ function youTubeStageText(snapshot) {
 /// also syncs variants for size estimation/format slots. Keys use the
 /// unified identity (§2): when only the same video's parameters change,
 /// the current candidate can still consume the existing final state.
+/// First positive duration across parsed variants: App inspections return a
+/// per-variant duration (Bilibili playurl, HLS sub-playlist total) and all
+/// variants of one asset share it, so the first hit is the asset's. Feeds
+/// the main row's duration meta slot; never overrides a known value.
+function backfillCandidateDuration(candidate, variants) {
+  if (!candidate || (Number.isFinite(candidate.duration) && candidate.duration > 0)) return;
+  for (const variant of Array.isArray(variants) ? variants : []) {
+    const value = variant?.duration;
+    if (Number.isFinite(value) && value > 0) {
+      candidate.duration = value;
+      return;
+    }
+  }
+}
+
 function applyYouTubeSnapshot(snapshot) {
   if (!snapshot?.pageUrl) return;
   const key = snapshotKey(snapshot);
@@ -919,6 +1235,7 @@ function applyYouTubeSnapshot(snapshot) {
   const candidate = currentCandidate(snapshot.pageUrl);
   if (candidate) {
     candidate.variants = Array.isArray(snapshot.variants) ? snapshot.variants : [];
+    backfillCandidateDuration(candidate, candidate.variants);
     candidate.inspecting = false;
     if (snapshot.stage === "complete" || snapshot.stage === "partial") {
       candidate.inspectError = "";
@@ -981,6 +1298,10 @@ async function inspectCandidate(candidate) {
       type: "media.inspect",
       tabId: currentTabID,
       url: candidate.url,
+      // The Popup is opened by a toolbar click, so parsing qualities here is a
+      // user gesture: the Host may wake an App the user quit earlier instead
+      // of failing the row with a launch timeout.
+      userInitiated: true,
       mediaKind: candidate.siteAdapter === "bilibili"
         ? "dash"
         : candidate.format,
@@ -988,6 +1309,9 @@ async function inspectCandidate(candidate) {
     const latestCandidate = currentCandidate(candidate.url) ?? activeCandidate;
     if (result?.ok && Array.isArray(result.variants)) {
       latestCandidate.variants = result.variants;
+      // 主行时长槽：App 逐 variant 回传的总时长回填到 candidate 上
+      // （B 站 playurl、HLS 子清单共享同一 duration）。
+      backfillCandidateDuration(latestCandidate, result.variants);
       latestCandidate.inspectError = "";
     } else if (result?.timedOut) {
       latestCandidate.inspectError = t("popup.inspectTimeout");
@@ -1093,7 +1417,12 @@ async function submitCandidate(candidate, rowEl) {
           ? "youtube"
           : candidate.format,
       filenameHint: candidate.filenameHint,
-      pageTitle: currentMedia.title,
+      // Naming trust model (technical spec §8.1): mark whether the hint was
+      // synthesized from the title or derived from the URL tail.
+      filenameHintSource: globalThis.MacIDMMediaUtils?.filenameHintSourceFor?.(candidate) ?? "urlPath",
+      // Gallery rows carry per-card attribution; the page-level title may be
+      // branding or another card's caption and must not name the task.
+      pageTitle: String(candidate.cardTitle ?? "").trim() || currentMedia.title,
       duration: candidate.duration,
       // A site-adapter candidate's candidate.size comes from incidental
       // response-header observation (possibly only a few KB) and must not
@@ -1167,7 +1496,10 @@ async function enqueueVariant(candidate, variant, optionEl) {
           ? "youtube"
           : candidate.format,
       filenameHint: candidate.filenameHint,
-      pageTitle: currentMedia.title,
+      filenameHintSource: globalThis.MacIDMMediaUtils?.filenameHintSourceFor?.(candidate) ?? "urlPath",
+      // Gallery rows carry per-card attribution; the page-level title may be
+      // branding or another card's caption and must not name the task.
+      pageTitle: String(candidate.cardTitle ?? "").trim() || currentMedia.title,
       duration: variant.duration,
       estimatedSize: estimatedSizeForVariant(variant),
       pairVideoUrl: variant.pairAudioUrl ? variant.url : variant.pairVideoUrl,
@@ -1421,7 +1753,7 @@ function formatLabel(value) {
   if (candidate?.format === "hls") return t("common.formatHLS");
   if (candidate?.format === "dash") return t("common.formatDASH");
   if (candidate?.format === "dash-json") return t("popup.formatDashJson");
-  // YouTube product contract (AI handover doc §4.4): the UI selects a
+  // YouTube product contract (technical-spec §3.4): the UI selects a
   // quality/codec variant, while App/yt-dlp + FFmpeg uniformly outputs
   // MP4 in the end; a source variant's container (e.g. VP9's webm) is not
   // the final output container and must not appear in the format column.

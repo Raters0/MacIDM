@@ -104,6 +104,62 @@ final class BrowserBridgeJSONTests: XCTestCase {
         XCTAssertEqual(response.requestId, request.requestId)
     }
 
+    func testAppActivateReturnsActivated() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMActivateJSONTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory,
+            settings: AppSettings(defaults: defaults)
+        )
+        let request = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "test:activate-1",
+            type: "app.activate",
+            payload: [:]
+        )
+
+        let response = await model.handleBrowserBridgeRequest(
+            request,
+            clientID: "chrome:test",
+            secret: Data(repeating: 1, count: 32)
+        )
+
+        XCTAssertEqual(response.status, "ok")
+        XCTAssertEqual(response.type, "app.activated")
+        XCTAssertEqual(response.requestId, request.requestId)
+    }
+
+    /// The menu-bar quit must leave a durable "user quit on purpose" marker
+    /// so the Native Messaging Host — which outlives the App — does not
+    /// relaunch it on the next background extension message. This is the
+    /// regression guard for the "closes then restarts itself" bug.
+    func testShutdownRecordsQuitIntentForHost() async throws {
+        let support = AppSupportPaths.supportDirectory()
+        // Start clean regardless of prior activity in the shared test dir.
+        BridgeLaunchIntent.clearQuitIntent(in: support)
+        XCTAssertFalse(BridgeLaunchIntent.hasQuitIntent(in: support))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMQuitIntent-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory,
+            settings: AppSettings(defaults: defaults)
+        )
+
+        model.shutdown()
+
+        XCTAssertTrue(
+            BridgeLaunchIntent.hasQuitIntent(in: support),
+            "graceful shutdown must record the quit intent for the Host"
+        )
+        // Leave the shared test-support directory clean for other tests.
+        BridgeLaunchIntent.clearQuitIntent(in: support)
+    }
+
     func testTimedOutTakeoverCompensationRemovesPendingTaskIdempotently() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMAbandonJSONTests-\(UUID().uuidString)", isDirectory: true)

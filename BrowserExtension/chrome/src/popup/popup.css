@@ -196,6 +196,32 @@ h2 { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   margin-left: auto;
 }
 
+/* Sniffing indicator: spins while resources are still being discovered or
+   size/metadata probes are pending; hidden once the list settles. */
+.section-heading .sniff-spinner {
+  width: 11px;
+  height: 11px;
+  /* .section-heading span sets margin-left:auto; keep the spinner next to
+     the heading text instead of drifting to the count side. */
+  margin-left: 2px;
+  border: 1.5px solid var(--divider);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  animation: sniff-spin 0.9s linear infinite;
+}
+
+.sniff-spinner[hidden] {
+  display: none;
+}
+
+@keyframes sniff-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sniff-spinner { animation-duration: 2.4s; }
+}
+
 .media-list {
   max-height: 300px;
   overflow-y: auto;
@@ -242,7 +268,7 @@ h2 { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   line-height: 1.4;
 }
 
-/* Expanded candidate full title (AI handover doc §5.5): collapsed rows
+/* Expanded candidate full title (chrome-extension-spec §5.8): collapsed rows
    keep single-line ellipsis; .media-row.open switches to full multi-line
    wrapping. Every render branch (parsing, success, partial results,
    failure) must preserve the .open class or the expanded state would
@@ -332,6 +358,26 @@ h2 { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   padding: 2px 4px 6px 8px;
 }
 
+/* Inline media preview (opt-in): a bounded player at the top of the expanded
+   drawer. Capped height keeps the popup compact; black letterbox background
+   matches typical video aspect ratios. */
+.pv-preview {
+  width: 100%;
+  margin: 2px 0 6px;
+}
+.pv-preview video {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  background: #000;
+  border-radius: var(--macidm-radius);
+}
+.pv-preview-note {
+  font-size: 11px;
+  color: var(--macidm-text-secondary);
+  padding: 4px 2px;
+}
+
 .pv-opt {
   padding: 6px 10px;
   font-size: 11px;
@@ -386,11 +432,8 @@ button.media-action:hover:not(:disabled) {
   filter: none;
 }
 
-.media-row-pair {
-  background: var(--accent-soft);
-  border-radius: var(--macidm-radius-card);
-  padding: 8px 6px;
-}
+/* Pair rows carry their explanation in the meta/accordion copy. A filled
+   background here read as a selection state, so no visual distinction. */
 
 .fragment-group {
   border-top: 1px solid var(--divider);

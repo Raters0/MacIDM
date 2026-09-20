@@ -73,7 +73,7 @@ test("cookie context is only read after page-origin cookies permission is grante
   assert.deepEqual(calls[0], { permissions: ["cookies"] });
   assert.deepEqual(calls[1], { url: "https://example.com/account" });
 
-  // Secure diagnostics (AI handover doc §5.3): permission granted, one
+  // Secure diagnostics (chrome-extension-spec §5.8): permission granted, one
   // partitioned cookie excluded, the remaining cookie attached.
   assert.equal(cookieDiagnostics.permissionGranted, true);
   assert.equal(cookieDiagnostics.cookiesFound, 2);

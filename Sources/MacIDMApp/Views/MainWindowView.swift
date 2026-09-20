@@ -69,12 +69,10 @@ struct MainWindowView: View {
     // DownloadDraftWindowManager), so the main window only keeps truly
     // app-level sheets. The task detail lives in the third split column.
     private enum ActiveSheet: Identifiable, Equatable {
-        case settings
         case onboarding
 
         var id: String {
             switch self {
-            case .settings: "settings"
             case .onboarding: "onboarding"
             }
         }
@@ -148,6 +146,7 @@ struct MainWindowView: View {
 
     var body: some View {
         windowBehaviors(windowColumns)
+            .appWindowSurface()
     }
 
     /// Sheets, alerts, and window-level event wiring. Kept behind a function
@@ -185,7 +184,7 @@ struct MainWindowView: View {
                         for id in model.selectedTaskIDs { model.cancel(id) }
                     },
                     onRequestRemoval: { requestRemoval(ids: model.selectedTaskIDs) },
-                    onPresentSettings: { activeSheet = .settings },
+                    onPresentSettings: { SettingsWindowPresenter.shared.show(model: model) },
                     isColumnVisible: { id in
                         !model.settings.hiddenTableColumns.contains(id)
                     },
@@ -205,11 +204,6 @@ struct MainWindowView: View {
                 item: $activeSheet
             ) { sheet in
                 switch sheet {
-                case .settings:
-                    SettingsSheetView(model: model)
-                        .frame(
-                            minWidth: 680, idealWidth: 740, maxWidth: 880, minHeight: 580, idealHeight: 660,
-                            maxHeight: 800)
                 case .onboarding:
                     OnboardingView()
                         .environmentObject(model)
@@ -352,7 +346,7 @@ struct MainWindowView: View {
                 isConfirmingClearHistory = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .macIDMRequestSettings)) { _ in
-                activeSheet = .settings
+                SettingsWindowPresenter.shared.show(model: model)
             }
     }
 
@@ -769,29 +763,6 @@ private struct YTDlpInstallProgressSheet: View {
         case .fetchingRelease, nil: "正在准备 yt-dlp"
         case .downloading: "正在下载 yt-dlp"
         case .installing: "正在安装 yt-dlp"
-        }
-    }
-}
-
-private struct SettingsSheetView: View {
-    @ObservedObject var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("设置")
-                    .font(.title2.bold())
-                Spacer()
-                Button("完成") { dismiss() }
-                    .buttonStyle(FlatHoverButtonStyle())
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 12)
-            Divider()
-            SettingsView(model: model)
         }
     }
 }

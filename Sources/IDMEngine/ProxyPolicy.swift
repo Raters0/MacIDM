@@ -9,7 +9,7 @@ import os
 /// build their ephemeral configurations. Storage is lock-guarded so reads
 /// from concurrent download loops are safe.
 ///
-/// Supported matrix (deliberately narrow, matching the Phase 5-3 scope):
+/// Supported proxy types:
 /// HTTP/HTTPS proxies with Basic authentication, and SOCKS5 on a
 /// best-effort basis (URLSession applies SOCKS dictionaries, but macOS
 /// offers no authenticated-SOCKS challenge hook). Digest, NTLM and

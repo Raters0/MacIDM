@@ -202,7 +202,7 @@ test("applyM4sPairing folds X-style HLS segment traffic behind its manifest", ()
   assert.equal(result.candidates[1].segmentCount, 2);
 });
 
-test("applyM4sPairing removes YouTube player sounds and duplicate manifests", () => {
+test("applyM4sPairing removes player sounds and exact duplicates while preserving manifest query identity", () => {
   const pageUrl = "https://www.youtube.com/watch?v=123";
   const result = applyM4sPairing({
     pageUrl,
@@ -217,6 +217,9 @@ test("applyM4sPairing removes YouTube player sounds and duplicate manifests", ()
         mime: "application/vnd.apple.mpegurl",
         fileExtension: "m3u8",
       }),
+      makeCandidate("https://video.example/playlist.m3u8?tag=14#same", {
+        format: "hls", mime: "application/vnd.apple.mpegurl", fileExtension: "m3u8",
+      }),
       makeCandidate("https://video.example/playlist.m3u8?tag=15", {
         format: "hls",
         mime: "application/vnd.apple.mpegurl",
@@ -228,8 +231,8 @@ test("applyM4sPairing removes YouTube player sounds and duplicate manifests", ()
     ],
   });
 
-  assert.equal(result.candidates.length, 2);
-  assert.equal(result.candidates.filter((candidate) => candidate.format === "hls").length, 1);
+  assert.equal(result.candidates.length, 3);
+  assert.equal(result.candidates.filter((candidate) => candidate.format === "hls").length, 2);
   assert.equal(result.candidates.filter((candidate) => candidate.fileExtension === "mp4").length, 1);
 });
 

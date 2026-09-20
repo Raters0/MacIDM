@@ -28,11 +28,11 @@ struct TitlebarAccessoryToolbar: NSViewRepresentable {
     let isColumnVisible: (String) -> Bool
     let toggleColumn: (String) -> Void
 
-    /// Accessory height drives the titlebar height: 46 pt gives the
+    /// Accessory height drives the titlebar height: 52 pt gives the
     /// traffic-light row comfortable vertical breathing room instead of
     /// the cramped default. (Leading/trailing accessories grow the
     /// titlebar to fit.)
-    private static let accessoryHeight: CGFloat = 46
+    private static let accessoryHeight: CGFloat = 52
 
     func makeNSView(context: Context) -> AccessoryHostView {
         let host = AccessoryHostView()

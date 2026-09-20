@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// Popup 的 YouTube 状态键（docs/AI交接.md §2.4）：快照与候选 URL 仅参数不同但
+// Popup 的 YouTube 状态键（chrome-extension-spec §5.8）：快照与候选 URL 仅参数不同但
 // videoId 相同时，画质与终态仍正确显示；A→B 仍丢弃旧视频状态。
 //
 // popup.js 是 ES module 且在模块顶层执行 initialize()：先安装最小 DOM/
@@ -759,7 +759,11 @@ test("Bilibili / DASH 候选：展开后每个规格直接显示自身预估大�
   refreshIntervalCallback();
   await settle(350);
 
-  assert.equal(getFirstRowTitleText(), "Bilibili Sample Video");
+  // Naming trust model (§8.1): the page title contains the brand token
+  // (generic/brand base), so the identity-synthesized filenameHint
+  // (titleDerived via siteAdapter) names the row — the same order the App
+  // uses. The size slots below are the point of this test.
+  assert.equal(getFirstRowTitleText(), "sample.mp4");
   assert.ok(
     getFirstRowMetaText().includes("最高规格：约 120 MB"),
     "Bilibili 主行显示最高规格的估算大小",
@@ -848,7 +852,9 @@ test("Popup YouTube 候选：快照无变体时回退 candidate.variants 计算�
   refreshIntervalCallback();
   await settle(350);
 
-  assert.equal(getFirstRowTitleText(), "YouTube Fallback Test");
+  // Brand-token page title + titleDerived hint: the hint names the row
+  // (naming trust model §8.1); the fallback estimate is the point here.
+  assert.equal(getFirstRowTitleText(), "fallback.mp4");
   assert.ok(
     getFirstRowMetaText().includes("最高规格：约 209.7 MB"),
     `YouTube 快照无变体时应回退 candidate.variants，实际 meta: ${getFirstRowMetaText()}`,
@@ -999,4 +1005,123 @@ test("header cookie shortcut: visible when unauthorized, requests and hides on c
     origins: ["https://www.youtube.com/*"],
   });
   assert.equal(cookieShortcut.hidden, true, "授权成功后快捷入口应隐藏");
+});
+
+test("画廊页 titleSource=card：每行按自身卡片标题命名，不共用页面级标题", async () => {
+  mediaQueue.push({
+    ok: true,
+    pageUrl: "https://www.douyin.com/jingxuan",
+    title: "嬛嬛一袅楚宫腰",
+    titleSource: "card",
+    candidates: [
+      { url: "https://v95-web-sz.douyinvod.com/a/6aa9", format: "video", filenameHint: "6aa9.mp4", cardTitle: "嬛嬛一袅楚宫腰" },
+      { url: "https://p3-sign.douyin.com/cover.avif", format: "image", fileExtension: "avif", filenameHint: "cover.avif", displayName: "cover.avif" },
+      { url: "https://v95-web-sz.douyinvod.com/b/7165", format: "video", filenameHint: "7165.mp4", displayName: globalThis.MacIDMI18n.t("common.mediaResource") },
+    ],
+  });
+  refreshIntervalCallback();
+  await settle(350);
+  const titles = [0, 1, 2].map((index) => {
+    const row = mediaList.children[index];
+    let text = "";
+    row?.walk?.((el) => {
+      if (el instanceof El && el.tagName === "STRONG") text = el.textContent;
+    });
+    return text;
+  });
+  assert.equal(titles[0], "嬛嬛一袅楚宫腰 · 6aa9.mp4", "带 cardTitle 戳的行用自己的卡片标题");
+  // 后续行序受候选类型排序影响，只断言各自身份：无归属行分别退回
+  // 自身展示名/URL 尾名，不得借用他卡标题或反复挂通用前缀。
+  assert.ok(titles.includes("cover.avif"), "无卡片归属的行退回自身展示名");
+  assert.ok(titles.includes("7165.mp4"), "占位展示名不是身份：无归属行回退 URL 尾名");
+  assert.equal(new Set(titles).size, titles.length, "每行标题必须各自独立，不得全量同名");
+  assert.ok(!titles.some((text) => text.includes("嬛嬛") && !text.startsWith("嬛嬛")), "他卡标题不得成为其他行的前缀");
+});
+
+// ---- 嗅探进行中指示器（本页媒体右侧 spinner）----
+
+const mediaLoading = elementFor("media-loading");
+
+test("spinner：候选大小未探得/适配器解析中时持续显示，探完即停", async () => {
+  // 待探测：http 候选 size 未知且未报探测失败 → 转圈。
+  mediaQueue.push({
+    ok: true,
+    pageUrl: "https://www.douyin.com/jingxuan",
+    title: "猕猴桃",
+    candidates: [
+      { url: "https://v26-web-sz.douyinvod.com/6aaa/media-video-hvc1", format: "video", filenameHint: "kiwi.mp4", cardTitle: "猕猴桃", supported: true, size: null },
+    ],
+  });
+  refreshIntervalCallback();
+  await settle(350);
+  assert.equal(mediaLoading.hidden, false, "size 探测未结束前必须显示 loading");
+
+  // 探完：同一候选补齐 size，无 inspecting → 停止。
+  mediaQueue.push({
+    ok: true,
+    pageUrl: "https://www.douyin.com/jingxuan",
+    title: "猕猴桃",
+    candidates: [
+      { url: "https://v26-web-sz.douyinvod.com/6aaa/media-video-hvc1", format: "video", filenameHint: "kiwi.mp4", cardTitle: "猕猴桃", supported: true, size: 9_876_543 },
+    ],
+  });
+  refreshIntervalCallback();
+  await settle(350);
+  assert.equal(mediaLoading.hidden, true, "全部元信息探得后 loading 必须消失");
+
+  // 探测失败也算结束：sizeProbeFailed 不得永久转圈（新 URL，避免被上轮 size 回填掩盖）。
+  mediaQueue.push({
+    ok: true,
+    pageUrl: "https://www.douyin.com/jingxuan",
+    title: "猕猴桃",
+    candidates: [
+      { url: "https://v26-web-sz.douyinvod.com/6bbb/media-audio-und-mp4a", format: "audio", filenameHint: "audio.mp4", cardTitle: "猕猴桃", supported: true, size: null, sizeProbeFailed: true },
+    ],
+  });
+  refreshIntervalCallback();
+  await settle(350);
+  assert.equal(mediaLoading.hidden, true, "探测已失败的资源不得让 loading 永久旋转");
+});
+
+test("同名不同 URL 行：码率标签留在 meta 位，不得拼进标题；分辨率标签可拼", async () => {
+  mediaQueue.push({
+    ok: true,
+    pageUrl: "https://example.com/watch",
+    title: "同名视频",
+    candidates: [
+      { url: "https://cdn.example.com/a.mp4", format: "video", filenameHint: "same.mp4", supported: true, size: 100, qualityLabel: "3422 kbps" },
+      { url: "https://cdn.example.com/b.mp4", format: "video", filenameHint: "same.mp4", supported: true, size: 200, qualityLabel: "1080P" },
+    ],
+  });
+  refreshIntervalCallback();
+  await settle(350);
+  const titles = [0, 1].map((index) => {
+    const row = mediaList.children[index];
+    let text = "";
+    row?.walk?.((el) => {
+      if (el instanceof El && el.tagName === "STRONG") text = el.textContent;
+    });
+    return text;
+  });
+  assert.equal(titles[0], "同名视频 · same.mp4", "kbps 码率不得成为标题后缀");
+  assert.equal(titles[1], "同名视频 · same.mp4 · 1080P", "分辨率标签仍可用于区分同名行");
+});
+
+test("known size does not hide the spinner while metadata is still queued or running", async () => {
+  const previous = globalThis.MacIDMMediaMetadataProbe;
+  let finish; let callbacks; let done = false;
+  const url = "https://cdn.example/pending-metadata.mp4";
+  globalThis.MacIDMMediaMetadataProbe = {
+    cached:()=>done ? {duration:10,width:640,height:360} : null,
+    needsProbe:c=>c.url === url && !done,
+    probeCandidates:(_list, options)=>{callbacks=options;return new Promise(resolve=>{finish=resolve;});},
+  };
+  try {
+    mediaQueue.push({ok:true,pageUrl:"https://example.com/feed",title:"",candidates:[{url,format:"video",supported:true,size:100000}]});
+    refreshIntervalCallback(); await settle(350);
+    assert.equal(mediaLoading.hidden,false);
+    done=true; const result={url,meta:{duration:10,width:640,height:360}};
+    callbacks.onResult(result); finish([result]); await settle(50);
+    assert.equal(mediaLoading.hidden,true);
+  } finally { globalThis.MacIDMMediaMetadataProbe=previous; }
 });

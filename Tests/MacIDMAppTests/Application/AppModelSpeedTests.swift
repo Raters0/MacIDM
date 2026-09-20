@@ -3,7 +3,7 @@ import XCTest
 
 @testable import MacIDMApp
 
-/// Completion average caliber (docs/AI交接.md §4.2): `averageSpeed` must be
+/// Completion average caliber (product-spec §4.1): `averageSpeed` must be
 /// `transferredBytes / activeTransferDuration`, where the active duration
 /// only accumulates while bytes advance — pauses never count.
 @MainActor

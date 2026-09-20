@@ -268,6 +268,16 @@ test("unknown Chrome size is not forwarded as a real Content-Length", async () =
   assert.equal(payload.totalBytes, 25 * 1024 * 1024);
 });
 
+test("takeover payload marks the filename as browser-resolved", async () => {
+  // 命名可信度模型（技术规范 §8.1）：接管链路的 filenameHint 来自 Chrome
+  // 解析的下载项文件名（尊重 Content-Disposition），必须标注为权威来源，
+  // App 侧才允许它压过标签页标题。
+  const { controller, item } = harness([]);
+  const payload = await controller.createPayload(item);
+  assert.equal(payload.filenameHint, "archive.zip");
+  assert.equal(payload.filenameHintSource, "browserResolved");
+});
+
 test("interactive takeover passes the browser's Content-Length to the confirmation window", async () => {
   const requests = [];
   const item = {
@@ -652,4 +662,359 @@ test("failed browser resume retains the compensation marker for another worker",
   await controller.recoverPending();
   assert.equal(item.paused, false);
   assert.deepEqual((await storage.local.get("pendingTakeovers")).pendingTakeovers, []);
+});
+
+
+test("user-cancel-with-browser-cancel cancels and erases instead of resuming", async () => {
+  const { controller, item, calls } = harness([
+    new ProtocolError("TAKEOVER_USER_CANCELLED_BROWSER", "user cancelled", false),
+  ]);
+  await assert.rejects(controller.handleCreated(item)).catch(() => {});
+  // handleCreated returns (not throws) for this outcome.
+  await controller.handleCreated(item).catch(() => {});
+  assert.ok(calls.includes("cancel"), "browser download should be cancelled");
+  assert.ok(calls.includes("erase"), "browser download record should be erased");
+  assert.equal(calls.includes("resume"), false, "must not resume the browser download");
+});
+
+// ---------------------------------------------------------------------------
+// Silent-skip diagnostics + connection-health reason mapping.
+//
+// Rationale: before these tests, handleCreated had three silent-return
+// branches (non-http URL, non-GET URL, shouldTakeover=false) that never
+// called the notifier, and notifyTakeoverResult collapsed every error code
+// into a generic "takeover failed" reason. That made a chatgpt.com blob:
+// download or a dead host look identical to a successful takeover from the
+// user's perspective: nothing happened.
+// ---------------------------------------------------------------------------
+
+function makeSkipHarness({ url, finalUrl, nonGetURLs, clock }) {
+  const notifications = [];
+  const item = {
+    id: 200,
+    url,
+    finalUrl: finalUrl ?? url,
+    filename: "",
+    mime: "application/octet-stream",
+    totalBytes: 1024,
+    state: "in_progress",
+    paused: false,
+  };
+  const downloads = {
+    async pause() { item.paused = true; },
+    async search() { return [item]; },
+    async cancel() {},
+    async resume() {},
+    async erase() {},
+  };
+  const storage = { local: { async get() { return {}; }, async set() {} } };
+  const nativeClient = {
+    async send() { throw new Error("native client must not be called on silent-skip paths"); },
+  };
+  const controller = new TakeoverController({
+    downloads,
+    storage,
+    nativeClient,
+    settingsProvider: async () => ({ ...DEFAULT_SETTINGS, takeoverInteractive: false }),
+    nonGetURLProvider: () => nonGetURLs ?? new Set(),
+    notifier: (title, message) => notifications.push({ title, message }),
+    clock: clock ?? (() => Date.now()),
+  });
+  return { controller, item, notifications };
+}
+
+test("blob: URL fires a one-shot unsupported-scheme diagnostic and never touches native", async () => {
+  const { controller, item, notifications } = makeSkipHarness({
+    url: "blob:https://chatgpt.com/1234-5678",
+  });
+
+  await controller.handleCreated(item);
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, "MacIDM 接管未完成");
+  assert.ok(
+    notifications[0].message.includes("http(s)"),
+    `expected unsupported-scheme copy, got: ${notifications[0].message}`,
+  );
+  assert.ok(
+    notifications[0].message.includes("blob") || notifications[0].message.includes("浏览器内部资源"),
+    `expected the copy to name the scheme class, got: ${notifications[0].message}`,
+  );
+});
+
+test("data: URL is also treated as unsupported scheme", async () => {
+  const { controller, item, notifications } = makeSkipHarness({
+    url: "data:application/pdf;base64,JVBERi0xLjQK",
+  });
+  await controller.handleCreated(item);
+  assert.equal(notifications.length, 1);
+  assert.ok(notifications[0].message.includes("http(s)"));
+});
+
+test("POST-triggered download fires a non-GET diagnostic and skips takeover", async () => {
+  const url = "https://chatgpt.com/backend-api/files/download";
+  const { controller, item, notifications } = makeSkipHarness({
+    url,
+    nonGetURLs: new Set([url]),
+  });
+
+  await controller.handleCreated(item);
+
+  assert.equal(notifications.length, 1);
+  assert.ok(
+    notifications[0].message.includes("POST"),
+    `expected non-GET copy, got: ${notifications[0].message}`,
+  );
+  assert.ok(
+    notifications[0].message.includes("请求体") || notifications[0].message.includes("body"),
+    `expected the copy to name the lost-body rationale, got: ${notifications[0].message}`,
+  );
+});
+
+test("skip notifications are throttled per reason code within 5 minutes", async () => {
+  let now = 1_700_000_000_000;
+  const { controller, notifications } = makeSkipHarness({
+    url: "blob:https://chatgpt.com/a",
+    clock: () => now,
+  });
+
+  // Two blob: downloads in quick succession → only one notification.
+  await controller.handleCreated({ id: 1, url: "blob:https://chatgpt.com/a", state: "in_progress" });
+  await controller.handleCreated({ id: 2, url: "blob:https://chatgpt.com/b", state: "in_progress" });
+  assert.equal(notifications.length, 1, "second blob within the throttle window must not toast");
+
+  // Advance past the throttle window → a fresh notification is allowed.
+  now += 6 * 60 * 1_000;
+  await controller.handleCreated({ id: 3, url: "blob:https://chatgpt.com/c", state: "in_progress" });
+  assert.equal(notifications.length, 2, "after 5min the same reason may toast again");
+
+  // A different reason code has its own bucket and is not throttled by
+  // the previous unsupported-scheme notification.
+  const postURL = "https://chatgpt.com/backend-api/files/download";
+  controller.nonGetURLProvider = () => new Set([postURL]);
+  await controller.handleCreated({ id: 4, url: postURL, state: "in_progress" });
+  assert.equal(notifications.length, 3, "different reason code has an independent throttle bucket");
+});
+
+test("recovery replay does NOT re-emit silent-skip notifications", async () => {
+  const url = "https://chatgpt.com/backend-api/files/download";
+  const notifications = [];
+  const item = {
+    id: 300,
+    url,
+    finalUrl: url,
+    filename: "",
+    state: "in_progress",
+    paused: true,
+  };
+  const controller = new TakeoverController({
+    downloads: {
+      async pause() {},
+      async search() { return [item]; },
+      async cancel() {},
+      async resume() { item.paused = false; },
+      async erase() {},
+    },
+    storage: { local: { async get() { return {}; }, async set() {} } },
+    // Recovery path calls download.abandon; return a normal response so
+    // sendWithRetry does not blow up.
+    nativeClient: {
+      async send(request) {
+        return { protocolVersion: 1, requestId: request.requestId, status: "ok", type: "download.abandoned", payload: {} };
+      },
+    },
+    settingsProvider: async () => ({ ...DEFAULT_SETTINGS, takeoverInteractive: false }),
+    nonGetURLProvider: () => new Set([url]),
+    notifier: (title, message) => notifications.push({ title, message }),
+  });
+  // recovery=true simulates recoverPending() replaying a stale marker after
+  // an SW restart. The user already saw (or missed) the original toast; we
+  // must not spam them again on every restart.
+  await controller.handleCreated(item, false, { downloadId: 300, idempotencyKey: "k", phase: "observed" });
+  assert.equal(notifications.length, 0, "recovery path must stay silent");
+});
+
+test("explicit enqueue of a blob: URL stays silent (upstream validator handles it)", async () => {
+  const { controller, notifications } = makeSkipHarness({
+    url: "blob:https://chatgpt.com/x",
+  });
+  // explicit=true means the user actively chose "Download with MacIDM" from
+  // the context menu or overlay; explicit-enqueue.js already throws
+  // enqueue.httpOnly before reaching the controller, so we must not
+  // double-report here.
+  await controller.handleCreated({
+    id: 400,
+    url: "blob:https://chatgpt.com/x",
+    finalUrl: "blob:https://chatgpt.com/x",
+    state: "in_progress",
+  }, true);
+  assert.equal(notifications.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// notifyTakeoverResult error-code → reason mapping
+// ---------------------------------------------------------------------------
+
+async function failureNotificationFor(error) {
+  const notifications = [];
+  const item = {
+    id: 500,
+    url: "https://example.com/file.zip",
+    finalUrl: "https://example.com/file.zip",
+    filename: "/tmp/file.zip",
+    mime: "application/zip",
+    totalBytes: 10 * 1024 * 1024,
+    state: "in_progress",
+    paused: false,
+  };
+  const downloads = {
+    async pause() { item.paused = true; },
+    async search() { return [item]; },
+    async cancel() { item.state = "interrupted"; item.paused = false; },
+    async resume() { item.paused = false; },
+    async erase() {},
+  };
+  const storage = { local: { async get() { return {}; }, async set() {} } };
+  const controller = new TakeoverController({
+    downloads,
+    storage,
+    nativeClient: { async send() { throw error; } },
+    settingsProvider: async () => ({ ...DEFAULT_SETTINGS, takeoverInteractive: false }),
+    notifier: (title, message) => notifications.push({ title, message }),
+  });
+  await controller.handleCreated(item).catch(() => {});
+  assert.equal(notifications.length, 1, `expected exactly one notification for ${error?.code}`);
+  return notifications[0];
+}
+
+test("NATIVE_HOST_NOT_FOUND tells the user to reinstall the native host", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("NATIVE_HOST_NOT_FOUND", "host missing", true),
+  );
+  assert.ok(notification.message.includes("Native Host"), notification.message);
+  assert.ok(
+    notification.message.includes("install-debug-native-host") || notification.message.includes("安装脚本"),
+    `expected remediation hint, got: ${notification.message}`,
+  );
+});
+
+test("PROTOCOL_VERSION_MISMATCH tells the user to rebuild and reload the extension", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("PROTOCOL_VERSION_MISMATCH", "version mismatch", false),
+  );
+  assert.ok(notification.message.includes("版本"), notification.message);
+  assert.ok(
+    notification.message.includes("重新加载") || notification.message.includes("重新构建"),
+    `expected reload hint, got: ${notification.message}`,
+  );
+});
+
+test("APP_START_TIMEOUT tells the user MacIDM is not running", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("APP_START_TIMEOUT", "launch timed out", true),
+  );
+  assert.ok(notification.message.includes("MacIDM 未运行"), notification.message);
+});
+
+test("PING_TIMEOUT maps to the same 'App not running' reason", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("PING_TIMEOUT", "ping timed out", true),
+  );
+  assert.ok(notification.message.includes("MacIDM 未运行"), notification.message);
+});
+
+test("TAKEOVER_TIMEOUT maps to a timeout reason distinct from launch timeout", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("TAKEOVER_TIMEOUT", "timed out", true),
+  );
+  assert.ok(notification.message.includes("超时"), notification.message);
+  assert.ok(notification.message.includes("繁忙") || notification.message.includes("挂起"), notification.message);
+});
+
+test("INVALID_MESSAGE points at a version mismatch as the likely cause", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("INVALID_MESSAGE", "bad response", false),
+  );
+  assert.ok(notification.message.includes("无效消息"), notification.message);
+  assert.ok(notification.message.includes("版本"), notification.message);
+});
+
+test("CONTEXT_UNSUPPORTED keeps the existing 'needs login' reason", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("CONTEXT_UNSUPPORTED", "needs login", false),
+  );
+  assert.ok(notification.message.includes("登录态"), notification.message);
+});
+
+test("unknown error codes fall back to the generic 'takeover failed' reason", async () => {
+  const notification = await failureNotificationFor(
+    new ProtocolError("SOMETHING_NEW", "mystery", false),
+  );
+  assert.ok(notification.message.includes("接管失败"), notification.message);
+});
+
+test("TAKEOVER_USER_CANCELLED_BROWSER never toasts (user already knows)", async () => {
+  const notifications = [];
+  const item = {
+    id: 600,
+    url: "https://example.com/f.zip",
+    finalUrl: "https://example.com/f.zip",
+    filename: "/tmp/f.zip",
+    totalBytes: 1024 * 1024,
+    state: "in_progress",
+    paused: false,
+  };
+  const controller = new TakeoverController({
+    downloads: {
+      async pause() { item.paused = true; },
+      async search() { return [item]; },
+      async cancel() {},
+      async resume() {},
+      async erase() {},
+    },
+    storage: { local: { async get() { return {}; }, async set() {} } },
+    nativeClient: {
+      async send() { throw new ProtocolError("TAKEOVER_USER_CANCELLED_BROWSER", "cancelled", false); },
+    },
+    settingsProvider: async () => ({ ...DEFAULT_SETTINGS, takeoverInteractive: false }),
+    notifier: (title, message) => notifications.push({ title, message }),
+  });
+  await controller.handleCreated(item).catch(() => {});
+  assert.equal(notifications.length, 0, "user-initiated cancel must not double-toast");
+});
+
+
+test("user cancellation failure preserves intent and recovery never resumes or recreates", async () => {
+  const {controller,item,calls,storage} = harness([
+    new ProtocolError("TAKEOVER_USER_CANCELLED_BROWSER", "cancel", false),
+  ], {}, {...DEFAULT_SETTINGS, takeoverInteractive:true});
+  const cancel = controller.downloads.cancel;
+  controller.downloads.cancel = async () => { throw new Error('temporary failure'); };
+  await controller.handleCreated(item);
+  const pending = (await storage.local.get('pendingTakeovers')).pendingTakeovers;
+  assert.equal(item.paused, true);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].phase, 'userCancelPending');
+  controller.downloads.cancel = cancel;
+  await controller.recoverPending();
+  assert.equal(item.state, 'interrupted');
+  assert.equal((await storage.local.get('pendingTakeovers')).pendingTakeovers.length, 0);
+  assert.equal(calls.filter(c => c === 'download.enqueue').length, 1);
+  assert.ok(!calls.includes('resume'));
+});
+
+test("user cancel recovery retains an erase failure and finishes without an App request", async () => {
+  const {controller,item,calls,storage} = harness([
+    new ProtocolError("TAKEOVER_USER_CANCELLED_BROWSER", "cancel", false),
+  ], {}, {...DEFAULT_SETTINGS, takeoverInteractive:true});
+  const erase=controller.downloads.erase;
+  controller.downloads.erase=async()=>{throw new Error('temporary failure')};
+  await controller.handleCreated(item);
+  assert.equal(item.state,'interrupted');
+  assert.equal((await storage.local.get('pendingTakeovers')).pendingTakeovers[0].phase,'userCancelPending');
+  controller.downloads.erase=erase;
+  await controller.recoverPending();
+  assert.equal((await storage.local.get('pendingTakeovers')).pendingTakeovers.length,0);
+  assert.equal(calls.filter(c=>c==='cancel').length,1);
+  assert.equal(calls.filter(c=>c.startsWith('download.')).length,1);
 });

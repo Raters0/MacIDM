@@ -24,21 +24,8 @@ struct MacIDMApplication: App {
         appDelegate.model = model
     }
 
-    /// THE root fix for the thick-scrollbar flash. Every NSScrollView picks
-    /// its initial scroller style from the `AppleShowScrollBars` preference
-    /// resolved for this process: when the user's system setting resolves to
-    /// legacy ("Always", or "Automatic" while a mouse is connected), every
-    /// scroll view SwiftUI creates — detail column, settings sheet, task
-    /// table — is BORN legacy-styled, and configuring it after creation
-    /// always lets at least one thick frame render (the flash), or lingers
-    /// permanently when the configuration walk misses it. Pinning the
-    /// app-domain value to "WhenScrolling" before any UI exists makes every
-    /// scroll view in the process start life in the overlay style — the same
-    /// per-app override `defaults write com.macidm.app AppleShowScrollBars`
-    /// performs. Equivalent to what React Native macOS does by forcing
-    /// `NSScrollerStyleOverlay` at scroll-view init. Later defense layers
-    /// (`AppScrollerStyle`, `LightScrollerConfigurator`) stay as belt and
-    /// suspenders against live preference flips mid-run.
+    /// Set the process preference before any scroll view is created to avoid
+    /// an initial legacy scrollbar frame. Per-view configuration handles later changes.
     private static func pinOverlayScrollerPreference() {
         UserDefaults.standard.set("WhenScrolling", forKey: "AppleShowScrollBars")
     }
@@ -161,9 +148,9 @@ struct MacIDMApplication: App {
                 .disabled(model.selectedTaskIDs.isEmpty)
             }
 
-            CommandGroup(after: .appSettings) {
+            CommandGroup(replacing: .appSettings) {
                 Button("偏好设置…") {
-                    NotificationCenter.default.post(name: .macIDMRequestSettings, object: nil)
+                    SettingsWindowPresenter.shared.show(model: model)
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }
@@ -217,6 +204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel?
 
     private var mainWindow: NSWindow?
+    /// Hides the first main window when menu-bar mode is enabled. Cleared
+    /// after the first hide so explicit window-opening actions work normally.
+    private var shouldHideMainWindowOnLaunch = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance: a second copy (e.g. relaunched after reinstalling
@@ -236,6 +226,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // handlers and reports whether the previous session died abnormally
         // — without this, crashes leave nothing in macidm.log.
         CrashReporter.install(logFileURL: AppLogger.shared.logFileURL)
+        // Cold-launch silence: when the user's preference is "close window
+        // hides to menu bar", switch to .accessory policy IMMEDIATELY —
+        // before SwiftUI creates the main window. This prevents the Dock
+        // icon from ever appearing and reduces the visual flash when the
+        // main window is hidden a moment later in mainWindowBecameMain.
+        // The confirmation window (DownloadDraftWindow) is a separate
+        // NSWindow and still appears normally; it temporarily switches
+        // back to .regular if needed to honor NSApp.activate.
+        if UserDefaults.standard.bool(forKey: Self.closeWindowHidesKey) {
+            shouldHideMainWindowOnLaunch = true
+            if NSApp.activationPolicy() != .accessory {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowWillCloseObserved(_:)),
@@ -386,6 +390,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow = window
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName(Self.mainWindowFrameName)
+        // Cold-launch silence: hide the first main window immediately so a
+        // Host-triggered launch never flashes the main window or
+        // steals focus. The confirmation window (DownloadDraftWindow) is a
+        // separate NSWindow and still appears normally. Cleared after the
+        // first hide so subsequent user-initiated window opens behave
+        // normally (e.g. clicking the menu-bar icon restores the window).
+        if shouldHideMainWindowOnLaunch {
+            shouldHideMainWindowOnLaunch = false
+            hideMainWindowToMenuBar(window)
+        }
     }
 
     @objc private func openMainWindowRequested() {

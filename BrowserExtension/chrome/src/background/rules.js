@@ -1,6 +1,16 @@
 import { DEFAULT_SETTINGS } from "../shared/constants.js";
 import { filenameFromDownload, normalizeSettings, siteHost } from "../shared/validation.js";
 
+/// True only for HTTP methods that carry a request body, which a GET replay
+/// would lose (form data, signed payload, CSRF token). HEAD/OPTIONS/GET are
+/// bodyless and safely replayable, so they must NOT be treated as non-replayable
+/// — otherwise a player's HEAD probe of a media URL would suppress takeover of
+/// the real GET download of that same URL.
+export function isBodyCarryingMethod(method) {
+  const upper = String(method || "").toUpperCase();
+  return upper === "POST" || upper === "PUT" || upper === "PATCH" || upper === "DELETE";
+}
+
 export function shouldTakeover(item, storedSettings, explicit = false) {
   const settings = normalizeSettings(storedSettings, DEFAULT_SETTINGS);
   if (!settings.takeoverEnabled && !explicit) return { takeOver: false, reason: "disabled" };

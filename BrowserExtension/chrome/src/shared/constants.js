@@ -25,6 +25,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   takeoverAllDownloads: true,
   // IDM-style: show a confirmation dialog (filename/path) before starting.
   takeoverInteractive: true,
+  // Inline media preview inside the expanded candidate drawer (off by
+  // default: it allocates a decoder per open preview).
+  previewEnabled: false,
   minimumBytes: 5 * 1024 * 1024,
   takeoverUnknownSize: false,
   extensions: [

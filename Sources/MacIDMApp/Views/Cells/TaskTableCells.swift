@@ -53,8 +53,14 @@ struct StatusCell: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            StatusLabel(status: live.status)
-            if live.fileMissing {
+            if live.status == .completed && live.fileMissing {
+                Label("文件已丢失", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(WarningColor())
+                    .help("下载已完成，但原始文件已删除或移动")
+            } else {
+                StatusLabel(status: live.status)
+            }
+            if live.fileMissing && live.status != .completed {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(WarningColor())
@@ -119,12 +125,24 @@ struct ProgressCell: View {
     @ObservedObject var live: TaskLiveModel
 
     var body: some View {
-        HStack(spacing: 2) {
-            ProgressTrackBar(fraction: live.fractionCompleted, height: 4)
-            Text(trailingText)
+        if live.status == .completed {
+            Text("已完成")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if !live.status.showsTransferProgress {
+            Text(DisplayFormatting.byteCount(live.receivedBytes))
                 .font(.caption)
                 .monospacedDigit()
-                .frame(width: 44, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .help("已传输字节；任务尚未完成")
+        } else {
+            HStack(spacing: 2) {
+                ProgressTrackBar(fraction: live.fractionCompleted, height: 4)
+                Text(trailingText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .trailing)
+            }
         }
     }
 
@@ -154,11 +172,6 @@ struct TaskNameCell: View {
                 .lineLimit(1)
                 .monospacedDigit()
                 .foregroundStyle(task.fileMissing ? AnyShapeStyle(DangerColor()) : AnyShapeStyle(Color.primary))
-            if task.fileMissing {
-                Text("文件已丢失")
-                    .font(.caption)
-                    .foregroundStyle(WarningColor())
-            }
         }
         .help(redacted ? task.jobID : "\(task.filename) · 任务ID: \(task.jobID)")
     }
@@ -207,8 +220,17 @@ struct StatusLabel: View {
         }
     }
 
-    private var color: Color {
-        AppTheme.statusColor(for: status)
+    private var color: TaskStatusColor { TaskStatusColor(status: status) }
+}
+
+private struct TaskStatusColor: ShapeStyle {
+    let status: AppTaskStatus
+
+    func resolve(in env: EnvironmentValues) -> some ShapeStyle {
+        if #available(macOS 14.0, *), env.backgroundProminence == .increased {
+            return AnyShapeStyle(Color.primary)
+        }
+        return AnyShapeStyle(AppTheme.statusColor(for: status))
     }
 }
 

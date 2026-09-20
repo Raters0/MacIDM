@@ -287,7 +287,7 @@ public struct DASHDownloadExecutor: Sendable {
                 isDirectory: true
             )
         try checkControl(control)
-        var checkpoint = try DASHPairCheckpoint(
+        var checkpoint = try MediaPairCheckpoint(
             directory: directory, videoURL: request.videoURL, audioURL: request.audioURL)
         let videoDestination = directory.appendingPathComponent("video.m4s")
         let audioDestination = directory.appendingPathComponent("audio.m4s")

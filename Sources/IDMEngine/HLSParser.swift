@@ -100,6 +100,20 @@ public struct HLSMasterPlaylist: Equatable, Sendable {
     }
 }
 
+public enum HLSAudioRendition {
+    /// Resolves the EXT-X-MEDIA audio rendition backing a variant's AUDIO
+    /// group (separate-audio HLS masters, e.g. X/Twitter). Prefers DEFAULT
+    /// renditions and requires an absolute media playlist URI — renditions
+    /// without URI are inline alternates, not downloadable tracks.
+    public static func resolve(variant: HLSVariant, in master: HLSMasterPlaylist) -> HLSMediaGroup? {
+        guard let groupID = variant.audioGroup else { return nil }
+        let candidates = master.mediaGroups.filter {
+            $0.type == "AUDIO" && $0.groupID == groupID && $0.url != nil
+        }
+        return candidates.first(where: { $0.isDefault }) ?? candidates.first
+    }
+}
+
 public struct HLSByteRange: Equatable, Sendable {
     public let length: Int64
     public let offset: Int64

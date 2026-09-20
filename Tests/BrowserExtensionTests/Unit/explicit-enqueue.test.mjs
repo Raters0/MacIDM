@@ -96,6 +96,44 @@ test("media inspection carries only a transient request context for HLS and DASH
   assert.equal(requests[1].payload.mediaKind, "dash");
 });
 
+test("media inspection marks user gestures so the Host may wake a quit App", async () => {
+  const requests = [];
+  const client = new ExplicitEnqueueClient({
+    nativeClient: {
+      async send(request) {
+        requests.push(request);
+        return {
+          protocolVersion: 1,
+          requestId: request.requestId,
+          type: "media.inspected",
+          status: "ok",
+          payload: { mediaKind: request.payload.mediaKind, variants: [] },
+        };
+      },
+    },
+    profileIDProvider: async () => "profile-test",
+    requestContextProvider: async () => ({}),
+  });
+
+  await client.inspect({
+    url: "https://example.com/master.m3u8",
+    userInitiated: true,
+    operationID: "inspect-gesture-1",
+  });
+  // The Host's launch decision reads exactly this flag: without it an
+  // inspection from the Popup or the overlay panel is treated as background
+  // traffic and a deliberately quit App is never relaunched.
+  assert.equal(requests[0].payload.userInitiated, true);
+
+  await client.inspect({
+    url: "https://example.com/master.m3u8",
+    operationID: "inspect-background-1",
+  });
+  // A caller that does not claim a gesture must not smuggle one in: the field
+  // stays absent so the default (background) classification is preserved.
+  assert.equal("userInitiated" in requests[1].payload, false);
+});
+
 test("explicit enqueue preserves the controlled DASH media kind", async () => {
   let request;
   const client = new ExplicitEnqueueClient({
@@ -155,6 +193,53 @@ test("interactive media enqueue returns a confirmation request instead of a task
   assert.equal(request.type, "download.enqueue");
   assert.equal(request.payload.interactive, true);
   assert.equal(request.payload.pageTitle, "课程标题");
+});
+
+test("explicit enqueue marks hint provenance for the App naming trust model", async () => {
+  let request;
+  const client = new ExplicitEnqueueClient({
+    nativeClient: {
+      async send(value) {
+        request = value;
+        return {
+          protocolVersion: 1,
+          requestId: value.requestId,
+          type: "download.accepted",
+          status: "ok",
+          payload: { taskId: "6D7C8B9A-5E4F-4A3B-9C2D-1E0F1A2B3C4D" },
+        };
+      },
+    },
+    profileIDProvider: async () => "profile-test",
+    requestContextProvider: async () => ({}),
+  });
+
+  // 调用方给出的 titleDerived hint 保留来源标注。
+  await client.enqueue({
+    url: "https://example.com/a.mp4",
+    filenameHint: "课程标题.mp4",
+    filenameHintSource: "titleDerived",
+    operationID: "source-1",
+  });
+  assert.equal(request.payload.filenameHintSource, "titleDerived");
+
+  // 未给 hint 时由 URL 尾段兜底，即使调用方声称权威来源也只能标 urlPath。
+  await client.enqueue({
+    url: "https://example.com/b.mp4",
+    filenameHintSource: "browserResolved",
+    operationID: "source-2",
+  });
+  assert.equal(request.payload.filenameHint, "b.mp4");
+  assert.equal(request.payload.filenameHintSource, "urlPath");
+
+  // 非法来源值降级为 urlPath，不会把 URL 尾段名抬成权威名。
+  await client.enqueue({
+    url: "https://example.com/c.mp4",
+    filenameHint: "c.mp4",
+    filenameHintSource: "contentDisposition",
+    operationID: "source-3",
+  });
+  assert.equal(request.payload.filenameHintSource, "urlPath");
 });
 
 // Generic protocol failures are rewritten to the same user-facing message;

@@ -4,7 +4,7 @@ import XCTest
 @testable import MacIDMApp
 
 /// Rolling-window policy and persistence migration for timestamped speed
-/// samples (docs/AI交接.md §4.1, product-spec §4.3 速率曲线口径).
+/// samples (product-spec §4.1 速度列口径, §4.3 速率曲线口径).
 final class SpeedSampleTests: XCTestCase {
     func testTrimmingKeepsOnlyTheMostRecent120Seconds() {
         let now = Date(timeIntervalSince1970: 1_800_000)
@@ -59,7 +59,7 @@ final class SpeedSampleTests: XCTestCase {
         XCTAssertEqual(SpeedHistoryPolicy.trimmed(samples, now: now), samples)
     }
 
-    // ---- 乱序样本统一策略（docs/AI交接.md §10）----
+    // ---- 乱序样本统一策略 ----
 
     func testTrimmingSortsOutOfOrderSamplesByTimestamp() {
         let now = Date(timeIntervalSince1970: 1_800_000)
@@ -283,7 +283,7 @@ final class SpeedSampleTests: XCTestCase {
         XCTAssertEqual(summary.current, 4_000)
     }
 
-    // ---- §5：终态参考时间与持久化回读净化（docs/AI交接.md 2026-08-29）----
+    // ---- §5：终态参考时间与持久化回读净化（product-spec §4.3）----
 
     func testTerminalWindowReferenceIgnoresNewerInvalidSamples() {
         let now = Date(timeIntervalSince1970: 1_800_000)

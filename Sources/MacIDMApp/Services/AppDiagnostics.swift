@@ -171,6 +171,38 @@ final class DownloadDiagnosticEventLog: @unchecked Sendable {
             ))
     }
 
+    /// One aggregate line per sweep for destinations that were already missing
+    /// before this session started. The per-task `task.fileMissing` events stay
+    /// reserved for losses detected while the App runs, so launching with a
+    /// long history of deleted files emits a single count instead of one line
+    /// (and one user notification) per task.
+    static func recordFileMissingBaseline(
+        to log: DownloadDiagnosticEventLog = .shared,
+        count: Int
+    ) {
+        log.record(
+            DownloadDiagnosticEvent(
+                id: UUID().uuidString,
+                timestamp: Date(),
+                event: "task.fileMissingBaseline",
+                stage: "lifecycle",
+                taskID: nil,
+                backend: nil,
+                sourceKind: nil,
+                host: nil,
+                errorCode: nil,
+                byteCount: nil,
+                correlationID: nil,
+                urlExactFingerprint: nil,
+                titleFingerprint: nil,
+                errorSummary: "count=\(count)",
+                fullURL: nil,
+                filename: nil,
+                destinationPath: nil,
+                fullErrorDescription: nil
+            ))
+    }
+
     // MARK: - Regular sink
 
     private func regularLine(for event: DownloadDiagnosticEvent) -> String {

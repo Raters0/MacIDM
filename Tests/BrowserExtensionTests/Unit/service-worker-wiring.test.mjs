@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { fileURLToPath } from "node:url";
 
 import { applyM4sPairing } from "../../../BrowserExtension/chrome/src/background/m4s-pairing.js";
 import {
@@ -11,9 +12,16 @@ import {
   takeBackgroundCandidates,
 } from "../../../BrowserExtension/chrome/src/background/media-observation.js";
 
+// Resolve every production path from this file's own location, NOT from
+// process.cwd(): `npm test` runs with cwd = BrowserExtension/chrome while an
+// ad-hoc `node --test` may run from the repo root, and a cwd-relative resolve
+// silently pointed at chrome/BrowserExtension/chrome/... under npm test.
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const chromeRoot = path.resolve(repoRoot, "BrowserExtension/chrome");
+
 const serviceWorkerPath = path.resolve(
-  process.cwd(),
-  "BrowserExtension/chrome/src/background/service-worker.js",
+  chromeRoot,
+  "src/background/service-worker.js",
 );
 const serviceWorkerSource = fs.readFileSync(serviceWorkerPath, "utf8");
 
@@ -102,6 +110,7 @@ test("Service Worker 生产链路烟测: popup.mediaCandidates 正确分发并�
   mediaCandidatesByTab.set(testTabId, {
     pageUrl: pageURL,
     title: "测试视频标题",
+    titleSource: "card",
     candidates: [
       { url: videoUrl, mime: "video/mp4", format: "video", supported: true, displayName: "视频轨", displayURL: videoUrl },
       { url: audioUrl, mime: "audio/mp4", format: "audio", supported: true, displayName: "音频轨", displayURL: audioUrl },
@@ -155,7 +164,13 @@ test("Service Worker 生产链路烟测: popup.mediaCandidates 正确分发并�
   assert.equal(result.candidates[0].pairKind, "m4s-pair");
   assert.equal(result.candidates[0].pairVideoUrl, videoUrl);
   assert.equal(result.candidates[0].pairAudioUrl, audioUrl);
-  assert.equal(result.candidates[0].displayName, "测试视频标题");
+  // titleSource "card" 的画廊语义：卡片级标题不得命名页面级 m4s 对行
+  // （否则单卡标题会盖到每一行），配对行回落到 视频（cid） 命名。
+  assert.equal(result.candidates[0].displayName, "视频（1550776785）");
+  // 画廊卡片级标题来源必须随响应返回并回写缓存：丢失后 Popup 会把
+  // 单卡标题当页面级标题盖到每一行（全部同名回归）。
+  assert.equal(result.titleSource, "card", "popup 响应必须透传 titleSource");
+  assert.equal(mediaCandidatesByTab.get(testTabId).titleSource, "card", "对齐后的回写缓存必须保留 titleSource");
 });
 
 // ============================================================================
@@ -220,21 +235,128 @@ test("cold JIT injection loads the presentation dependency used by overlay", asy
   const match = serviceWorkerSource.match(/async function ensureContentScript\(tabId\) \{[\s\S]*?\n\}/);
   assert.ok(match);
   let injected;
-  const worker = vm.createContext({ chrome: { scripting: { executeScript: async (options) => { injected = options.files; } } } });
+  const injections = [];
+  const worker = vm.createContext({ chrome: { scripting: { executeScript: async (options) => { injections.push(options); injected = options.files; } } } });
   vm.runInContext(match[0], worker);
   await worker.ensureContentScript(42);
+  assert.equal(injections[0].world, "MAIN");
+  assert.deepEqual(Array.from(injections[0].files), ["src/content/media-source-observer.js"]);
+  assert.ok(injected.indexOf("src/content/media-element-scope.js") < injected.indexOf("src/content/overlay.js"));
   const page = vm.createContext({ URL, console });
   for (const file of injected) {
     if (file === "src/content/overlay.js") break;
     // The DOM observers are covered by their own browser harness. Load the
     // actual shared dependencies from the production JIT list into a cold VM.
-    if (["src/shared/media-utils.js", "src/shared/youtube-format-utils.js", "src/shared/media-presentation.js"].includes(file)) {
-      vm.runInContext(fs.readFileSync(path.resolve("BrowserExtension/chrome", file), "utf8"), page);
+    if (["src/shared/media-utils.js", "src/shared/youtube-format-utils.js", "src/shared/media-presentation.js", "src/content/media-element-scope.js"].includes(file)) {
+      vm.runInContext(fs.readFileSync(path.resolve(chromeRoot, file), "utf8"), page);
     }
   }
-  const overlay = fs.readFileSync(path.resolve("BrowserExtension/chrome/src/content/overlay.js"), "utf8");
+  assert.equal(typeof page.MacIDMMediaElementScope.filterCandidates, "function");
+  const overlay = fs.readFileSync(path.resolve(chromeRoot, "src/content/overlay.js"), "utf8");
   const candidateKey = overlay.match(/function candidateKey\(candidate\) \{[\s\S]*?\n  \}/);
   assert.ok(candidateKey);
   vm.runInContext(candidateKey[0], page);
   assert.equal(page.candidateKey({ url: "https://example.test/movie.mp4" }), "https://example.test/movie.mp4");
+});
+
+// ============================================================================
+// 4. Quit-intent wake path: popup.openApp must use the user-initiated
+//    app.activate gesture, never the background ping.
+// ============================================================================
+
+test("Service Worker 接线: popup.openApp 必须走 app.activate（用户主动唤醒）而非后台 ping", () => {
+  const openAppMatch = serviceWorkerSource.match(
+    /if \(message\?\.type === "popup\.openApp"\) \{[\s\S]*?return true;\s*\}/,
+  );
+  assert.ok(openAppMatch, "未能定位 popup.openApp 分支");
+  const branch = openAppMatch[0];
+  assert.ok(
+    branch.includes("nativeClient") && branch.includes(".activate("),
+    "popup.openApp 必须调用 nativeClient.activate：app.activate 是用户主动唤醒，可重启已退出的 App",
+  );
+  assert.ok(
+    !/\.ping\(/.test(branch),
+    "popup.openApp 不得再用后台 ping：ping 在退出标记存在时不唤醒 App，会让『打开 MacIDM』按钮失效",
+  );
+});
+
+// ============================================================================
+// 5. User-gesture inspection and App-not-running status: media.inspect must
+//    carry userInitiated so the Host may wake a deliberately quit App, and a
+//    mere "App is not up" state must not surface as an error toast.
+// ============================================================================
+
+test("Service Worker 接线: media.inspect 必须透传 userInitiated（否则退出后的 App 无法被『解析画质』唤醒）", () => {
+  const inspectMatch = serviceWorkerSource.match(
+    /if \(message\?\.type === "media\.inspect"\) \{[\s\S]*?return true;\s*\}/,
+  );
+  assert.ok(inspectMatch, "未能定位 media.inspect 分支");
+  assert.match(
+    inspectMatch[0],
+    /userInitiated:\s*message\.userInitiated === true/,
+    "media.inspect 分支必须把内容页/Popup 的用户手势标记透传给 Host：BridgeLaunchIntent 依赖该字段决定是否唤醒已退出的 App",
+  );
+});
+
+test("Service Worker 接线: YouTube 兜底解析必须标记 userInitiated（ensure/retry 只来自用户打开的 Popup 与浮窗）", () => {
+  const appInspector = serviceWorkerSource.match(
+    /appInspector: async \(\{ tabId, url \}\) => \{[\s\S]*?return \{ ok: true, variants:/,
+  );
+  assert.ok(appInspector, "未能定位 youTubeInspectionCoordinator 的 appInspector");
+  assert.match(
+    appInspector[0],
+    /userInitiated: true/,
+    "yt-dlp 兜底解析同样源自用户手势，缺少该标记会让 YouTube 画质解析在 App 退出后直接失败",
+  );
+});
+
+test("Service Worker 接线: popupStatus 必须把连接健康类错误转成 unreachableReason，而不是当作 lastError 弹错误提示", () => {
+  const statusMatch = serviceWorkerSource.match(/async function popupStatus\(\) \{[\s\S]*?\n\}/);
+  assert.ok(statusMatch, "未能定位 popupStatus");
+  const body = statusMatch[0];
+  assert.match(
+    body,
+    /CONNECTION_HEALTH_ERROR_CODES\.has\(diagnostic\.code\)/,
+    "必须用共享的连接健康错误码集合判定『App 只是没在运行』",
+  );
+  assert.match(body, /unreachableReason:/, "必须回传 unreachableReason 供 Popup 渲染可操作的状态点");
+  assert.match(
+    body,
+    /lastError: healthCode \? null : diagnostic/,
+    "健康类失败不得再作为 lastError 返回：否则每次打开 Popup 都会弹『MacIDM 启动超时，Chrome 下载将继续』",
+  );
+});
+
+test("浮窗与 Popup 发出的 media.inspect 必须携带 userInitiated: true", () => {
+  for (const file of ["src/content/overlay.js", "src/popup/popup.js"]) {
+    const source = fs.readFileSync(path.resolve(chromeRoot, file), "utf8");
+    const blocks = [...source.matchAll(/type: "media\.inspect",[\s\S]*?\}\)/g)].map((m) => m[0]);
+    assert.ok(blocks.length > 0, `${file} 未发现 media.inspect 请求`);
+    for (const block of blocks) {
+      assert.match(
+        block,
+        /userInitiated: true/,
+        `${file} 的 media.inspect 必须标记用户手势：两个界面都由用户点开，Host 据此才允许唤醒已退出的 App`,
+      );
+    }
+  }
+});
+
+test("Popup 接线: 状态点必须按 unreachableReason 给出可操作文案，而不是笼统的『未连接』", () => {
+  const source = fs.readFileSync(
+    path.resolve(chromeRoot, "src/popup/popup.js"),
+    "utf8",
+  );
+  const refresh = source.match(/async function refreshStatus\(\) \{[\s\S]*?\n\}/);
+  assert.ok(refresh, "未能定位 popup.js 的 refreshStatus");
+  assert.match(
+    refresh[0],
+    /popup\.appNotRunning/,
+    "App 仅未运行时必须告诉用户去哪里启动（⋯ → 打开 MacIDM）",
+  );
+  assert.match(
+    refresh[0],
+    /popup\.hostNotInstalled/,
+    "本地 Host 缺失时必须与『App 未运行』区分开，两者的修复动作不同",
+  );
 });

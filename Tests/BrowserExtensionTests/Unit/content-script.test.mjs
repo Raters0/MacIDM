@@ -530,7 +530,7 @@ test("播放器快照先于标题更新到达时不得发布换代瞬间的旧�
   );
 });
 
-// —— §3：同视频仅参数变化与同标题换代（docs/AI交接.md 2026-08-29）——
+// —— §3：同视频仅参数变化与同标题换代（chrome-extension-spec §5.7/§5.8）——
 
 test("同 videoId 参数变化：已确认标题与候选不被清空", async () => {
   const { context, sentMessages, dispatchDocumentEvent, dispatchWindowMessage } =
@@ -692,7 +692,7 @@ test("不同 videoId、相同标题：匹配 B 的快照仍能确认并发布该
   );
 });
 
-// —— 非视频页旧播放器快照隔离（docs/AI交接.md 2026-08-29 最新复验）——
+// —— 非视频页旧播放器快照隔离（chrome-extension-spec §5.8）——
 
 /// 构造一个合法的匹配快照载荷（带画质与受限标题）。
 function playerPayload(videoId, title) {

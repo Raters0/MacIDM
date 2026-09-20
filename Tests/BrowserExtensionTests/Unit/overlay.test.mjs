@@ -310,7 +310,7 @@ function createShadowRoot(host) {
 
 let fakeDocument;
 
-function createEnv() {
+function createEnv({ realScope = false } = {}) {
   const documentElement = new FakeElement("html");
   documentElement._isDocumentRoot = true;
   fakeDocument = {
@@ -430,12 +430,27 @@ function createEnv() {
   vm.runInContext(youtubeFormatUtilsSource, context);
   vm.runInContext(mediaPresentationSource, context);
   vm.runInContext(panelUiSource, context);
+  vm.runInContext(fs.readFileSync(new URL("../../../BrowserExtension/chrome/src/shared/media-utils.js", import.meta.url), "utf8"), context);
+  if (!realScope) {
+    // Presentation fixtures explicitly declare their rows as <source> URLs.
+    // Keep unrelated coalescing/display behavior stubbed in these UI tests.
+    context.MacIDMMediaUtils = { filterCandidatesForElementScope: context.MacIDMMediaUtils.filterCandidatesForElementScope };
+  }
+  vm.runInContext(fs.readFileSync(new URL("../../../BrowserExtension/chrome/src/content/media-element-scope.js", import.meta.url), "utf8"), context);
   vm.runInContext(overlaySource, context);
 
   return {
     context,
     video,
     sentMessages,
+    addMedia(tag = "video") {
+      const media = new HTMLMediaElement(tag);
+      media.getClientRects = undefined;
+      media.getBoundingClientRect = video.getBoundingClientRect;
+      documentElement.appendChild(media);
+      return media;
+    },
+    hosts() { return fakeDocument.querySelectorAll("[data-macidm-overlay]"); },
     setResponse(value) {
       respondWith = value;
     },
@@ -477,6 +492,14 @@ function createEnv() {
       await new Promise((resolve) => setTimeout(resolve, ms));
     },
     sync(snapshot) {
+      if (!realScope) {
+        for (const source of video.querySelectorAll("source")) source.remove();
+        for (const candidate of snapshot.candidates ?? []) {
+          const source = new FakeElement("source");
+          source.setAttribute("src", candidate.url);
+          video.appendChild(source);
+        }
+      }
       context.MacIDMOverlay.syncCandidates(snapshot);
     },
     host() {
@@ -1022,54 +1045,16 @@ test("failed submissions announce the failure message in the live region", async
   assert.equal(shadow.querySelector(".sr-status").textContent, "app rejected");
 });
 
-test("filtered noise summary renders a desensitized count note in the panel", async () => {
+test("page-wide filtered noise counts stay out of an element panel", async () => {
   const env = createEnv();
-  // Minimal i18n shim so the {count} interpolation is observable; the panel
-  // otherwise renders the raw key when MacIDMI18n is absent.
-  env.context.MacIDMI18n = {
-    t: (key, params) => (key === "common.filteredNoise"
-      ? `filtered:${params.count}`
-      : key),
-  };
   env.sync({
-    pageUrl: "https://example.com/watch",
-    title: "Fixture",
-    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 12_345 }],
-    filteredSummary: { diagnosticAudio: 2, streamSegments: 1 },
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video" }],
+    filteredSummary: { diagnosticAudio: 2, streamSegments: 1, smallResources: 99 },
   });
   await env.flush();
-
-  const shadow = env.shadow();
-  env.click(shadow.querySelector(".fab"));
-  let panel = shadow.querySelector(".panel");
-  let note = panel.querySelector("[data-macidm-filtered-note]");
-  assert.ok(note, "note renders when the summary has counts");
-  assert.equal(note.textContent, "filtered:3");
-  assert.equal(note.className, "item static filtered-note");
-
-  // A later snapshot with zero counts (governance disabled by the Popup
-  // toggle) rebuilds the open panel without the note.
-  env.sync({
-    pageUrl: "https://example.com/watch",
-    title: "Fixture",
-    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 12_345 }],
-    filteredSummary: { diagnosticAudio: 0, streamSegments: 0 },
-  });
+  env.click(env.shadow().querySelector(".fab"));
   await env.flush();
-  panel = shadow.querySelector(".panel");
-  note = panel.querySelector("[data-macidm-filtered-note]");
-  assert.equal(note, null, "note disappears when nothing was filtered");
-
-  // Snapshots without a summary (older content scripts) behave like zero.
-  env.sync({
-    pageUrl: "https://example.com/watch",
-    title: "Fixture",
-    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 12_345 }],
-    filteredSummary: { diagnosticAudio: "many", streamSegments: -5, url: "https://leak.example/x" },
-  });
-  await env.flush();
-  panel = shadow.querySelector(".panel");
-  assert.equal(panel.querySelector("[data-macidm-filtered-note]"), null, "invalid counts are treated as zero");
+  assert.equal(env.shadow().querySelector("[data-macidm-filtered-note]"), null);
 });
 
 // ---- Same-video parameter changes preserve overlay inspection state by videoId ----
@@ -1299,16 +1284,7 @@ test("watch→首页：面板立即同步关闭，旧视频元素仍在 DOM 也�
     "旧视频画质不得出现在新页面",
   );
 
-  // Valid home-page candidates may remain; they are shown only after the user
-  // clicks the FAB again.
-  env.click(shadow.querySelector(".fab"));
-  await env.flush();
-  const panel = shadow.querySelector(".panel");
-  assert.ok(panel, "用户重新点击后面板重新打开");
-  assert.ok(
-    panel.querySelector('[data-macidm-item-url="https://cdn.example/hq720.jpg"]'),
-    "首页 JPG 候选在用户点击后正常展示",
-  );
+  assert.equal(env.host(), null, "首页图片只属于 Popup，不为残留 video 创建入口");
 });
 
 test("watch→搜索页：旧媒体元素继续存在时仍立即关闭，后续同步不重开", async () => {
@@ -1451,33 +1427,20 @@ test("异步 tab-title 竞态：旧回包被 epoch 拦截，新页面请求正�
     candidates: [{ url: "https://cdn.example/hq720.jpg", mime: "image/jpeg", size: 12_345 }],
   });
   await env.flush();
-  assert.equal(env.shadow().querySelector(".panel"), null);
+  assert.equal(env.host()?.shadowRoot.querySelector(".panel") ?? null, null);
   assert.equal(env.heldTabTitleCount(), 2, "新页面必须再发一条 tab-title 请求");
 
   // A late response for the old page is ignored entirely; it must not rebuild
   // candidates from the old URL or reopen the panel.
   env.releaseNextTabTitle({ ok: true, title: "Old Video", url: watchURL, tabId: 1 });
   await env.flush();
-  const shadow = env.shadow();
-  assert.equal(shadow.querySelector(".panel"), null, "旧回包不得重开面板");
-  env.click(shadow.querySelector(".fab"));
-  await env.flush();
-  let panel = shadow.querySelector(".panel");
-  assert.ok(panel.querySelector('[data-macidm-item-url="https://cdn.example/hq720.jpg"]'), "候选仍是首页候选");
-  assert.equal(
-    panel.querySelector(`[data-macidm-item-url="${watchURL}"]`),
-    null,
-    "旧回包不得把旧页候选写回",
-  );
-  // Close the panel so it cannot interfere with later assertions.
-  env.click(shadow.querySelector(".fab"));
-  await env.flush();
+  assert.equal(env.host(), null, "旧回包不得为首页图片恢复媒体浮窗");
 
   // The new page's response is applied normally without reopening the panel
   // or polluting candidates.
   env.releaseNextTabTitle({ ok: true, title: "Home", url: homeURL, tabId: 1 });
   await env.flush();
-  assert.equal(shadow.querySelector(".panel"), null, "新回包也不得自动重开面板");
+  assert.equal(env.host(), null, "新回包也不得为首页图片创建浮窗");
 });
 
 test("连续快速 A→首页→B：旧回包与候选更新都不能自动打开 B 页面板", async () => {
@@ -1703,4 +1666,519 @@ test("多规格流媒体悬浮窗：主行显示最高规格估算，展开后�
   assert.equal(downloadMsg.url, "https://cdn.example/720.m3u8");
   assert.equal(downloadMsg.estimatedSize, 50 * 1024 * 1024, "提交必须携带 720P 变体自身的 estimatedSize");
   assert.equal(downloadMsg.duration, 300, "提交必须携带变体的 duration");
+});
+
+
+test("production overlay isolates X main and reply players and updates reused elements", async () => {
+  const env = createEnv({ realScope: true });
+  env.context.location.href = "https://x.com/user/status/100";
+  const reply = env.addMedia();
+  env.video.setAttribute("src", "blob:https://x.com/main");
+  env.video.setAttribute("poster", "https://pbs.twimg.com/amplify_video_thumb/111/img/main.jpg");
+  reply.setAttribute("src", "blob:https://x.com/reply");
+  reply.setAttribute("poster", "https://pbs.twimg.com/amplify_video_thumb/222/img/reply.jpg");
+  const mainURL = "https://video.twimg.com/amplify_video/111/vid/main.mp4";
+  const replyURL = "https://video.twimg.com/amplify_video/222/vid/reply.mp4";
+  const unrelatedURL = "https://video.twimg.com/amplify_video/333/vid/other.mp4";
+  const snapshot = { pageUrl: env.context.location.href, candidates: [mainURL, replyURL, unrelatedURL].map(url => ({ url, format: "video" })), filteredSummary: { smallResources: 99 } };
+  env.sync(snapshot);
+  await env.flush();
+  assert.equal(env.hosts().length, 2);
+  const urls = shadow => shadow.querySelectorAll("[data-macidm-item-url]").map(row => row.getAttribute("data-macidm-item-url"));
+  const mainHost = env.hosts()[0];
+  env.click(mainHost.shadowRoot.querySelector(".fab"));
+  await env.flush();
+  assert.deepEqual(urls(mainHost.shadowRoot), [mainURL]);
+  assert.equal(mainHost.shadowRoot.querySelector("[data-macidm-filtered-note]"), null);
+  env.click(env.hosts()[1].shadowRoot.querySelector(".fab"));
+  await env.flush();
+  assert.deepEqual(urls(env.hosts()[1].shadowRoot), [replyURL]);
+  // X can reuse the same video node for another post without a page change.
+  reply.setAttribute("poster", "https://pbs.twimg.com/amplify_video_thumb/333/img/other.jpg");
+  env.fireMutations();
+  await env.flush();
+  assert.deepEqual(urls(env.hosts()[1].shadowRoot), [unrelatedURL]);
+  // A delayed snapshot must not reintroduce the old region's resources.
+  env.sync(snapshot);
+  await env.flush();
+  assert.deepEqual(urls(env.hosts()[1].shadowRoot), [unrelatedURL]);
+  reply.setAttribute("poster", "");
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "no attributable download means no floating entry");
+  assert.equal(snapshot.candidates.length, 3, "whole-page Popup data is not mutated");
+});
+
+test("production overlay isolates direct audio/video and fails closed without scope dependency", async () => {
+  const env = createEnv({ realScope: true });
+  const audio = env.addMedia("audio");
+  const mainURL = "https://cdn.example/movie.mp4?signature=a";
+  const audioURL = "https://cdn.example/sound.m4a";
+  env.video.setAttribute("src", mainURL);
+  audio.setAttribute("src", audioURL);
+  env.sync({ candidates: [
+    { url: mainURL, format: "video" },
+    { url: "https://cdn.example/movie.mp4?signature=b", format: "video" },
+    { url: audioURL, format: "audio" },
+  ] });
+  await env.flush();
+  assert.equal(env.hosts().length, 2);
+  env.click(env.hosts()[1].shadowRoot.querySelector(".fab"));
+  await env.flush();
+  assert.deepEqual(env.hosts()[1].shadowRoot.querySelectorAll("[data-macidm-item-url]").map(row => row.getAttribute("data-macidm-item-url")), [audioURL]);
+  vm.runInContext("delete globalThis.MacIDMMediaElementScope", env.context);
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 0);
+});
+
+test("unattributed MSE and same-title page candidates do not create empty or cross-card FABs", async () => {
+  const env = createEnv({ realScope: true });
+  env.video.currentSrc = "blob:https://example.com/uuid-1";
+  env.video.readyState = 1;
+  env.sync({ pageUrl: env.context.location.href, title: "Fixture", candidates: [
+    { url: "https://cdn.example/other.mp4", format: "video", cardTitle: "同名标题" },
+  ] });
+  await env.flush();
+  assert.equal(env.hosts().length, 0);
+});
+
+// ---- FAB visibility under site modals and off-screen anchors ----
+
+function setRect(element, left, top, width, height) {
+  element.getBoundingClientRect = () => ({
+    left, top, width, height, right: left + width, bottom: top + height,
+  });
+}
+
+test("site modal scrim hides covered FABs and restores them when the modal closes", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const modalRoot = doc.createElement("div");
+  setRect(modalRoot, 0, 0, 1280, 800);
+  doc.documentElement.appendChild(modalRoot);
+  const scrim = doc.createElement("div");
+  modalRoot.appendChild(scrim);
+  // x.com-style in-card click catcher: tops the hit test even without a modal.
+  const cardCatcher = doc.createElement("div");
+  doc.documentElement.appendChild(cardCatcher);
+  const modalVideo = env.addMedia();
+  modalVideo.remove();
+  modalRoot.appendChild(modalVideo);
+  setRect(modalVideo, 300, 50, 700, 700);
+  const modalSource = doc.createElement("source");
+  modalSource.setAttribute("src", "https://cdn.example/modal.mp4");
+  modalVideo.appendChild(modalSource);
+
+  let modalOpen = false;
+  env.context.getComputedStyle = (element) => (element === modalRoot
+    ? { display: "block", visibility: "visible", position: "fixed" }
+    : { display: "block", visibility: "visible", position: "static" });
+  // Hit stacks: the modal's own video paints above the scrim; every grid
+  // point sits below the scrim once the modal is open.
+  doc.elementsFromPoint = (x, y) => {
+    if (!modalOpen) return [cardCatcher, env.video, modalVideo];
+    if (x === 650 && y === 400) return [modalVideo, scrim, modalRoot];
+    return [scrim, modalRoot, cardCatcher, env.video];
+  };
+
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [
+      { url: "https://cdn.example/video.mp4", format: "video", size: 10 },
+      { url: "https://cdn.example/modal.mp4", format: "video", size: 10 },
+    ],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 2);
+  assert.notEqual(env.hosts()[0].style.display, "none");
+  assert.notEqual(env.hosts()[1].style.display, "none");
+
+  // Lightbox opens: the grid video stays mounted behind the scrim, but its
+  // FAB must hide; the modal's own video keeps its FAB.
+  modalOpen = true;
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 2, "occlusion hides, never detaches");
+  assert.equal(env.hosts()[0].style.display, "none", "covered grid FAB hides above the modal");
+  assert.notEqual(env.hosts()[1].style.display, "none", "the modal's own video keeps its FAB");
+
+  // Closing the modal restores the grid FAB without any re-attach.
+  modalOpen = false;
+  env.fireMutations();
+  await env.flush();
+  assert.notEqual(env.hosts()[0].style.display, "none");
+});
+
+test("FAB hides while the anchor parks the button off-screen and returns after the carousel scrolls", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const row = doc.createElement("div");
+  setRect(row, 900, 0, 2500, 800);
+  doc.documentElement.appendChild(row);
+  const next = env.addMedia();
+  next.remove();
+  row.appendChild(next);
+  setRect(next, 2000, 100, 700, 300);
+  const source = doc.createElement("source");
+  source.setAttribute("src", "https://cdn.example/next.mp4");
+  next.appendChild(source);
+
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [
+      { url: "https://cdn.example/video.mp4", format: "video", size: 10 },
+      { url: "https://cdn.example/next.mp4", format: "video", size: 10 },
+    ],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 2);
+  assert.notEqual(env.hosts()[0].style.display, "none");
+  assert.equal(env.hosts()[1].style.display, "none", "off-screen carousel slide keeps its FAB hidden");
+
+  // Swiping the carousel brings the slide into the viewport: the element
+  // itself becomes usable again and the FAB returns.
+  setRect(next, 300, 100, 700, 300);
+  env.fireMutations();
+  await env.flush();
+  assert.notEqual(env.hosts()[1].style.display, "none");
+});
+
+test("viewport-overflowing modal player keeps a clamped FAB instead of hiding", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const player = env.addMedia();
+  player.remove();
+  doc.documentElement.appendChild(player);
+  // Douyin-style modal video box: laid out wider than the 1280px viewport
+  // while the visible picture is letterboxed inside it.
+  setRect(player, -380, 0, 2040, 800);
+  const source = doc.createElement("source");
+  source.setAttribute("src", "https://cdn.example/overflow.mp4");
+  player.appendChild(source);
+
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [
+      { url: "https://cdn.example/video.mp4", format: "video", size: 10 },
+      { url: "https://cdn.example/overflow.mp4", format: "video", size: 10 },
+    ],
+  });
+  await env.flush();
+  const hosts = env.hosts();
+  const overflowHost = hosts[hosts.length - 1];
+  assert.notEqual(overflowHost.style.display, "none", "viewport-covering player keeps its FAB");
+  // The button clamps to the viewport's right edge instead of parking
+  // off-screen at the anchor's real (overflowing) right edge.
+  assert.equal(Number.parseFloat(overflowHost.style.left), 1286);
+});
+
+test("fixed site header owning the outside band falls the FAB back inside", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const header = doc.createElement("div");
+  setRect(header, 0, 0, 1280, 56);
+  doc.documentElement.appendChild(header);
+  const player = env.addMedia();
+  player.remove();
+  doc.documentElement.appendChild(player);
+  setRect(player, 200, 60, 900, 600);
+  const source = doc.createElement("source");
+  source.setAttribute("src", "https://cdn.example/detail.mp4");
+  player.appendChild(source);
+  env.context.getComputedStyle = (element) => (element === header
+    ? { display: "block", visibility: "visible", position: "fixed" }
+    : { display: "block", visibility: "visible", position: "static" });
+  // The 32px band above the player's top-right lands on the fixed header.
+  doc.elementsFromPoint = (x, y) => (y < 56 ? [header] : [player]);
+
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [
+      { url: "https://cdn.example/video.mp4", format: "video", size: 10 },
+      { url: "https://cdn.example/detail.mp4", format: "video", size: 10 },
+    ],
+  });
+  await env.flush();
+  const hosts = env.hosts();
+  const playerHost = hosts[hosts.length - 1];
+  assert.notEqual(playerHost.style.display, "none");
+  // No outside room: inside top-right (rect.top + 6), anchor edge left.
+  assert.equal(Number.parseFloat(playerHost.style.top), 66);
+  assert.equal(Number.parseFloat(playerHost.style.left), 1100);
+});
+
+test("hover-card persistent FAB still engages without a modal", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const card = doc.createElement("div");
+  setRect(card, 100, 100, 300, 300);
+  doc.documentElement.appendChild(card);
+  card.appendChild(doc.createElement("img"));
+  env.video.remove();
+  card.appendChild(env.video);
+  env.sync({
+    pageUrl: "https://example.com/feed",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 1);
+  // A second sync populates the retained candidate snapshot that persistent
+  // mode hands to the panel after the preview video leaves.
+  env.fireMutations();
+  await env.flush();
+  // Hover preview ends: the transient video leaves but the cover card stays,
+  // so the FAB persists on the card.
+  env.video.remove();
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "cover card keeps the FAB after the preview video leaves");
+  assert.notEqual(env.hosts()[0].style.display, "none");
+});
+
+test("a modal covering the cover card blocks persistent-FAB takeover", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const modalRoot = doc.createElement("div");
+  setRect(modalRoot, 0, 0, 1280, 800);
+  doc.documentElement.appendChild(modalRoot);
+  const scrim = doc.createElement("div");
+  modalRoot.appendChild(scrim);
+  const card = doc.createElement("div");
+  setRect(card, 100, 100, 300, 300);
+  doc.documentElement.appendChild(card);
+  card.appendChild(doc.createElement("img"));
+  env.video.remove();
+  card.appendChild(env.video);
+  env.context.getComputedStyle = (element) => (element === modalRoot
+    ? { display: "block", visibility: "visible", position: "fixed" }
+    : { display: "block", visibility: "visible", position: "static" });
+  doc.elementsFromPoint = () => [scrim, modalRoot, card, env.video];
+  env.sync({
+    pageUrl: "https://example.com/feed",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 1);
+  // Populate the retained snapshot so the only remaining reason to refuse
+  // persistent mode is the modal occlusion guard.
+  env.fireMutations();
+  await env.flush();
+  // The site modal took the video away (lightbox promotion): the card left
+  // behind must not grow a persistent FAB above the modal.
+  env.video.remove();
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 0, "occluded card detaches instead of persisting");
+});
+
+test("persistent panel keeps the title cached while the hover preview was live", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  let cardCaption = "文案甲";
+  env.context.MacIDMMediaUtils.resolveContentTitle = () => cardCaption;
+  const card = doc.createElement("div");
+  setRect(card, 100, 100, 300, 300);
+  doc.documentElement.appendChild(card);
+  card.appendChild(doc.createElement("img"));
+  env.video.remove();
+  card.appendChild(env.video);
+  env.sync({
+    pageUrl: "https://example.com/feed",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  // Second sync populates the live-time snapshot (candidates + title).
+  env.fireMutations();
+  await env.flush();
+  // Hover ends: the detached element's proximity now resolves outside its
+  // (gone) card — it must not overwrite the cached title.
+  cardCaption = "别的卡片文案乙";
+  env.video.remove();
+  env.fireMutations();
+  await env.flush();
+  const host = env.hosts()[0];
+  assert.notEqual(host.style.display, "none", "FAB persists on the cover card");
+  env.click(host.shadowRoot.querySelector(".fab"));
+  const names = host.shadowRoot
+    .querySelectorAll("[data-macidm-item-name]")
+    .map((n) => n.textContent);
+  assert.deepEqual(names, ["文案甲"], "persistent panel keeps the live-cached title");
+});
+
+test("short hover retains candidates from the first attachment and repeated hover has one FAB", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const card = doc.createElement("div");
+  setRect(card, 100, 100, 300, 300);
+  doc.documentElement.appendChild(card);
+  const image = doc.createElement("img"); image.setAttribute("src", "https://cdn.example/cover-a.jpg");
+  card.appendChild(image);
+  env.video.remove(); card.appendChild(env.video);
+  env.sync({ pageUrl: env.context.location.href, title: "A", candidates: [{ url: "https://cdn.example/a.mp4", format: "video" }] });
+  await env.flush();
+  const position = env.hosts()[0].style.left;
+  env.video.remove(); env.fireMutations(); await env.flush();
+  assert.equal(env.hosts().length, 1, "first attachment already has a retained snapshot");
+  assert.equal(env.hosts()[0].style.left, position);
+  const next = new env.context.HTMLMediaElement();
+  setRect(next, 110, 110, 280, 200); card.appendChild(next);
+  env.fireMutations(); await env.flush();
+  assert.equal(env.hosts().length, 1, "a replacement preview does not duplicate the card FAB");
+  next.remove(); env.fireMutations(); await env.flush();
+  image.setAttribute("src", "https://cdn.example/cover-b.jpg");
+  env.fireMutations(); await env.flush();
+  assert.equal(env.hosts().length, 0, "recycled card cannot retain the previous media");
+});
+
+test("a connected preview changing src cannot persist the previous resource", async () => {
+  const env = createEnv({ realScope: true });
+  const doc = env.context.document;
+  const card = doc.createElement("div"); setRect(card, 100, 100, 300, 300);
+  card.appendChild(doc.createElement("img")); doc.documentElement.appendChild(card);
+  env.video.remove(); card.appendChild(env.video);
+  env.video.setAttribute("src", "https://cdn.example/a.mp4");
+  env.sync({ pageUrl: env.context.location.href, title: "A", candidates: [{url:"https://cdn.example/a.mp4",format:"video"}] });
+  await env.flush(); assert.equal(env.hosts().length, 1);
+  env.video.setAttribute("src", "https://cdn.example/b.mp4");
+  env.fireMutations(); await env.flush();
+  assert.equal(env.hosts().length, 0);
+});
+
+test("hover teardown can empty a connected preview before removing it without losing the FAB", async () => {
+  const env = createEnv({ realScope: true });
+  const doc = env.context.document;
+  const card = doc.createElement("div"); setRect(card,100,100,300,300);
+  card.appendChild(doc.createElement("img")); doc.documentElement.appendChild(card);
+  env.video.remove(); card.appendChild(env.video);
+  env.video.setAttribute("src","https://cdn.example/a.mp4");
+  env.sync({pageUrl:env.context.location.href,title:"A",candidates:[{url:"https://cdn.example/a.mp4",format:"video"}]});
+  await env.flush(); assert.equal(env.hosts().length,1);
+  env.video.setAttribute("src", ""); env.video.currentSrc = "";
+  env.fireMutations(); await env.flush(); assert.equal(env.hosts().length,1);
+  env.video.remove(); env.fireMutations(); await env.flush(); assert.equal(env.hosts().length,1);
+});
+
+// 回归（抖音精选）：打开/关闭详情弹窗属于路由切换，但持久 FAB 属于
+// 卡片而非路由——弹窗打开时被遮挡隐藏，关闭后必须恢复，不得被卸载。
+test("persistent hover-card FAB survives modal open/close route changes", async () => {
+  const env = createEnv();
+  const doc = env.context.document;
+  const card = doc.createElement("div");
+  setRect(card, 100, 100, 300, 300);
+  doc.documentElement.appendChild(card);
+  card.appendChild(doc.createElement("img"));
+  env.video.remove();
+  card.appendChild(env.video);
+  env.sync({
+    pageUrl: "https://example.com/feed",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  env.fireMutations();
+  await env.flush();
+  env.video.remove();
+  env.fireMutations();
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "preview 结束后 FAB 钉在卡片上");
+  // 打开弹窗（路由加 modal_id）：持久 FAB 不得卸载。
+  env.sync({
+    pageUrl: "https://example.com/feed?modal_id=123",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "弹窗打开（路由切换）后持久 FAB 存活");
+  // 关闭弹窗回到feed：FAB 仍在。
+  env.sync({
+    pageUrl: "https://example.com/feed",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/video.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "弹窗关闭后持久 FAB 恢复");
+});
+
+// 回归（抖音弹窗切集/嗅探重启）：瞬时空候选窗口不得卸载存活播放器上
+// 的 FAB；只有持续超过宽限期的空候选才卸载。
+test("transient empty candidates keep the FAB; sustained emptiness beyond the grace unmounts it", async () => {
+  const env = createEnv();
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "A",
+    candidates: [{ url: "https://cdn.example/a.mp4", format: "video", size: 10 }],
+  });
+  await env.flush();
+  assert.equal(env.hosts().length, 1);
+  // 切集/嗅探重启瞬间发布空列表：FAB 保留。
+  env.sync({ pageUrl: "https://example.com/watch", title: "A", candidates: [] });
+  await env.flush();
+  assert.equal(env.hosts().length, 1, "空候选窗口内 FAB 保留");
+  // 持续空候选超过 10s 宽限期后卸载。
+  const ContextDate = vm.runInContext("Date", env.context);
+  const frozenNow = ContextDate.now() + 15_000;
+  env.context.Date = Object.create(ContextDate);
+  env.context.Date.now = () => frozenNow;
+  try {
+    env.sync({ pageUrl: "https://example.com/watch", title: "A", candidates: [] });
+    await env.flush();
+  } finally {
+    env.context.Date = ContextDate;
+  }
+  assert.equal(env.hosts().length, 0, "持续空候选超过宽限期后卸载");
+});
+
+// 主行时长槽：App 逐 variant 回传 duration，解析成功后回填 candidate；
+// candidate 对象每次 sync 重建，时长必须跨快照保留。
+test("inspection backfills the main-row duration slot and survives candidate rebuilds", async () => {
+  const env = createEnv();
+  env.context.MacIDMMediaUtils.formatDuration = (seconds) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    const total = Math.floor(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  };
+  env.holdNextSend();
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/master.m3u8", format: "hls", fileExtension: "m3u8" }],
+  });
+  await env.flush();
+  const host = env.hosts()[0];
+  env.click(host.shadowRoot.querySelector(".fab"));
+  await env.flush(320); // 面板构建（200ms 自动解析排期）→ media.inspect 挂起
+  const metaOf = () =>
+    [...host.shadowRoot.querySelectorAll(".meta-text")].map((n) => n.textContent).join(" ");
+  env.releaseHeld({
+    ok: true,
+    variants: [
+      { label: "720P", url: "https://cdn.example/v720.m3u8", estimatedSize: 300_000_000, duration: 492 },
+    ],
+  });
+  await env.flush(320); // 面板重建后结果落位
+  assert.match(metaOf(), /08:12/, "解析结果回填主行时长槽");
+  // 重新 sync：candidate 对象重建，时长从缓存恢复，不丢。
+  env.sync({
+    pageUrl: "https://example.com/watch",
+    title: "Fixture",
+    candidates: [{ url: "https://cdn.example/master.m3u8", format: "hls", fileExtension: "m3u8" }],
+  });
+  await env.flush(320);
+  if (!host.shadowRoot.querySelector(".panel")) {
+    env.click(host.shadowRoot.querySelector(".fab"));
+    await env.flush(50);
+  }
+  assert.match(metaOf(), /08:12/, "candidate 重建后主行时长槽不丢");
 });

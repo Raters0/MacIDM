@@ -92,7 +92,13 @@
       const raw = el.getAttribute("src") || el.getAttribute("data") || el.currentSrc || "";
       if (raw && !raw.startsWith("blob:")) {
         const url = normalizeHTTPURL(raw, baseURL);
-        if (url && checkMediaFn(url)) {
+        // A video/audio element actually playing a resource is itself the
+        // media evidence: signed CDN URLs without a file extension (Douyin
+        // vod links carry the type only in query params) must still become
+        // candidates, or the player's own element can never claim them.
+        const playerEvidence =
+          (tagName === "VIDEO" || tagName === "AUDIO" || !tagName) && Number(el.readyState) >= 1;
+        if (url && (checkMediaFn(url) || playerEvidence)) {
           const duration =
             Number.isFinite(el.duration) && el.duration > 0 ? el.duration : undefined;
           result.push({

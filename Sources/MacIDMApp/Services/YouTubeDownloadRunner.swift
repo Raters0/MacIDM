@@ -416,7 +416,6 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
                 downloadURL: downloadURL,
                 formatString: formatString,
                 workingDirectory: workingDirectory,
-                isYouTube: isYouTube,
                 cookieFile: cookieFile,
                 request: request
             )
@@ -741,9 +740,11 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
         if let referer = request.requestContext?.referer, !referer.isEmpty {
             arguments += ["--add-headers", "Referer: \(referer)"]
         }
-        // Cookie supply matches the main download: YouTube pages pull the
-        // Chrome login state, with the explicit cookie file layered on top.
-        arguments += ["--cookies-from-browser", "chrome"]
+        // Cookie supply matches the main download: an explicit cookie file
+        // (extension-granted or pasted session) is used when present;
+        // otherwise the probe runs anonymously. Never read Chrome's on-disk
+        // Cookies DB (--cookies-from-browser) — it needs Full Disk Access
+        // and every ad-hoc rebuild invalidates the grant.
         if let cookieFile {
             arguments += ["--cookies", cookieFile.path]
         }

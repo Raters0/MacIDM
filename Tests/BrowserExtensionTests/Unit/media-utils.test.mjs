@@ -645,72 +645,31 @@ test("display sort pins site adapter candidates above observed ones", () => {
   assert.ok(at(headersVideo.url) < at(audio.url));
 });
 
-test("element scope filter keeps player-attributable candidates and the element's own resources", () => {
-  // 范围制（B 站实测场景）：悬浮窗锚定视频元素，页面级图片（UP 主头像、
-  // 推荐视频封面）不属于该元素范围，仅在 Popup 展示；poster 封面与
-  // src/currentSrc 是元素属性，100% 可归因，保留。
-  const own = new Set([
-    "https://i2.hdslb.com/bfs/archive/cover.avif",
-    "https://cdn.example/direct.mp4",
-    "blob:https://www.bilibili.com/media",
-  ]);
+test("element scope only keeps explicitly attributed audio and video resources", () => {
   const candidates = [
-    { url: "https://www.bilibili.com/video/BV1sogS6yEpm/", siteAdapter: "bilibili", format: "video" },
-    { url: "https://upos.example.bilivideo.com/1000-1-30080.m4s", format: "video", pairKind: "m4s-pair" },
-    { url: "https://cdn.example/master.m3u8", format: "hls" },
-    { url: "https://cdn.example/stream.mpd", format: "dash" },
-    { url: "https://cdn.example/v.mp4", format: "video", mime: "video/mp4" },
-    { url: "https://cdn.example/a.mp3", format: "audio", mime: "audio/mpeg" },
-    { url: "blob:https://www.bilibili.com/media", format: "blob" },
+    { url: "https://cdn.example/direct.mp4#quality=720", format: "video" },
+    { url: "https://cdn.example/audio.m4a", format: "audio" },
+    { url: "https://cdn.example/cover.jpg", format: "image" },
+    { url: "https://cdn.example/unowned.m3u8", format: "hls" },
+    { url: "https://cdn.example/unowned.mpd", format: "dash" },
+    { url: "https://cdn.example/unowned", mime: "video/mp4" },
+    { url: "https://cdn.example/unowned-page", siteAdapter: "bilibili" },
+    { url: "blob:https://example.com/unowned", format: "blob" },
     { url: "mse:player", format: "blob" },
-    { url: "https://i2.hdslb.com/bfs/archive/cover.avif", format: "image" },
-    { url: "https://cdn.example/direct.mp4", format: "video" },
-    // 以下为锚点范围外的页面级资源：
-    { url: "https://i1.hdslb.com/bfs/face/avatar.webp", format: "image" },
-    { url: "https://i2.hdslb.com/bfs/archive/recommend-1.avif", format: "image" },
-    { url: "https://example.com/font.woff2", format: "", mime: "font/woff2" },
-    { url: "https://example.com/file.zip", mime: "", format: "" },
+    { url: "https://cdn.example/other.m4s", pairKind: "m4s-pair", format: "video" },
   ];
-  const kept = mediaUtils.filterCandidatesForElementScope(candidates, own);
-  const keptURLs = kept.map((candidate) => candidate.url);
-  // 范围内全部保留。
-  for (const expected of [
-    "https://www.bilibili.com/video/BV1sogS6yEpm/",
-    "https://upos.example.bilivideo.com/1000-1-30080.m4s",
-    "https://cdn.example/master.m3u8",
-    "https://cdn.example/stream.mpd",
-    "https://cdn.example/v.mp4",
-    "https://cdn.example/a.mp3",
-    "blob:https://www.bilibili.com/media",
-    "mse:player",
-    "https://i2.hdslb.com/bfs/archive/cover.avif",
-    "https://cdn.example/direct.mp4",
-  ]) {
-    assert.ok(keptURLs.includes(expected), `expected ${expected} in scope`);
-  }
-  // 范围外的页面级图片与直链全部排除。
-  for (const excluded of [
-    "https://i1.hdslb.com/bfs/face/avatar.webp",
-    "https://i2.hdslb.com/bfs/archive/recommend-1.avif",
-    "https://example.com/file.zip",
-  ]) {
-    assert.ok(!keptURLs.includes(excluded), `expected ${excluded} out of scope`);
-  }
-  assert.equal(kept.length, 10);
+  const own = new Set(["https://cdn.example/direct.mp4#other", "https://cdn.example/audio.m4a", "https://cdn.example/cover.jpg"]);
+  assert.deepEqual(Array.from(mediaUtils.filterCandidatesForElementScope(candidates, own)), candidates.slice(0, 2));
+  assert.equal(mediaUtils.filterCandidatesForElementScope(candidates, null).length, 0);
+  assert.equal(mediaUtils.filterCandidatesForElementScope(null, own).length, 0);
 });
 
-test("element scope filter matches own URLs without fragments and accepts arrays", () => {
-  // 网络观察的候选 URL 带 fragment（YouTube 变体选择）时仍应命中元素自身
-  // 资源；ownURLs 也接受数组形态。
-  const own = ["https://cdn.example/direct.mp4"];
-  const kept = mediaUtils.filterCandidatesForElementScope(
-    [
-      { url: "https://cdn.example/direct.mp4#height=720", format: "image" },
-      { url: "https://cdn.example/other.jpg", format: "image" },
-    ],
-    own,
-  );
-  assert.deepEqual(kept.map((candidate) => candidate.url), ["https://cdn.example/direct.mp4#height=720"]);
+test("element scope preserves signed query identity", () => {
+  const candidates = [
+    { url: "https://cdn.example/video.mp4?token=one", format: "video" },
+    { url: "https://cdn.example/video.mp4?token=two", format: "video" },
+  ];
+  assert.deepEqual(Array.from(mediaUtils.filterCandidatesForElementScope(candidates, [candidates[0].url])), [candidates[0]]);
 });
 
 test("formatBytes matches App ByteCountFormatter decimal units, rounding, and precision", () => {
@@ -761,4 +720,172 @@ test("formatBytes matches App ByteCountFormatter decimal units, rounding, and pr
   assert.equal(mediaUtils.formatBytes({}), null);
   assert.equal(mediaUtils.formatBytes([]), null);
   assert.equal(mediaUtils.formatBytes(true), null);
+});
+
+test("element scope isolates main and reply media even when they share a CDN", () => {
+  const main = { url: "https://video.example/main.mp4", format: "video" };
+  const reply = { url: "https://video.example/reply.mp4", format: "video" };
+  const playlist = { url: "https://video.example/reply.m3u8", format: "hls" };
+  const input = [main, reply, playlist];
+  assert.deepEqual(Array.from(mediaUtils.filterCandidatesForElementScope(input, [main.url])), [main]);
+  assert.deepEqual(Array.from(mediaUtils.filterCandidatesForElementScope(input, [reply.url])), [reply]);
+  assert.equal(mediaUtils.filterCandidatesForElementScope(input, []).length, 0);
+  assert.equal(input.length, 3, "Popup's page candidates remain intact");
+});
+
+test("coalescing preserves separate players whose manifest URLs differ only in query", () => {
+  const candidates = [
+    { url: "https://cdn.example/playlist.m3u8?video=main", format: "hls", supported: true },
+    { url: "https://cdn.example/playlist.m3u8?video=reply", format: "hls", supported: true },
+  ];
+  const merged = mediaUtils.coalesceMediaCandidates(candidates, "Thread", "https://example.com/thread");
+  assert.equal(merged.length, 2);
+  for (const candidate of candidates) {
+    assert.deepEqual(Array.from(mediaUtils.filterCandidatesForElementScope(merged, [candidate.url]), c => c.url), [candidate.url]);
+  }
+});
+
+test("coalesce merges video/audio split streams into one FFmpeg-muxed pair row", () => {
+  const video = {
+    url: "https://v95-web-sz.douyinvod.com/d88e4c739f5045b9a0968e6436d20a4d/6aaa6547/video/tos/cn/tos-cn-vd-0026/o0haSIp3CakTAsA3iiqvpgIY5ikYAqABoAPhQ/media-video-hvc1/",
+    format: "video", mime: "video/mp4", fileExtension: "mp4", supported: true, size: 95496286, duration: 461.2,
+    filenameHint: "media-video-hvc1.mp4", displayName: "media-video-hvc1",
+  };
+  const audio = {
+    url: "https://v95-web-sz.douyinvod.com/0c8f778a65e27ff0a84e1bb04c058305/6aaa6547/video/tos/cn/tos-cn-vd-0026/osBNAQRm7FEAuAmARqEDzGfCAAsegSFxAN1GV9/media-audio-und-mp4a/",
+    format: "video", mime: "video/mp4", fileExtension: "mp4", supported: true, size: 3616338, duration: 461.4,
+    filenameHint: "media-audio-und-mp4a.mp4", displayName: "media-audio-und-mp4a",
+  };
+  video.mediaOwner = audio.mediaOwner = "blob:https://www.douyin.com/one";
+  const merged = mediaUtils.coalesceMediaCandidates([video, audio], "一锅山里的鲜味", "https://www.douyin.com/jingxuan");
+  const pairs = merged.filter((c) => c.pairKind === "m4s-pair");
+  assert.equal(pairs.length, 1, "同批次同长度的视频流+音频流应合成一行");
+  assert.equal(pairs[0].pairVideoUrl, video.url);
+  assert.equal(pairs[0].pairAudioUrl, audio.url);
+  assert.equal(pairs[0].filenameHint, "一锅山里的鲜味.mp4");
+  assert.equal(pairs[0].filenameHintSource, "titleDerived");
+  assert.equal(
+    merged.some((c) => c.url === audio.url && c.pairKind !== "m4s-pair"),
+    false,
+    "音频流不得再作为独立行出现",
+  );
+});
+
+test("split-stream pairing refuses cross-batch and video-only groups", () => {
+  const videoA = {
+    url: "https://v95-web-sz.douyinvod.com/hash1/6aaa6547/video/tos/cn/tos-cn-vd-0026/idA/media-video-hvc1/",
+    format: "video", mime: "video/mp4", supported: true, size: 90_000_000, duration: 461,
+  };
+  const audioOtherBatch = {
+    url: "https://v95-web-sz.douyinvod.com/hash2/6aaa9999/video/tos/cn/tos-cn-vd-0026/idA/media-audio-und-mp4a/",
+    format: "video", mime: "video/mp4", supported: true, size: 3_600_000, duration: 461,
+  };
+  const merged = mediaUtils.coalesceMediaCandidates([videoA, audioOtherBatch], "", "https://www.douyin.com/jingxuan");
+  assert.equal(
+    merged.some((c) => c.pairKind === "m4s-pair"),
+    false,
+    "不同批次目录的流不得配对",
+  );
+});
+
+test("split-stream pairing works without duration and vetoes duration conflicts", () => {
+  const base = "https://v95-web-sz.douyinvod.com";
+  const videoNoDur = {
+    url: `${base}/hashv/6aaa7000/video/tos/cn/tos-cn-vd-0026/idV/media-video-hvc1/`,
+    format: "video", mime: "video/mp4", supported: true, size: 90_000_000,
+  };
+  const audioNoDur = {
+    url: `${base}/hasha/6aaa7000/video/tos/cn/tos-cn-vd-0026/idA/media-audio-und-mp4a/`,
+    format: "video", mime: "video/mp4", supported: true, size: 3_600_000,
+  };
+  videoNoDur.mediaOwner = audioNoDur.mediaOwner = "blob:https://www.douyin.com/one";
+  const merged = mediaUtils.coalesceMediaCandidates([videoNoDur, audioNoDur], "", "https://www.douyin.com/jingxuan");
+  const pair = merged.find((c) => c.pairKind === "m4s-pair");
+  assert.ok(pair, "observed tracks with the same player owner pair without duration");
+  assert.equal(pair.filenameHintSource, "urlPath", "no real title: the kept URL-tail hint must not claim titleDerived");
+  assert.equal(pair.filenameHint, undefined, "gallery pairs must not bake a branding hint");
+  assert.equal(pair.pairVideoUrl, videoNoDur.url);
+  assert.equal(pair.pairAudioUrl, audioNoDur.url);
+
+  const videoLong = { ...videoNoDur, duration: 461 };
+  const audioShort = { ...audioNoDur, duration: 120 };
+  const merged2 = mediaUtils.coalesceMediaCandidates([videoLong, audioShort], "", "https://www.douyin.com/jingxuan");
+  assert.equal(
+    merged2.some((c) => c.pairKind === "m4s-pair"),
+    false,
+    "同批次但时长冲突超过 2s 的流不得配对",
+  );
+});
+
+test("coalescing an adapter with its raw page observation remains one row on every pass", () => {
+  const url = "https://www.bilibili.com/video/BV1example";
+  const raw = mediaUtils.normalizeMediaCandidate({url, sizeProbeFailed:true});
+  const once = mediaUtils.coalesceMediaCandidates([raw], "当前视频", url);
+  const twice = mediaUtils.coalesceMediaCandidates([...once, raw], "其他文案", url);
+  assert.equal(once.length, 1); assert.equal(twice.length, 1);
+  assert.equal(twice[0].siteAdapter, "bilibili");
+});
+
+test("split streams require one proven owner, not equal expiry directories or captions", () => {
+  const video = {url:"https://v1.douyinvod.com/hash/expiry/media-video-hvc1/",format:"video"};
+  const audio = {url:"https://v1.douyinvod.com/hash2/expiry/media-audio-mp4a/",format:"video"};
+  const pair = list => mediaUtils.coalesceMediaCandidates(list).filter(c=>c.pairKind === "m4s-pair");
+  assert.equal(pair([video,audio]).length,0);
+  assert.equal(pair([{...video,mediaOwner:"a"},{...audio,mediaOwner:"b"}]).length,0);
+  const paired = pair([{...video,mediaOwner:"a"},{...audio,url:audio.url.replace('/expiry/','/other-expiry/'),mediaOwner:"a"}]);
+  assert.equal(paired.length,1);
+  assert.equal(mediaUtils.filterCandidatesForElementScope(paired,[video.url]).length,0);
+  assert.equal(mediaUtils.filterCandidatesForElementScope(paired,[video.url,paired[0].pairAudioUrl]).length,1);
+});
+
+// X/Twitter separate-audio masters: the player requests the master playlist
+// plus every rendition playlist (video variants and the mp4a audio track).
+// The rendition rows must fold into the master row instead of showing up as
+// duplicate "HLS 流媒体" rows (a muted video variant or a bare audio list).
+test("coalescing folds HLS rendition playlists under their observed master", () => {
+  const master = "https://video.twimg.com/amplify_video/2099453445837299712/pl/ILEhdo8JQNMg-7Ns.m3u8";
+  const videoRendition = "https://video.twimg.com/amplify_video/2099453445837299712/pl/avc1/720x1270/28Fj-P9P9fLr2ApF.m3u8";
+  const audioRendition = "https://video.twimg.com/amplify_video/2099453445837299712/pl/mp4a/128000/kJcJOyJOyWx5mWq-.m3u8";
+  const merged = mediaUtils.coalesceMediaCandidates(
+    [
+      { url: master, format: "hls", supported: true },
+      { url: videoRendition, format: "hls", supported: true },
+      { url: audioRendition, format: "hls", supported: true },
+    ],
+    "推文视频",
+    "https://x.com/user/status/123",
+  );
+  assert.deepEqual(
+    Array.from(merged, (candidate) => candidate.url),
+    [master],
+    "变体与音频清单折叠进 master 行",
+  );
+});
+
+test("coalescing never folds two HLS masters sharing one directory", () => {
+  const masterA = "https://video.twimg.com/amplify_video/111/pl/tokenA.m3u8";
+  const masterB = "https://video.twimg.com/amplify_video/111/pl/tokenB.m3u8";
+  const merged = mediaUtils.coalesceMediaCandidates(
+    [
+      { url: masterA, format: "hls", supported: true },
+      { url: masterB, format: "hls", supported: true },
+    ],
+    "双视频",
+    "https://x.com/user/status/456",
+  );
+  assert.equal(merged.length, 2, "同目录的两个 master 深度相同，互不折叠");
+});
+
+test("coalescing folds HLS renditions by host and directory prefix only", () => {
+  const master = "https://video.twimg.com/amplify_video/111/pl/tokenA.m3u8";
+  const otherHost = "https://backup.example.com/amplify_video/111/pl/deeper/v.m3u8";
+  const merged = mediaUtils.coalesceMediaCandidates(
+    [
+      { url: master, format: "hls", supported: true },
+      { url: otherHost, format: "hls", supported: true },
+    ],
+    "跨主机",
+    "https://x.com/user/status/789",
+  );
+  assert.equal(merged.length, 2, "不同 host 的清单不折叠");
 });

@@ -39,6 +39,14 @@ extension AppModel {
         persistBrowserTakeoversOrPresentError()
     }
 
+    /// Records which dismissal outcome the confirmation UI chose for a draft,
+    /// so the next interactive poll can tell the extension whether to cancel
+    /// the paused browser download or hand control back to the browser.
+    func rememberInteractiveCancelOutcome(cancelBrowser: Bool, for key: String?) {
+        guard let key else { return }
+        interactiveCancelOutcomes[key] = cancelBrowser
+    }
+
     func makeInteractiveTakeoverRecord(
         _ pending: PendingInteractiveTakeover, task: AppTask, startImmediately: Bool
     ) throws -> BrowserTakeoverRecord {

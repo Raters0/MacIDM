@@ -4,7 +4,7 @@ import XCTest
 
 @testable import MacIDMApp
 
-/// Download lifecycle dual-channel log acceptance (docs/AI交接.md §3.2): the regular
+/// Download lifecycle dual-channel log acceptance (technical-spec §3.1.7): the regular
 /// log must not reveal sensitive titles, signed URLs, or local path values; the
 /// private log retains them in full under the same event id.
 final class AppDiagnosticsTests: XCTestCase {

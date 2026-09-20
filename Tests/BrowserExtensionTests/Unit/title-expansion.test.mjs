@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-// AI handover doc §5.5 / §7.3: the style contract for expanding full
+// chrome-extension-spec §5.8: the style contract for expanding full
 // candidate titles. The collapsed state keeps a single ellipsized line (no
 // list-density regression); the expanded state switches to full multi-line
 // wrapping, and both entry points must keep the expansion selector so the

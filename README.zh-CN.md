@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Resources/AppIcon.iconset/icon_256x256.png" alt="MacIDM" width="96" />
   <h1>MacIDM</h1>
-  <p>用 Swift 写的 macOS 媒体资源下载器，带一个 Chrome 媒体嗅探扩展。已针对 <a href="https://www.bilibili.com/">Bilibili</a> 和 <a href="https://www.youtube.com/">YouTube</a> 做了专门优化。</p>
+  <p>用 Swift 写的原生 macOS 媒体资源下载器，以流式处理和有界内存占用为设计目标，带一个 Chrome 媒体嗅探扩展。</p>
   <p><a href="README.md">English</a> · <a href="https://github.com/Raters0/MacIDM/releases">下载</a> · <a href="#快速开始">快速开始</a></p>
 </div>
 
@@ -15,7 +15,7 @@ MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，�
 
 1. 网页扩展负责发现和选择资源，下载由本地 App 及其下载后端执行；也可以直接在 App 中填写下载链接。
 
-下面演示点击视频 / 音频资源右上角的悬浮按钮、展开资源、点击下载，并打开 App 新建任务窗口的流程（目前已针对 [Bilibili](https://www.bilibili.com/) 和 [YouTube](https://www.youtube.com/) 做了专门优化）：
+下面演示点击视频 / 音频资源右上角的悬浮按钮、展开资源、点击下载，并打开 App 新建任务窗口的流程：
 
 <p><img src="README-assets/page-sniff.gif" alt="中文操作演示：点击嗅探按钮、选择资源、打开新建下载任务" width="900" /></p>
 
@@ -31,6 +31,13 @@ MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，�
 - 还支持代理、全局限速、中英文界面，以及 CLI 和本地 HTTP API。命令行可用于读取状态、控制任务和自动化脚本。
 - 支持文件名隐藏，避免触发 AI Agent 敏感词检测。
 - 支持日志分级存储；使用 AI 辅助调试时，可减少敏感信息（例如 Cookie）暴露给第三方。
+
+### 已专门优化的主流网站
+
+- [B站](https://www.bilibili.com/)
+- [油管](https://www.youtube.com/)
+- [抖音](https://www.douyin.com/)
+- [X / 推特](https://www.x.com/)
 
 ### 下一步的更新计划
 

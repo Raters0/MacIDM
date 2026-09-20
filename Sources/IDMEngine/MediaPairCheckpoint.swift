@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns pair resume artifacts. Metadata contains digests, never signed URLs.
-struct DASHPairCheckpoint {
+struct MediaPairCheckpoint {
     struct Track: Codable {
         let size: Int64
         let digest: String

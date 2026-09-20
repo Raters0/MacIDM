@@ -7,6 +7,7 @@ import { t } from "../shared/i18n-access.js";
 // enqueue failure (app busy) from a takeover acknowledgement timeout.
 const TIMEOUT_CODE_BY_TYPE = {
   ping: "PING_TIMEOUT",
+  "app.activate": "ACTIVATE_TIMEOUT",
   "media.inspect": "INSPECT_TIMEOUT",
   "download.enqueue": "ENQUEUE_TIMEOUT",
   "download.create": "TAKEOVER_TIMEOUT",
@@ -155,6 +156,17 @@ export class NativeClient {
   async ping(createRequest) {
     const request = createRequest("ping", `ping:${crypto.randomUUID()}`, {});
     const response = await this.send(request, 3000);
+    return validateResponse(response, request.requestId);
+  }
+
+  // Dedicated "open the App" gesture. Unlike ping (background status
+  // probing, which must never resurrect an App the user quit), app.activate
+  // is user-initiated: the Host may relaunch a deliberately quit App and
+  // clears the quit-intent marker for it. Uses the standard timeout because
+  // a cold launch plus the bridge handshake can take a few seconds.
+  async activate(createRequest) {
+    const request = createRequest("app.activate", `activate:${crypto.randomUUID()}`, {});
+    const response = await this.send(request, NATIVE_TIMEOUT_MS);
     return validateResponse(response, request.requestId);
   }
 

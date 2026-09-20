@@ -5,6 +5,11 @@ import MacIDMBridge
 
 extension AppModel {
     func startBrowserBridge() {
+        // The App is running again, so any prior "user quit on purpose"
+        // marker is stale. Clear it here (not only at launch) so the Native
+        // Messaging Host resumes its normal wake behavior, including after a
+        // mid-session bridge restart.
+        BridgeLaunchIntent.clearQuitIntent(in: AppSupportPaths.supportDirectory())
         do {
             try browserBridge.start(model: self)
         } catch {
@@ -28,7 +33,18 @@ extension AppModel {
                 return .ok(
                     requestId: request.requestId,
                     type: "pong",
-                    payload: ["appVersion": .string("1.0.0")]
+                    payload: ["appVersion": .string("1.0.1")]
+                )
+            case "app.activate":
+                // The user explicitly asked to open the App from the
+                // extension (Popup "Open" button / overlay wake). Reaching
+                // this handler means the App is already running, so bring
+                // the main window forward and acknowledge.
+                NotificationCenter.default.post(name: .macIDMRequestMainWindow, object: nil)
+                return .ok(
+                    requestId: request.requestId,
+                    type: "app.activated",
+                    payload: ["appVersion": .string("1.0.1")]
                 )
             case "download.create":
                 return try await prepareBrowserDownload(request, clientID: clientID, secret: secret)
@@ -95,7 +111,7 @@ extension AppModel {
         } catch MediaInspectionError.authenticationRequired {
             // Structured media-inspection errors: login/bot check, cookie
             // context, tool, network and no-formats no longer collapse into
-            // MEDIA_INVALID (AI handover doc §5.2). Messages use safe
+            // MEDIA_INVALID (technical-spec §3.4). Messages use safe
             // localized copy and never pass raw yt-dlp stderr through.
             return .failure(
                 requestId: request.requestId,
@@ -175,6 +191,15 @@ extension AppModel {
             return .failure(
                 requestId: request.requestId,
                 code: "MEDIA_INVALID",
+                retryable: false,
+                message: error.localizedDescription
+            )
+        } catch let error as BrowserTakeoverError where error == .userCancelledBrowser {
+            // The user dismissed the confirmation asking to also cancel the
+            // paused browser download; the extension performs the cancel.
+            return .failure(
+                requestId: request.requestId,
+                code: "TAKEOVER_USER_CANCELLED_BROWSER",
                 retryable: false,
                 message: error.localizedDescription
             )
@@ -311,6 +336,25 @@ extension AppModel {
         return value
     }
 
+    /// Reads the hint provenance from a bridge payload. Missing or unknown
+    /// values degrade to `.urlPath` so payloads from older extensions never
+    /// gain title-outranking authority (technical spec §8.1).
+    static func filenameHintSource(from payload: [String: JSONValue]) -> FilenameHintSource {
+        guard let raw = payload["filenameHintSource"]?.stringValue,
+            let source = FilenameHintSource(rawValue: raw),
+            source != .userEdited
+        else { return .urlPath }
+        return source
+    }
+
+    /// Hosts used to cross-check a title's trailing brand segment before
+    /// stripping it: the resource host and, when present, the referer's host
+    /// (the page the user actually submitted from).
+    static func pageTitleHosts(url: URL, requestContext: DownloadRequestContext?) -> [String?] {
+        let refererHost = requestContext?.referer.flatMap { URL(string: $0)?.host }
+        return [url.host, refererHost]
+    }
+
     func requestInteractiveBrowserDownload(
         _ request: MessageRequest,
         clientID: String,
@@ -323,7 +367,12 @@ extension AppModel {
             if abandonedTakeovers.contains(where: {
                 $0.matches(clientID: clientID, idempotencyKey: request.idempotencyKey, browserDownloadID: browserID)
             }) {
-                throw BrowserTakeoverError.abandoned
+                // Distinguish the two dismissal outcomes so the extension can
+                // either cancel the paused browser download or resume it.
+                let cancelBrowser = interactiveCancelOutcomes.removeValue(forKey: key) ?? false
+                throw cancelBrowser
+                    ? BrowserTakeoverError.userCancelledBrowser
+                    : BrowserTakeoverError.abandoned
             }
             if let existing = browserTakeovers.first(where: {
                 $0.authenticatedClientID == clientID && $0.idempotencyKey == request.idempotencyKey
@@ -377,9 +426,13 @@ extension AppModel {
             draft = DownloadDraft(
                 url: url,
                 filenameHint: request.payload["filenameHint"]?.stringValue,
+                filenameHintSource: Self.filenameHintSource(from: request.payload),
                 sourceKind: sourceKind,
                 requestContext: requestContext,
-                pageTitle: request.payload["pageTitle"]?.stringValue,
+                pageTitle: DownloadNaming.semanticPageTitle(
+                    request.payload["pageTitle"]?.stringValue,
+                    hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+                ),
                 mimeType: request.payload["mime"]?.stringValue,
                 pairAudioURL: pairAudioURL,
                 pairCID: request.payload["pairCid"]?.stringValue,
@@ -530,9 +583,16 @@ extension AppModel {
         }
 
         let preferredFilename =
-            DownloadNaming.nonEmptyPageTitle(request.payload["pageTitle"]?.stringValue)
+            // The takeover hint is the name Chrome resolved for the download
+            // item (Content-Disposition when present) — exactly what the user
+            // saw on the browser shelf, so it outranks the tab title. Generic
+            // browser names ("download") still fall through to the title.
+            usableRequestFilename
+            ?? DownloadNaming.semanticPageTitle(
+                request.payload["pageTitle"]?.stringValue,
+                hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+            )
             ?? (DownloadNaming.isGenericFilename(info.suggestedFilename) ? nil : info.suggestedFilename)
-            ?? usableRequestFilename
             ?? initialFilename
         let filename = DownloadNaming.filenameWithOutputExtension(
             InputValidator.safeFilename(preferredFilename),
@@ -695,7 +755,10 @@ extension AppModel {
         )
         let requestContext = try browserRequestContext(from: request)
         let taskID = UUID()
-        let pageTitle = DownloadNaming.nonEmptyPageTitle(request.payload["pageTitle"]?.stringValue)
+        let pageTitle = DownloadNaming.semanticPageTitle(
+            request.payload["pageTitle"]?.stringValue,
+            hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+        )
         var initialFilename =
             pageTitle
             ?? request.payload["filenameHint"]?.stringValue

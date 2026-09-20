@@ -1,5 +1,6 @@
 import Foundation
 import IDMEngine
+import MacIDMBridge
 
 extension AppModel {
     func task(with id: UUID) -> AppTask? {
@@ -157,6 +158,12 @@ extension AppModel {
 
     func startFileExistenceCheck() {
         fileCheckTask?.cancel()
+        // Snapshot the completed set before the first sweep. A destination
+        // that is already missing for one of these tasks was lost before this
+        // session, so the sweep renders the flag without announcing one
+        // notification and one log line per task on every launch.
+        fileCheckBaselineTaskIDs = Set(tasks.filter { $0.status == .completed }.map(\.id))
+        fileCheckSeenTaskIDs = []
         fileCheckTask = Task { @MainActor [weak self] in
             var lastExportSignature = Self.statusExportSignature(
                 tasks: self?.tasks ?? [],
@@ -215,13 +222,48 @@ extension AppModel {
             &+ (ffmpegAvailable ? 1 : 0)
     }
 
+    /// One destination the sweep stats off the main actor, plus whether a newly
+    /// detected loss may be announced (see `shouldAnnounceFileMissing`).
+    private struct FileCheckEntry: Sendable {
+        let taskID: UUID
+        let path: String
+        let announce: Bool
+    }
+
+    /// A state change observed by the sweep: `missing` is the freshly stat'ed
+    /// result, not the flag the table currently renders.
+    private struct FileCheckOutcome: Sendable {
+        let taskID: UUID
+        let missing: Bool
+        let announce: Bool
+    }
+
+    /// Announcement rule for one missing destination, isolated as a pure
+    /// function for testing. A task that was already completed when this
+    /// session's sweep started reports its loss as pre-existing baseline state
+    /// on the first observation only; every other loss — including the same
+    /// file disappearing again later in the session — is an event worth a
+    /// notification and a per-task log line.
+    static func shouldAnnounceFileMissing(
+        taskID: UUID,
+        baselineTaskIDs: Set<UUID>,
+        seenTaskIDs: Set<UUID>
+    ) -> Bool {
+        !(baselineTaskIDs.contains(taskID) && !seenTaskIDs.contains(taskID))
+    }
+
     /// Lightweight periodic sweep: for completed tasks whose destination file
     /// has been deleted or moved, mark `fileMissing` so the UI can warn the
     /// user. When the file reappears the flag is cleared. Only completed tasks
     /// are checked and at most `fileCheckBatchLimit` per cycle to avoid disk
     /// I/O pressure. This is a transient UI flag and intentionally does not
     /// trigger persistence or update `updatedAt`.
-
+    ///
+    /// Notification and logging are limited to losses detected *during* this
+    /// session: the first observation of a task that was already completed at
+    /// launch only establishes the baseline (one aggregate log line per sweep),
+    /// so a history full of deleted files does not fire a notification storm on
+    /// every launch.
     func checkCompletedTaskFiles() {
         let completed = tasks.filter { $0.status == .completed }
         guard !completed.isEmpty else { return }
@@ -235,44 +277,66 @@ extension AppModel {
         // Collect paths to check off the main actor. Use task IDs instead
         // of array indices because the tasks array may change (insertions,
         // deletions) between the detached check and the MainActor apply.
-        let pathsToCheck: [(taskID: UUID, path: String, currentlyMissing: Bool)] = batch.map {
-            (taskID: $0.id, path: $0.destinationPath, currentlyMissing: $0.fileMissing)
+        let entries = batch.map {
+            FileCheckEntry(
+                taskID: $0.id,
+                path: $0.destinationPath,
+                announce: Self.shouldAnnounceFileMissing(
+                    taskID: $0.id,
+                    baselineTaskIDs: fileCheckBaselineTaskIDs,
+                    seenTaskIDs: fileCheckSeenTaskIDs
+                )
+            )
         }
+        for entry in entries { fileCheckSeenTaskIDs.insert(entry.taskID) }
         let priorStates = Dictionary(
-            pathsToCheck.map { ($0.taskID, $0.currentlyMissing) },
+            batch.map { ($0.id, $0.fileMissing) },
             uniquingKeysWith: { _, last in last }
         )
         Task.detached(priority: .utility) { [weak self] in
             let fileManager = FileManager.default
-            let results = pathsToCheck.compactMap { entry -> (taskID: UUID, missing: Bool)? in
+            let outcomes = entries.compactMap { entry -> FileCheckOutcome? in
                 let missing = !fileManager.fileExists(atPath: entry.path)
                 // Only report changes to avoid unnecessary MainActor wake-ups.
                 guard priorStates[entry.taskID] != missing else { return nil }
-                return (taskID: entry.taskID, missing: missing)
+                return FileCheckOutcome(
+                    taskID: entry.taskID,
+                    missing: missing,
+                    announce: entry.announce
+                )
             }
-            guard !results.isEmpty else { return }
+            guard !outcomes.isEmpty else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                for result in results {
-                    guard let index = self.tasks.firstIndex(where: { $0.id == result.taskID })
+                var baselineMissingCount = 0
+                for outcome in outcomes {
+                    guard let index = self.tasks.firstIndex(where: { $0.id == outcome.taskID })
                     else { continue }
                     let name = self.tasks[index].filename
                     let destinationPath = self.tasks[index].destinationPath
                     // Route through update() so the table's live models pick
                     // up the missing-file flag immediately instead of waiting
                     // for the next structural change.
-                    self.update(result.taskID) { $0.fileMissing = result.missing }
-                    if result.missing {
-                        self.notifier.notifyFileMissing(filename: name)
-                        // The ordinary log keeps only the task ID; the full
-                        // filename goes to the private log (§3.3).
-                        DownloadDiagnosticEventLog.recordTaskLifecycle(
-                            event: "task.fileMissing",
-                            taskID: result.taskID,
-                            filename: name,
-                            destinationPath: destinationPath
-                        )
+                    self.update(outcome.taskID) { $0.fileMissing = outcome.missing }
+                    guard outcome.missing else { continue }
+                    if !outcome.announce {
+                        baselineMissingCount += 1
+                        continue
                     }
+                    self.notifier.notifyFileMissing(filename: name)
+                    // The ordinary log keeps only the task ID; the full
+                    // filename goes to the private log (§3.3).
+                    DownloadDiagnosticEventLog.recordTaskLifecycle(
+                        event: "task.fileMissing",
+                        taskID: outcome.taskID,
+                        filename: name,
+                        destinationPath: destinationPath
+                    )
+                }
+                if baselineMissingCount > 0 {
+                    DownloadDiagnosticEventLog.recordFileMissingBaseline(
+                        count: baselineMissingCount
+                    )
                 }
             }
         }
@@ -309,6 +373,9 @@ extension AppModel {
                 tasks[index].bytesPerSecond = 0
             }
         }
+        // Publish quit intent before closing the socket so the Host cannot
+        // interpret this deliberate shutdown as a crash and relaunch the App.
+        BridgeLaunchIntent.recordQuitIntent(in: AppSupportPaths.supportDirectory())
         browserBridge.stop()
         MonitorHTTPServer.shared.stop()
         try? persistenceCoordinator.save(tasks)

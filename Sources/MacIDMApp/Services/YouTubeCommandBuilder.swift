@@ -116,11 +116,18 @@ enum YouTubeCommandBuilder {
 
     /// Builds the full yt-dlp launch argument list, strictly preserving argument
     /// order and product behavior.
+    ///
+    /// Cookie supply is authorization-driven only: an explicit Netscape cookie
+    /// file (from an extension-granted session or a pasted site session) is
+    /// passed when the caller has one; otherwise yt-dlp runs anonymously.
+    /// `--cookies-from-browser` is intentionally never used — reading Chrome's
+    /// on-disk Cookies DB requires Full Disk Access on macOS Sonoma+, and every
+    /// ad-hoc rebuild invalidates that grant. This keeps YouTube on the same
+    /// "authorized cookie file or anonymous" model as the Bilibili adapter.
     static func buildDownloadArguments(
         downloadURL: URL,
         formatString: String,
         workingDirectory: URL,
-        isYouTube: Bool,
         cookieFile: URL?,
         request: DownloadRequest
     ) -> [String] {
@@ -136,9 +143,6 @@ enum YouTubeCommandBuilder {
             "--remux-video", "mp4",
             "--output", workingDirectory.appendingPathComponent("result.%(ext)s").path,
         ]
-        if isYouTube {
-            arguments += ["--cookies-from-browser", "chrome"]
-        }
         if let cookieFile {
             arguments += ["--cookies", cookieFile.path]
         }

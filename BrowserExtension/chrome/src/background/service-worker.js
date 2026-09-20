@@ -11,7 +11,11 @@ import {
 import "../shared/sniff-governance.js";
 import { t, i18n } from "../shared/i18n-access.js";
 import { createRequest } from "../shared/protocol.js";
-import { filterRecentSafeError, safeDiagnostic } from "../shared/redaction.js";
+import {
+  CONNECTION_HEALTH_ERROR_CODES,
+  filterRecentSafeError,
+  safeDiagnostic,
+} from "../shared/redaction.js";
 import { filenameFromDownload } from "../shared/validation.js";
 import { NativeClient } from "./native-client.js";
 import { ExplicitEnqueueClient } from "./explicit-enqueue.js";
@@ -39,12 +43,13 @@ import {
   rememberBackgroundCandidate,
   takeBackgroundCandidates,
 } from "./media-observation.js";
+import { isBodyCarryingMethod } from "./rules.js";
 
 const nativeClient = new NativeClient();
 const MAX_DOWNLOAD_ALL_LINKS = 1_000;
 const DOWNLOAD_ALL_SCAN_TTL_MS = 10 * 60 * 1_000;
 const downloadAllSubmissions = new Set();
-// Spec §4.2 (2026-09 revision): Download-All scan results contain full URLs
+// chrome-extension-spec §5.5: Download-All scan results contain full URLs
 // (including query strings with signed-URL tokens). They live in a SW
 // in-memory Map mirrored into chrome.storage.session — a pure in-memory
 // store that evaporates when the browser closes and never touches disk.
@@ -76,7 +81,7 @@ async function deleteScanFromSession(scanID) {
     // Same best-effort contract as the mirror write.
   }
 }
-// M9: POST-triggered downloads cannot be replayed with GET — the request
+// POST-triggered downloads cannot be replayed with GET — the request
 // body (form data, signed payload) is lost. Record non-GET request URLs so
 // the takeover controller can skip them and leave the browser download
 // intact. Entries expire after 5 minutes to bound memory.
@@ -147,6 +152,10 @@ const sizeProbeScheduler = new SizeProbeScheduler({
           target.size = payload.size;
           if (payload.mime && !target.mime) target.mime = payload.mime;
         }
+        // Display-only server filename (Content-Disposition). Never promoted
+        // to filenameHint/filenameHintSource on the wire: the bridge validator
+        // accepts only browserResolved/titleDerived/urlPath.
+        if (target && payload.cdFilename) target.serverFilename = payload.cdFilename;
       }
     }
     pushProbeResultToPage(tabId, payload);
@@ -216,6 +225,10 @@ const youTubeInspectionCoordinator = new YouTubeInspectionCoordinator({
         referrer: context.referrer,
         tabId: context.tabId,
         mediaKind: "youtube",
+        // ensure/retry only arrive from the Popup or the overlay panel, both
+        // of which the user opened; the yt-dlp fallback may therefore wake a
+        // quit App instead of reporting a launch timeout.
+        userInitiated: true,
       });
       return { ok: true, variants: payload?.variants ?? [] };
     } catch (error) {
@@ -247,11 +260,16 @@ const youTubeInspectionCoordinator = new YouTubeInspectionCoordinator({
   },
 });
 
-// C2: Hide Chrome's built-in download UI (shelf/bubble) so the IDM-style
-// takeover is the only visible download path. Guarded for forward
-// compatibility — setUiOptions may not exist in all Chrome versions.
+// Keep Chrome's built-in download bubble/shelf enabled so a takeover
+// failure or a silent skip (blob/data URL, POST-triggered download,
+// blocked site, unreachable host, version mismatch) still leaves the user
+// with visible download progress instead of "nothing happened". A
+// successful takeover pauses → cancels → erases the browser download, so
+// the shelf entry disappears naturally in the happy path.
+// Guarded for forward compatibility — setUiOptions may not exist in all
+// Chrome versions.
 if (typeof chrome.downloads.setUiOptions === "function") {
-  chrome.downloads.setUiOptions({ enabled: false }).catch(() => {});
+  chrome.downloads.setUiOptions({ enabled: true }).catch(() => {});
 }
 
 function refreshContextMenus() {
@@ -300,7 +318,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   const abandonedScanID = downloadAllScanTabs.get(tabId);
   if (abandonedScanID !== undefined) {
     downloadAllScanTabs.delete(tabId);
-    // Spec §4.2: the selection page was closed without submitting; the
+    // chrome-extension-spec §5.5: the selection page was closed without submitting; the
     // signed-URL list must not outlive it.
     removeDownloadAllScan(abandonedScanID).catch(() => {});
   }
@@ -421,8 +439,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "popup.openApp") {
+    // Dedicated user gesture to open the App. Unlike the background status
+    // ping, app.activate is authorized to relaunch an App the user
+    // previously quit (the Host clears the quit-intent marker for it), so
+    // the toolbar "Open MacIDM" button keeps working after a manual quit.
     nativeClient
-      .ping(createRequest)
+      .activate(createRequest)
       .then(() => sendResponse({ ok: true }))
       .catch(async (error) => {
         await recordSafeError(error);
@@ -577,6 +599,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           mediaKind: message.mediaKind,
           mime: message.mime,
           filenameHint: message.filenameHint,
+          filenameHintSource: message.filenameHintSource,
           pageTitle: message.pageTitle,
           interactive: true,
           pairVideoUrl: message.pairVideoUrl,
@@ -602,6 +625,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           referrer: context.referrer,
           tabId: context.tabId,
           mediaKind: message.mediaKind,
+          // Both senders (Popup, overlay panel) are surfaces the user opened,
+          // so the inspection may wake an App the user quit earlier.
+          userInitiated: message.userInitiated === true,
         }),
       )
       .then((payload) => sendResponse({ ok: true, ...payload }))
@@ -675,11 +701,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // M9: POST-triggered downloads cannot be replayed with GET — the request
-    // body (form data, signed payload, CSRF token) is lost. Record non-GET
-    // request URLs so the takeover controller can skip them and leave the
-    // browser download intact.
-    if (typeof details.method === "string" && details.method.toUpperCase() !== "GET") {
+    // POST/PUT/PATCH/DELETE-triggered downloads cannot be replayed with GET
+    // — the request body (form data, signed payload, CSRF token) is lost.
+    // Record body-carrying request URLs so the takeover controller can skip
+    // them. HEAD/OPTIONS are bodyless probes that players (e.g. jwplayer) fire
+    // before the real GET download of the SAME url; recording them wrongly
+    // suppressed takeover of that later GET download (the hanime1.me case).
+    if (isBodyCarryingMethod(details.method)) {
       if (typeof details.url === "string" && isHttpURL(details.url)) {
         nonGetRequestURLs.set(details.url, Date.now());
         // Prune inline: previously only the takeover path pruned, so
@@ -851,12 +879,23 @@ async function popupStatus() {
       lastError: storedError,
     };
   } catch (error) {
-    const storedError = await getRecentSafeError({ isConnected: false });
+    const diagnostic = safeDiagnostic(error);
+    // Connection-health codes mean "the App is not up right now", not a fault
+    // the user has to act on. Reporting them as `lastError` made the Popup
+    // toast "launch timed out; the Chrome download will continue" every time
+    // it opened while the App was simply quit. Return a reason instead so the
+    // Popup can render an actionable status dot and stay silent.
+    const healthCode = CONNECTION_HEALTH_ERROR_CODES.has(diagnostic.code) ? diagnostic.code : null;
     return {
       connected: false,
+      unreachableReason: healthCode === "NATIVE_HOST_NOT_FOUND"
+        ? "hostMissing"
+        : healthCode
+          ? "appNotRunning"
+          : null,
       takeoverEnabled: settings.takeoverEnabled,
       ...governance,
-      lastError: safeDiagnostic(error),
+      lastError: healthCode ? null : diagnostic,
     };
   }
 }
@@ -896,6 +935,11 @@ async function ensureContentScript(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) throw new Error(t("serviceWorker.pageUnavailable"));
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
+    world: "MAIN",
+    files: ["src/content/media-source-observer.js"],
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
     files: [
       "src/shared/media-utils.js",
       "src/shared/youtube-format-utils.js",
@@ -908,6 +952,7 @@ async function ensureContentScript(tabId) {
       "src/shared/panel-ui.js",
       "src/content/discovery.js",
       "src/content/content-script.js",
+      "src/content/media-element-scope.js",
       "src/content/overlay.js",
     ],
   });
@@ -936,7 +981,7 @@ async function startDownloadAll(tabId) {
   const selectionTab = await chrome.tabs.create({
     url: chrome.runtime.getURL(`src/download-all/download-all.html?scan=${scanID}`),
   });
-  // Spec §4.2: closing the selection page must delete the scan immediately.
+  // chrome-extension-spec §5.5: closing the selection page must delete the scan immediately.
   if (Number.isInteger(selectionTab?.id)) {
     downloadAllScanTabs.set(selectionTab.id, scanID);
   }
@@ -972,6 +1017,9 @@ async function submitDownloadAll(scanID, requestedURLs) {
           // no usable text; the URL-derived name remains the final fallback.
           pageTitle: anchorText || scan.title,
           filenameHint: filenameFromDownload({ url: link.url, filename: anchorText }),
+          // An anchor-text hint is a semantic name; a URL-tail hint is not
+          // (technical spec §8.1 naming trust model).
+          filenameHintSource: anchorText ? "titleDerived" : "urlPath",
           operationID: `${scanID}-${index}`,
         });
         accepted += 1;
@@ -1073,7 +1121,7 @@ async function purgeExpiredScans() {
   }
   // Orphan backstop: a scan whose selection tab vanished while the SW was
   // evicted has no in-memory entry and nobody reading it — its session copy
-  // must still age out (spec §4.2) instead of living until browser exit.
+  // must still age out (chrome-extension-spec §5.5) instead of living until browser exit.
   try {
     if (!chrome.storage?.session) return;
     const stored = await chrome.storage.session.get(null);
@@ -1138,6 +1186,9 @@ async function getPopupMediaCandidates(tabId) {
       {
         pageUrl: pageURL,
         title: isYouTube ? "" : tab?.title,
+        // A browser tab title is always page-level provenance; it must not
+        // inherit (or be inherited as) a gallery card's scoped title.
+        titleSource: "document",
         candidates: backgroundCandidates,
       },
       0,
@@ -1182,6 +1233,7 @@ async function getPopupMediaCandidates(tabId) {
     mediaCandidatesByTab.set(tabId, {
       pageUrl: aligned.pageUrl,
       title: aligned.title,
+      titleSource: aligned.titleSource,
       candidates: aligned.candidates,
       filteredSummary: aligned.filteredSummary,
     });
@@ -1214,6 +1266,7 @@ function scheduleSizeProbes(tabId, candidates, { priority = PROBE_PRIORITY.NORMA
   // so the recorded peer address cannot prove the target's location.
   const peerAddressInformative = probeEvidence.peerAddressIsInformative(tabId);
   for (const candidate of candidates) {
+    if (candidate.siteAdapter || candidate.pairKind || candidate.supported === false) continue;
     // Only the candidate's own size may skip work. A URL probed for a previous
     // document has to be served again: navigation drops the tab cache along with
     // the size it carried, and probeResourceSize() answers from its own cache
@@ -1260,7 +1313,7 @@ function scheduleSizeProbes(tabId, candidates, { priority = PROBE_PRIORITY.NORMA
 // snapshot feeds the overlay. Best-effort: unsupported tabs simply ignore it.
 function pushProbeResultToPage(tabId, candidate) {
   chrome.tabs
-    .sendMessage(tabId, { type: "macidm.addMediaCandidate", candidate }, { frameId: 0 })
+    .sendMessage(tabId, { type: "macidm.addMediaCandidate", candidate, updateOnly: true }, { frameId: 0 })
     .catch(() => {});
 }
 

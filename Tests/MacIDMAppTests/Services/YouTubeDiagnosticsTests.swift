@@ -2,7 +2,7 @@ import XCTest
 
 @testable import MacIDMApp
 
-/// Dual-channel log acceptance (docs/AI交接.md §3): the regular line and the private
+/// Dual-channel log acceptance (technical-spec §3.1.7): the regular line and the private
 /// record derived from the same event share an event id; the regular line carries only
 /// structured fields and a sanitized summary; the private record keeps the full
 /// URL/paths/raw output without credential values.
@@ -73,7 +73,7 @@ final class YouTubeDiagnosticsTests: XCTestCase {
         XCTAssertFalse(redacted.contains("SECRETSID"))
     }
 
-    /// docs/AI交接.md §4.1: the private log must not rewrite a full signed URL
+    /// technical-spec §10: the private log must not rewrite a full signed URL
     /// merely because a URL query key is named token/sid/session.
     func testPrivateRedactionPreservesSignedURLQueryValues() throws {
         let output = """
@@ -366,7 +366,7 @@ final class YouTubeDiagnosticsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: privateURL.path))
     }
 
-    /// docs/AI交接.md §4.2: with the private log disabled, regular structured events
+    /// technical-spec §3.1.7: with the private log disabled, regular structured events
     /// must still be written to the regular sink; the private file must produce no
     /// corresponding record.
     func testDisabledPrivateLogKeepsRegularSummary() throws {

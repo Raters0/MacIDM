@@ -24,7 +24,7 @@ test("structured media error codes map to distinct localized messages", async ()
     STRUCTURED_MEDIA_CODES.map((code) => safeErrorMessage(code, undefined)),
   );
   // Every category must have its own copy — none may collapse into a
-  // shared generic string (AI handover doc §5.2).
+  // shared generic string (chrome-extension-spec §5.8).
   assert.equal(messages.size, STRUCTURED_MEDIA_CODES.length);
   assert.equal(
     safeErrorMessage("MEDIA_AUTH_REQUIRED", undefined),

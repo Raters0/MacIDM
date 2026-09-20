@@ -66,7 +66,7 @@ enum AppTaskStatus: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// One timestamped speed sample for the rolling speed window (AI handover doc §4.1).
+/// One timestamped speed sample for the rolling speed window (product-spec §4.1).
 /// Legacy `[Double]` histories carry no time, so they are dropped at read time
 /// rather than being given fabricated timestamps.
 struct SpeedSample: Hashable, Sendable {
@@ -107,7 +107,7 @@ enum SpeedHistoryPolicy {
     /// even when every sample carries a distinct timestamp.
     static let maximumSamples = 240
 
-    /// Unified sample policy (AI handover doc §10): samples may arrive out of
+    /// Unified sample policy (product-spec §4.3): samples may arrive out of
     /// order (callback races and persistence reads can both reorder them), so
     /// this layer sorts them stably by timestamp, drops infinite/negative
     /// speeds, then trims the window and caps the points. Appending and
@@ -123,7 +123,7 @@ enum SpeedHistoryPolicy {
         return result
     }
 
-    /// Sort and sanitize (AI handover doc §5): out-of-order samples are put
+    /// Sort and sanitize (product-spec §4.3): out-of-order samples are put
     /// back in stable ascending timestamp order (the curve never folds back to
     /// the left); non-finite/negative speeds and non-finite timestamps are
     /// dropped.
@@ -147,7 +147,7 @@ enum SpeedHistoryPolicy {
             .map(\.element)
     }
 
-    /// Persistence-read policy (AI handover doc §5): sanitize, sort, and apply
+    /// Persistence-read policy (product-spec §4.3): sanitize, sort, and apply
     /// only the hard point cap — never run the 120-second trim for finished
     /// tasks against the current wall clock, or completed history snapshots
     /// would be wrongly emptied; the real rolling window belongs only to the
@@ -185,7 +185,7 @@ enum SpeedHistoryPolicy {
 
     /// Numeric basis of the accessibility summary: it must share the same
     /// visible-window samples as the chart and must not read back the full
-    /// history (AI handover doc §5) — after 120 seconds of silence, old
+    /// history (product-spec §4.3) — after 120 seconds of silence, old
     /// samples have already left the curve and VoiceOver must no longer
     /// announce them. When the window is empty, current speed and peak are
     /// both 0. After sorting, the array's last element carries the newest
@@ -372,13 +372,17 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
 
     var fractionCompleted: Double {
         if status == .completed { return 1 }
+        // 非完成态封顶 99%：最后 1% 留给“验证/收尾”，只有真正完成才跳
+        // 100%。这样即使估算总量偏小、receivedBytes 超过它，进度条也停在 99%
+        // 而非谎报完成；用户看到 99%+“正在验证”即知接近完成，100% 是完成
+        // 的专属信号。
         if let overallProgressFraction {
-            return min(1, max(0, overallProgressFraction))
+            return min(0.99, max(0, overallProgressFraction))
         }
         guard let totalBytes, totalBytes > 0 else {
             return 0
         }
-        return min(1, max(0, Double(receivedBytes) / Double(totalBytes)))
+        return min(0.99, max(0, Double(receivedBytes) / Double(totalBytes)))
     }
 
     /// A completed task had every byte verified before publication, so all

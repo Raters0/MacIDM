@@ -332,21 +332,62 @@
     return "";
   }
 
-  /// Unified display name used by both Popup and Overlay. Avoids the
-  /// "Title · Title.mp4" duplication that happened when filenameHint was
-  /// already derived from the page title.
-  function smartMediaName(candidate, pageTitle = "", candidateCount = 1) {
-    const base = String(pageTitle || "").trim().slice(0, 120);
+  /// Unified display name used by both Popup and Overlay. Follows the same
+  /// trust model as the App's naming chain (technical spec §8.1): a name
+  /// synthesized from a content identity (site adapter, m4s pair, segment
+  /// group) outranks the page title, and a generic/brand page title never
+  /// prefixes another name — a Bilibili homepage row must not read
+  /// "哔哩哔哩 … · card title". Also avoids the "Title · Title.mp4"
+  /// duplication that happened when filenameHint was already derived from
+  /// the page title.
+  function smartMediaName(candidate, pageTitle = "", candidateCount = 1, hostname = "") {
+    const host = String(hostname || "").toLowerCase();
+    const base = stripHostSuffix(String(pageTitle || "").trim().slice(0, 120), host);
     const hint = String(candidate?.filenameHint ?? "").trim();
-    if (base) {
+    // A name synthesized from a content identity (site adapter, m4s pair,
+    // segment group — technical spec §8.1 "titleDerived") outranks the page
+    // title so multi-card pages keep per-card names; generic synthesized
+    // labels ("YouTube 视频.mp4") never outrank a confirmed specific title.
+    const hintStem = hint.replace(/\.[a-z0-9]{1,4}$/iu, "").trim();
+    if (hint && hintStem && filenameHintSourceFor(candidate) === "titleDerived"
+      && !isGenericOrBrandTitle(hintStem, host)) {
+      return hint;
+    }
+    if (base && !isGenericOrBrandTitle(base, host)) {
       // If filenameHint already starts with the page title, don't duplicate.
       if (hint && hint.toLowerCase().startsWith(base.toLowerCase())) {
         return hint;
       }
-      const generic = /^(index|master|playlist|media|video|audio|manifest)\b/i.test(hint);
+      const generic = /^(download|index|master|playlist|media|video|audio|manifest)\b/i.test(hint);
       return generic || candidateCount <= 1 ? base : `${base} · ${hint}`;
     }
-    return hint || candidate?.displayName || t("common.mediaResource");
+    // Generic/brand (or missing) page title: never a prefix. A name
+    // synthesized from a content identity (site adapter, m4s pair, segment
+    // group — technical spec §8.1 "titleDerived") outranks the brand label,
+    // so a Bilibili homepage row reads "card title.mp4", not
+    // "哔哩哔哩 … · card title.mp4".
+    if (hint && filenameHintSourceFor(candidate) === "titleDerived") return hint;
+    // The brand label remains only as the last readable fallback when the
+    // candidate carries no identity name — the same order the App uses.
+    return base || hint || candidate?.displayName || t("common.mediaResource");
+  }
+
+  /// Provenance of a candidate's filenameHint (technical spec §8.1 naming
+  /// trust model). Names synthesized from the page title (site adapters,
+  /// m4s pairs, fragment groups) are "titleDerived" and may outrank the
+  /// title on the App side; plain URL-tail names are "urlPath" and never do.
+  function filenameHintSourceFor(candidate) {
+    if (!candidate || typeof candidate !== "object") return "urlPath";
+    // Synthesis sites may declare the real provenance explicitly (a pair
+    // row that kept its URL-tail name must not claim titleDerived trust).
+    if (candidate.filenameHintSource === "titleDerived" || candidate.filenameHintSource === "urlPath") {
+      return candidate.filenameHintSource;
+    }
+    if (candidate.siteAdapter) return "titleDerived";
+    if (candidate.pairKind === "m4s-pair" || candidate.pairKind === "stream-segment") {
+      return "titleDerived";
+    }
+    return "urlPath";
   }
   /// Extracts {cid, formatId, kind} from a Bilibili m4s filename. Bilibili
   /// audio-track format_ids start with 302 (30216/30232/30280…); the rest
@@ -429,6 +470,97 @@
       }
     }
     return [...others, ...paired, ...fragments];
+  }
+
+  // Pair explicitly marked audio-only/video-only tracks only after the scope
+  // observer proves they belong to one player. Never infer ownership from a
+  // CDN host, expiry directory, caption or matching duration.
+  const SPLIT_AUDIO_RE = /(media-audio|audio[-_.]|[-_.]audio|mp4a|\.aac\b|\.m4a\b)/iu;
+  const SPLIT_VIDEO_RE = /(media-video|video[-_.]|[-_.]video|avc1|hvc1|hevc|h264|h265|av01|vp9)/iu;
+  function classifySplitStream(candidate) {
+    if (!candidate || typeof candidate.url !== "string") return null;
+    if (candidate.siteAdapter || candidate.pairKind) return null;
+    if (candidate.format !== "video" && candidate.format !== "audio") return null;
+    let path = "";
+    try {
+      path = decodeURIComponent(new URL(candidate.url).pathname);
+    } catch {
+      return null;
+    }
+    if (SPLIT_AUDIO_RE.test(path)) return "audio";
+    if (SPLIT_VIDEO_RE.test(path)) return "video";
+    return null;
+  }
+  function splitStreamGroupKey(candidate) {
+    // CDN expiry directories are shared by unrelated videos and can differ
+    // between one video's tracks. Only actual player ownership can group them.
+    return typeof candidate.mediaOwner === "string" && candidate.mediaOwner
+      ? candidate.mediaOwner : null;
+  }
+  function durationsCompatible(video, audio) {
+    const a = Number.isFinite(video?.duration) && video.duration > 0 ? video.duration : null;
+    const b = Number.isFinite(audio?.duration) && audio.duration > 0 ? audio.duration : null;
+    if (a === null || b === null) return true;
+    return Math.abs(a - b) <= 2;
+  }
+  function pairSplitStreamCandidates(candidates, pageTitle = "") {
+    if (!Array.isArray(candidates)) return [];
+    const others = [];
+    const groups = new Map();
+    for (const candidate of candidates) {
+      const kind = classifySplitStream(candidate);
+      const key = kind ? splitStreamGroupKey(candidate) : null;
+      if (!kind || !key) {
+        others.push(candidate);
+        continue;
+      }
+      const group = groups.get(key) ?? { video: [], audio: [] };
+      group[kind].push(candidate);
+      groups.set(key, group);
+    }
+    const result = others;
+    for (const group of groups.values()) {
+      if (group.video.length === 0 || group.audio.length === 0) {
+        result.push(...group.video, ...group.audio);
+        continue;
+      }
+      const video = [...group.video].sort((a, b) => (b.size ?? 0) - (a.size ?? 0))[0];
+      const audio = group.audio.find((entry) => durationsCompatible(video, entry));
+      if (!audio) {
+        // Every audio disagrees with the best video's duration: treat the
+        // batch as unpaired rather than muxing mismatched tracks.
+        result.push(...group.video, ...group.audio);
+        continue;
+      }
+      // Extra video-only renditions stay as their own rows; only the best
+      // video consumes the single audio track for the merged pair.
+      result.push(...group.video.filter((entry) => entry !== video), ...group.audio.filter((entry) => entry !== audio));
+      const title = String(pageTitle || "").trim();
+      result.push({
+        ...video,
+        format: "video",
+        fileExtension: "mp4",
+        displayName: (title || String(video.displayName || "")).slice(0, 80),
+        // Only claim a title-derived name when a real page title exists;
+        // on gallery pages the pair keeps the video's own URL-tail hint
+        // (honestly urlPath-sourced) so the per-card caption still names
+        // the row and the App derives the filename from the submitted
+        // page title instead of a branding-baked hint.
+        ...(title
+          ? { filenameHint: `${sanitizePairFilename(title)}.mp4`.slice(0, 255), filenameHintSource: "titleDerived" }
+          : { filenameHintSource: "urlPath" }),
+        size:
+          Number.isSafeInteger(video.size) && Number.isSafeInteger(audio.size)
+            ? video.size + audio.size
+            : (video.size ?? null),
+        pairKind: "m4s-pair",
+        pairVideoUrl: video.url,
+        pairAudioUrl: audio.url,
+        pairNote: t("common.pairNoteMerge"),
+        collapsed: false,
+      });
+    }
+    return result;
   }
 
   function sanitizePairFilename(value) {
@@ -517,6 +649,15 @@
       typeof raw?.duration === "number" && Number.isFinite(raw.duration) && raw.duration > 0
         ? raw.duration
         : null;
+    // Server-authoritative Content-Disposition name is display-only metadata
+    // (tooltip). It is NOT forwarded as filenameHint/filenameHintSource: the
+    // bridge validator only accepts browserResolved/titleDerived/urlPath, and
+    // the naming trust model ranks a *probed* CD name below pageTitle/urlPath,
+    // so promoting it here would both break older Apps and invert priorities.
+    const serverFilename =
+      typeof raw?.cdFilename === "string" && raw.cdFilename.trim()
+        ? raw.cdFilename.trim().slice(0, 255)
+        : null;
     return {
       url,
       mime,
@@ -528,14 +669,15 @@
       size,
       duration,
       filenameHint: isMSE ? "media.mp4" : mediaFilename(url, format),
+      ...(serverFilename ? { serverFilename } : {}),
       qualityLabel: isBlob || isMSE ? "" : qualityLabel({ url, mime, format, fileExtension }),
     };
   }
 
-  function coalesceMediaCandidates(candidates, pageTitle = "", pageURL = "") {
+  function coalesceMediaCandidates(candidates, pageTitle = "", pageURL = "", previewIdentities = []) {
     if (!Array.isArray(candidates)) return [];
     const isYouTubePage = isYouTubePageURL(pageURL);
-    let paired = pairM4sCandidates(candidates, pageTitle).filter(
+    let paired = pairSplitStreamCandidates(pairM4sCandidates(candidates, pageTitle), pageTitle).filter(
       (candidate) => !isYouTubePlayerNoiseCandidate(candidate, isYouTubePage),
     );
     // MSE/blob placeholders (url "mse:player" or "blob:*") are only useful
@@ -621,10 +763,100 @@
       });
     }
 
+    // List/homepage hover previews: one identity per mounted card player.
+    // The page URL is never treated as a single video; only the card's
+    // /video/BV|av link is, with the card heading as the display title.
+    // Include adapters already present in `paired` (second-pass coalesce /
+    // service-worker forwarding) so the same bvid is never synthesized twice.
+    const seenPreviewBvids = new Set(
+      [
+        ...kept.map((candidate) => bilibiliVideoIDFromURL(candidate?.url)),
+        ...paired
+          .filter((candidate) => candidate?.siteAdapter === "bilibili")
+          .map((candidate) => bilibiliVideoIDFromURL(candidate?.url)),
+      ].filter(Boolean),
+    );
+    for (const identity of Array.isArray(previewIdentities) ? previewIdentities : []) {
+      const bvid = identity?.bvid ? String(identity.bvid) : bilibiliVideoIDFromURL(identity?.pageURL);
+      const page = normalizeHTTPURL(identity?.pageURL ?? "");
+      if (!bvid || !page || seenPreviewBvids.has(bvid)) continue;
+      if (bilibiliVideoIDFromURL(page) !== bvid) continue;
+      // Never fall back to the multi-video page title (homepage branding);
+      // an empty card heading becomes the generic Bilibili media label.
+      const title = String(identity.title ?? "").trim() || t("common.bilibiliMedia");
+      const base = sanitizePairFilename(title);
+      kept.push({
+        url: page,
+        mime: "text/html",
+        format: "video",
+        fileExtension: "mp4",
+        supported: true,
+        displayName: title.slice(0, 80),
+        displayURL: redactedURL(page),
+        size: null,
+        filenameHint: `${base}.mp4`.slice(0, 255),
+        siteAdapter: "bilibili",
+        pairNote: t("common.bilibiliPairNote"),
+        collapsed: false,
+      });
+      seenPreviewBvids.add(bvid);
+    }
+
+    // Any live Bilibili site adapter (page or preview) covers bilivideo
+    // streams better than a raw m4s observation: the adapter path re-resolves
+    // tracks and titles, and the page only ever plays one preview at a time.
+    const hasAnyBilibiliAdapter = isBilibiliPage
+      || kept.some((candidate) => candidate?.siteAdapter === "bilibili");
+
+    // Separate-audio masters (X/Twitter): media playlists living strictly
+    // deeper under another observed HLS candidate's directory on the same
+    // host are its renditions (master /pl/x.m3u8 → /pl/avc1/*, /pl/mp4a/*).
+    // Fold them into the master row; alone they read as duplicate
+    // "HLS 流媒体" rows (video-only variants and the audio rendition).
+    // Two masters in one directory share depth and never fold each other.
+    const foldedHls = new Set();
+    {
+      const entries = paired
+        .filter((c) => c?.format === "hls")
+        .map((c) => {
+          try {
+            const u = new URL(c.url);
+            return {
+              url: c.url,
+              host: u.host,
+              dir: u.pathname.slice(0, u.pathname.lastIndexOf("/") + 1),
+              path: u.pathname,
+              depth: u.pathname.split("/").filter(Boolean).length,
+            };
+          } catch { return null; }
+        })
+        .filter(Boolean);
+      for (const sub of entries) {
+        let shallowest = null;
+        for (const other of entries) {
+          if (other.url === sub.url || other.host !== sub.host) continue;
+          if (sub.depth <= other.depth) continue;
+          if (!sub.path.startsWith(other.dir)) continue;
+          if (!shallowest || other.depth < shallowest.depth) shallowest = other;
+        }
+        if (shallowest) foldedHls.add(sub.url);
+      }
+    }
+
+    const pairedTracks = new Set(paired.filter(c => c?.pairKind === "m4s-pair")
+      .flatMap(c => [c.pairVideoUrl, c.pairAudioUrl]));
     const coveredCIDs = new Set(paired.filter(c => c?.pairKind === "m4s-pair").map(c => c.pairCid));
     for (const candidate of paired) {
+      if (candidate?.format === "hls" && foldedHls.has(candidate.url)) continue;
+      if (!candidate.siteAdapter && !candidate.pairKind && pairedTracks.has(candidate.url)) continue;
       // Suppress only evidence belonging to the adapter or an existing pair.
-      if (isBilibiliPage && !candidate?.siteAdapter && isBilibiliStreamCandidate(candidate)) continue;
+      // Homepage previews fetch m4s from rotating mirror hosts (not only
+      // *.bilivideo.com), so bilibili-style {cid}-1-{formatId}.m4s naming is
+      // also adapter-covered once a site candidate exists. Complete m4s pairs
+      // remain as a fallback.
+      if (hasAnyBilibiliAdapter && !candidate?.siteAdapter && candidate?.pairKind !== "m4s-pair") {
+        if (isBilibiliStreamCandidate(candidate) || extractM4sInfo(candidate?.url)) continue;
+      }
       if (candidate?.pairKind === "m4s-fragment" && coveredCIDs.has(candidate.pairCid)) continue;
       if (candidate?.siteAdapter === "bilibili") {
         kept.push(candidate);
@@ -653,7 +885,16 @@
     for (const group of segmentGroups.values()) {
       kept.push(buildSegmentGroupCandidate(group, pageTitle));
     }
-    return kept;
+    // Coalescing is repeated in content, background and UI. It must be
+    // idempotent: an adapter/paired row supersedes its raw URL observation.
+    const byURL = new Map();
+    const rank = c => c.siteAdapter ? 3 : c.pairKind === "m4s-pair" ? 2 : 1;
+    for (const candidate of kept) {
+      const key = normalizeHTTPURL(candidate.url) || candidate.url;
+      const old = byURL.get(key);
+      if (!old || rank(candidate) > rank(old)) byURL.set(key, candidate);
+    }
+    return [...byURL.values()];
   }
 
   function isLikelyStreamSegment(candidate, manifestHosts, pageURL) {
@@ -691,6 +932,120 @@
     return isBilibiliWatchlaterURL(raw);
   }
 
+  /// BV/av identity from a Bilibili /video/ URL. Null for other paths and
+  /// non-Bilibili hosts. Distinct from isBilibiliPageURL: a multi-video list
+  /// page is never a page identity, but a single card link inside it is.
+  function bilibiliVideoIDFromURL(value) {
+    try {
+      const url = new URL(String(value ?? ""), "https://www.bilibili.com/");
+      const host = url.hostname.toLowerCase().replace(/^www\./u, "");
+      if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+      const match = url.pathname.match(/^\/video\/(BV[0-9A-Za-z]+|av\d+)/iu);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isBilibiliHost(value) {
+    try {
+      const host = new URL(String(value ?? "")).hostname.toLowerCase().replace(/^www\./u, "");
+      return host === "bilibili.com" || host.endsWith(".bilibili.com");
+    } catch {
+      return false;
+    }
+  }
+
+  /// Card title next to a Bilibili video link. The cover link's own text is
+  /// usually overlay chrome ("添加至稍后再看…播放…弹幕"), so it is never
+  /// preferred over the heading.
+  function findBilibiliCardTitle(scope) {
+    if (!scope || typeof scope.querySelector !== "function") return "";
+    const selectors = [
+      "h3 a[href*='/video/']",
+      "h3",
+      "[class*='info--tit']",
+      "[class*='video-card__info'] [class*='tit']",
+      "[class*='title'] a[href*='/video/']",
+    ];
+    for (const selector of selectors) {
+      let node = null;
+      try {
+        node = scope.querySelector(selector);
+      } catch {
+        continue;
+      }
+      const text = String(node?.textContent ?? "")
+        .replace(/\s+/gu, " ")
+        .trim();
+      if (text.length >= 2 && !/^添加至稍后再看/u.test(text)) return text.slice(0, 200);
+    }
+    return "";
+  }
+
+  /// Walk up from a media element to the enclosing Bilibili video card and
+  /// resolve { bvid, pageURL, title }. Used for list/homepage hover previews
+  /// where the page URL itself carries no single-video identity. Prefers the
+  /// nearest ancestor that also carries a non-empty heading title (the cover
+  /// wrapper alone has the video link but only overlay chrome text).
+  function extractBilibiliCardIdentity(element, pageURL = "") {
+    if (!element || typeof element.closest !== "function") return null;
+    const boundary = element.closest(".bili-video-card, .video-page-card-small");
+    if (!boundary) return null;
+    let node = element;
+    let best = null;
+    for (let depth = 0; node && node.nodeType === 1 && depth < 12; depth += 1) {
+      const link = (() => {
+        try {
+          return node.querySelector?.("a[href*='/video/BV'], a[href*='/video/av']");
+        } catch {
+          return null;
+        }
+      })();
+      if (link) {
+        const href = link.getAttribute?.("href") || link.href || "";
+        const page = normalizeHTTPURL(href, pageURL || undefined);
+        const bvid = page ? bilibiliVideoIDFromURL(page) : null;
+        if (bvid && page) {
+          const identity = { bvid, pageURL: page, title: findBilibiliCardTitle(node) };
+          if (identity.title) return identity;
+          if (!best) best = identity;
+        }
+      }
+      if (node === boundary) break;
+      node = node.parentElement;
+    }
+    return best;
+  }
+
+  /// Currently mounted Bilibili card previews (hover players). Returns at most
+  /// one identity per bvid, in DOM order. Never synthesizes an identity for
+  /// the whole multi-video page — only for cards that actually host a player.
+  function collectBilibiliPreviewIdentities(doc, pageURL = "") {
+    if (!doc || typeof doc.querySelectorAll !== "function") return [];
+    const href = String(pageURL || doc.location?.href || "");
+    if (!isBilibiliHost(href)) return [];
+    // Watch/bangumi pages already have a page-level adapter; previews there
+    // must not add competing identities.
+    if (isBilibiliPageURL(href)) return [];
+
+    const seen = new Set();
+    const identities = [];
+    let videos = [];
+    try {
+      videos = [...doc.querySelectorAll("video")];
+    } catch {
+      return [];
+    }
+    for (const video of videos.slice(0, 32)) {
+      const identity = extractBilibiliCardIdentity(video, href);
+      if (!identity || seen.has(identity.bvid)) continue;
+      seen.add(identity.bvid);
+      identities.push(identity);
+    }
+    return identities.slice(0, 8);
+  }
+
   // A list page only qualifies when it carries a parsable video identity:
   // bvid=BV… takes priority; a purely numeric oid/avid is accepted when
   // missing. A bare list page without an identity synthesizes no site
@@ -710,7 +1065,9 @@
   function manifestIdentity(value, format = "") {
     try {
       const url = new URL(value);
-      return `${format}:${url.hostname.toLowerCase()}${url.pathname.replace(/\/+$/u, "")}`;
+      // Query values can select a different player resource, not just a signature.
+      url.hash = "";
+      return `${format}:${url.href}`;
     } catch {
       return `${format}:${String(value)}`;
     }
@@ -821,12 +1178,435 @@
     try { return new URL(value).hostname.toLowerCase(); } catch { return ""; }
   }
 
+  // Strip a trailing site-brand suffix ("… - 抖音", "… | YouTube") that many
+  // sites append to document.title / og:title. Bilibili stacks two underscore
+  // separated tails ("标题_哔哩哔哩_bilibili") on both document.title and
+  // og:title: accept `_` as a separator and match one-or-more consecutive
+  // brand tails so the whole suffix drops in one pass — otherwise the
+  // unresolved brand token makes isGenericOrBrandTitle flag the specific
+  // title as generic and the site adapter falls back to "Bilibili 媒体".
+  const BRAND_SUFFIX_RE = /(?:[-–—|·_]\s*(?:抖音|哔哩哔哩|bilibili|优酷|爱奇艺|腾讯视频|YouTube|youtube)\s*)+$/iu;
+  function stripBrandSuffix(title) {
+    return String(title || "").replace(BRAND_SUFFIX_RE, "").trim();
+  }
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  }
+  // Strip a trailing "- <siteToken>" suffix (e.g. "… - example") in addition to
+  // the known-brand list, so site-branded document titles reduce to content.
+  function stripSiteSuffix(title, siteToken) {
+    if (!siteToken || siteToken.length < 3) return String(title || "");
+    const re = new RegExp(`[-–—|·]\\s*${escapeRegExp(siteToken)}\\s*$`, "iu");
+    return String(title || "").replace(re, "").trim();
+  }
+
+  // Mirror of the App's DownloadNaming.semanticPageTitle: strip a trailing
+  // "<sep> <host>" segment ("… - bilibili", "… | example.com") when the
+  // suffix matches one of the page hosts (full host, host without "www.",
+  // or the host's first label), so real titles containing separators
+  // ("Love is War - Episode 3") are never truncated. Keeps the extension's
+  // display naming and the App's naming chain on one rule set.
+  function stripHostSuffix(title, hostname) {
+    const text = String(title || "");
+    const raw = String(hostname || "").toLowerCase();
+    const withoutWWW = raw.replace(/^www\./u, "");
+    if (!withoutWWW) return text;
+    const firstLabel = withoutWWW.split(".")[0] || withoutWWW;
+    const tokens = new Set([raw, withoutWWW, firstLabel].filter((token) => token.length >= 3));
+    let separatorIndex = -1;
+    for (const sep of ["-", "\u2013", "\u2014", "|"]) {
+      const at = text.lastIndexOf(sep);
+      if (at > separatorIndex) separatorIndex = at;
+    }
+    if (separatorIndex < 0) return text;
+    const suffix = text.slice(separatorIndex + 1).trim().toLowerCase();
+    const stem = text.slice(0, separatorIndex).trim();
+    if (!suffix || stem.length < 3 || !tokens.has(suffix)) return text;
+    return stem;
+  }
+
+  // True when a title is empty or reads as a generic/brand page name rather
+  // than specific content (used to decide whether a proximity-resolved title
+  // should override it on SPA pages).
+  const GENERIC_TITLE_TOKENS = /(抖音|哔哩哔哩|bilibili|youtube|优酷|爱奇艺|腾讯视频|精选|首页|homepage|\bhome\b)/iu;
+  function isGenericOrBrandTitle(title, hostname) {
+    const text = stripBrandSuffix(String(title || "").trim());
+    if (text.length < 2) return true;
+    if (GENERIC_TITLE_TOKENS.test(text)) return true;
+    const siteToken = String(hostname || "").replace(/^www\./iu, "").split(".")[0].toLowerCase();
+    if (siteToken.length >= 3 && text.toLowerCase().includes(siteToken)) return true;
+    return false;
+  }
+
+  const TITLE_BOILERPLATE = /(登录|注册|订阅|关注|下载|分享|收藏|点赞|缓冲|buffering|loading|加载|章节|上一集|下一集|弹幕|发送|全屏|倍速|清晰度|清屏|键盘快捷键|login|sign\s?in|subscribe|follow|share|download|cookie|privacy|keyboard shortcuts|稍后再看|稍后观看|不感兴趣|举报|复制链接|自动连播|watch\s+later)/iu;
+  // Player interaction-hint sentences ("点击按住可拖动视频", "双击播放", swipe
+  // gestures) live inside card modules as block text and read as long
+  // captions; they are instructions, never titles.
+  const TITLE_INSTRUCTION_RE = /(点击|长按|双击|拖动|滑动|上滑|下滑|左右滑|可拖动|可循环|试试|轻触).{0,12}(播放|拖动|切换|弹幕|点赞|倍速|视频|滑动)|双击.{0,6}播放|单击.{0,6}暂停/u;
+  function cleanTitleText(raw) {
+    let text = String(raw || "").trim().replace(/\s+/gu, " ");
+    // Drop trailing expand/collapse affordances common on clipped titles.
+    text = text.replace(/(?:展开|收起|更多|more|less|\.\.\.|…)\s*$/iu, "").trim();
+    return text;
+  }
+  function titleLikeness(text, isHeading) {
+    if (text.length < 4 || text.length > 120) return -Infinity;
+    if (TITLE_BOILERPLATE.test(text)) return -Infinity;
+    if (TITLE_INSTRUCTION_RE.test(text)) return -Infinity;
+    // Player chrome leaks into [class*='title'] pools: chapter markers and
+    // timecode badges ("莉莉斯00:57", "00:12 / 05:33") read like short titles.
+    // A mm:ss timecode anywhere disqualifies the text.
+    if (/\d{1,2}:\d{2}/u.test(text)) return -Infinity;
+    // Pure hashtags / numbers / punctuation are not titles. CJK ideographs
+    // are \W under the u flag, so the guard must use Unicode punctuation /
+    // symbol classes — an ASCII \W class would reject every pure-Chinese
+    // title (Douyin/Bilibili card captions) and starve the proximity
+    // heuristic on Chinese sites.
+    if (/^[#＃\d\s\p{P}\p{S}]+$/u.test(text)) return -Infinity;
+    let score = Math.min(text.length, 120) / 40;
+    if (isHeading) score += 2;
+    // Hashtags are common in Douyin captions; penalize lightly so a real
+    // caption with tags still outranks chrome/author fragments.
+    const hashtags = (text.match(/#[^\s#]+/gu) || []).length;
+    score -= Math.min(hashtags * 0.2, 0.6);
+    return score;
+  }
+  const TITLE_MODULE_SELECTORS = [
+    '[role="dialog"]', '[class*="modal"]', '[class*="player"]', '[class*="card"]',
+    "article", "section",
+  ];
+  // Player-internal UI (control bar, subtitle/quality menus, danmaku panel,
+  // toasts, chapter lists) carries long title-like text in [class*='title']
+  // nodes (Bilibili's subtitle menu once named every row). Pool entries
+  // inside these containers are chrome, never content titles.
+  const TITLE_CHROME_SELECTORS = [
+    '[class*="control"]', '[class*="menu"]', '[class*="subtitle"]', '[class*="danmaku"]',
+    '[class*="toast"]', '[class*="buffer"]', '[class*="chapter"]', '[class*="setting"]',
+    '[class*="error"]', '[class*="notice"]',
+    // Hover-revealed card affordances (watch-later / queue / report buttons)
+    // are interactive chrome: their labels ("添加至稍后再看") read like short
+    // captions and outrank the real title in the leaf pool while hovering.
+    'button', '[role="button"]', '[class*="action"]', '[class*="toolbar"]',
+    '[class*="watchlater"]', '[class*="watch-later"]',
+  ];
+  function isPlayerChrome(el, module) {
+    if (!el || typeof el.closest !== "function" || !module) return false;
+    for (const selector of TITLE_CHROME_SELECTORS) {
+      let hit = null;
+      try { hit = el.closest(selector); } catch { hit = null; }
+      if (hit && hit !== module && containsNode(module, hit)) return true;
+    }
+    return false;
+  }
+  // Accessibility-only text (X's visually hidden keyboard-shortcut H2:
+  // "要查看键盘快捷键，按下问号") carries real title-like words but never
+  // renders: a 1×1 clip box (clip: rect(1px,…)) positioned off-flow. It must
+  // not win the title pool, so moduleTitle skips elements with no rendered
+  // box of their own. Layout-less environments (unit-test shims) report
+  // zero-size rects without throwing and have no computed style at all —
+  // "unknown" must degrade to visible, never to hidden.
+  function isVisuallyHiddenTitle(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return false;
+    let box = null;
+    try {
+      box = el.getBoundingClientRect();
+    } catch {
+      return false;
+    }
+    if (!box) return false;
+    let style = null;
+    try {
+      style = global.getComputedStyle(el);
+    } catch {
+      return false;
+    }
+    if (!style) return false;
+    if (style.display === "none" || style.visibility === "hidden") return true;
+    const clip = String(style.clip || "");
+    if (clip !== "auto" && clip !== "none" && clip !== "") {
+      const match = clip.match(/rect\(([^)]*)\)/u);
+      if (match) {
+        const parts = match[1].split(/[ ,]+/u).map((part) => parseFloat(part));
+        if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+          const [top, right, bottom, left] = parts;
+          // A degenerate clip rect clips everything away (a11y hiding).
+          if (right - left <= 1 || bottom - top <= 1) return true;
+        }
+      }
+    }
+    // A near-zero box only counts as hidden when the element is out of flow;
+    // an in-flow zero-size node can still render glyphs.
+    if ((box.width <= 1 || box.height <= 1)
+        && (style.position === "absolute" || style.position === "fixed")) {
+      return true;
+    }
+    return false;
+  }
+  function containsNode(root, node) {
+    for (let current = node; current; current = current.parentElement) {
+      if (current === root) return true;
+    }
+    return false;
+  }
+  function moduleBoxOk(module) {
+    const box = module.getBoundingClientRect?.();
+    return !box || (box.width >= 200 && box.height >= 120);
+  }
+  // Candidate title modules from nearest to farthest. The player shell
+  // wrapping a hover-preview video often carries no heading (the caption
+  // lives in a sibling subtree of the card), so stopping at the first
+  // matching ancestor traps the title pool inside an empty shell (Douyin
+  // feed cards, Bilibili homepage cards). Callers walk outward until a
+  // module actually yields title-like text.
+  function titleModules(doc, anchorEl) {
+    const modules = [];
+    const push = (module) => {
+      if (module && !modules.includes(module) && moduleBoxOk(module)) modules.push(module);
+    };
+    if (anchorEl && anchorEl.nodeType === 1) {
+      if (typeof anchorEl.matches === "function") {
+        let node = anchorEl.parentElement;
+        // X nests the tweet video >10 wrapper divs above the article; a
+        // bounded walk must reach far enough to leave the empty player
+        // shell before falling back to the page body.
+        for (let depth = 0; node && node.nodeType === 1 && depth < 20; depth += 1) {
+          for (const selector of TITLE_MODULE_SELECTORS) {
+            let hit = false;
+            try { hit = node.matches(selector); } catch { hit = false; }
+            if (hit) {
+              push(node);
+              break;
+            }
+          }
+          if (modules.length >= 4) break;
+          node = node.parentElement;
+        }
+      }
+      // Deep-nesting fallback (X): when even the widened walk found no
+      // module, jump straight to the nearest ancestor per selector.
+      if (modules.length === 0 && typeof anchorEl.closest === "function") {
+        for (const selector of TITLE_MODULE_SELECTORS) {
+          try { push(anchorEl.closest(selector)); } catch { /* ignore */ }
+        }
+      }
+    }
+    push(doc.body || doc.documentElement || null);
+    return modules;
+  }
+  function moduleTitle(module, options = {}) {
+    const collect = (selector, isHeading) => {
+      try {
+        return [...module.querySelectorAll(selector)]
+          .filter((el) => !isPlayerChrome(el, module) && !isVisuallyHiddenTitle(el))
+          .map((el) => ({
+            text: cleanTitleText(el.textContent),
+            isHeading,
+          }));
+      } catch {
+        return [];
+      }
+    };
+    const pool = [
+      ...collect("h1, h2, h3, h4, [role='heading']", true),
+      // X/Twitter: the tweet body carries no heading/[class*='title'] (classes
+      // are obfuscated hashes); without it the outward walk reaches the page
+      // body and picks chrome headings like the composer prompt.
+      ...collect("[data-testid='tweetText'], [data-e2e*='title'], [data-e2e*='desc'], [itemprop='name'], [class*='title']", false),
+    ];
+    // Card captions sometimes carry no class/data-e2e/heading at all (Douyin
+    // jingxuan cards use a bare <span>), and caption containers embed inline
+    // hashtag/mention spans (so they are not leaves). For bounded modules
+    // (never the page body, where such text is everywhere) leaf and
+    // inline-only containers join the pool, letting the real caption outrank
+    // author/time fragments like "0v0前天".
+    if (options.leafFallback) {
+      const inlineOnlyText = (el) => {
+        if (el.children.length === 0) return true;
+        try {
+          for (const child of el.children) {
+            const display = String(global.getComputedStyle(child).display || "");
+            if (display === "none") continue;
+            if (!display.startsWith("inline")) return false;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        for (const el of module.querySelectorAll("*")) {
+          if (isPlayerChrome(el, module) || !inlineOnlyText(el)
+              || isVisuallyHiddenTitle(el)) continue;
+          pool.push({ text: cleanTitleText(el.textContent), isHeading: false });
+        }
+      } catch {
+        // Ignore traversal failures; the selector pool still applies.
+      }
+    }
+    let best = "";
+    let bestScore = -Infinity;
+    let bestHeading = false;
+    for (const { text, isHeading } of pool) {
+      const score = titleLikeness(text, isHeading);
+      if (score > bestScore) {
+        bestScore = score;
+        best = text;
+        bestHeading = isHeading;
+      }
+    }
+    if (!best) return null;
+    return { text: best.slice(0, 200), score: bestScore, isHeading: bestHeading };
+  }
+  // A module's best text only stops the outward walk when it reads as a real
+  // heading or a reasonably long caption; short survivor text (player chrome
+  // that slipped the filters) keeps the walk moving toward the card.
+  const MODULE_TITLE_ACCEPT_SCORE = 0.45;
+  // Generic, site-independent content-title heuristic: locate the bounded
+  // module (card/modal/player container) owning the active media element and
+  // pick the most title-like text inside it, walking outward from the player
+  // shell to the enclosing card when the shell carries no heading. Covers
+  // SPA pages whose document.title never updates because the title lives
+  // beside the player.
+  /// X/Twitter 系域名（类名混淆、标题文本不可信）。
+  function isXHostURL(href) {
+    try {
+      return [
+        "x.com", "www.x.com", "mobile.x.com",
+        "twitter.com", "www.twitter.com", "mobile.twitter.com",
+      ].includes(new URL(String(href ?? ""), "https://x.com/").hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveContentTitle(doc, anchorEl) {
+    if (!doc || typeof doc.querySelector !== "function") return "";
+    // X/推文正文、alt 与推荐区文本都不可作文件名（营销账号、emoji 噪声、
+    // 同页其它推文串扰）：用户要求 X 文件名只用 URL 路径里的媒体 ID，
+    // 禁用标题推导，filenameHint 回落 urlPath。
+    if (isXHostURL(global.location?.href)) return "";
+    if (anchorEl && isBilibiliHost(global.location?.href)) {
+      const card = anchorEl.closest?.(".bili-video-card, .video-page-card-small");
+      if (card) return findBilibiliCardTitle(card);
+      if (anchorEl.closest?.(".bpx-player-container") && isBilibiliPageURL(global.location?.href)) {
+        return String(doc.querySelector("h1")?.textContent || "").trim().slice(0, 200);
+      }
+      // Avatars, banners and other images do not inherit a feed card's title.
+      if (String(anchorEl.tagName).toUpperCase() === "IMG") return "";
+    }
+    const siteTitle = douyinContentTitle(doc, anchorEl);
+    if (siteTitle) return siteTitle;
+    // 抖音 feed 的旧 docTitle 不在这里拦截：卡片 caption 的 leaf 池路径是
+    // 合法的；页级兜底（resolvePageTitle / overlay cleanedPageTitle）才是
+    // 残留标题的入口，已在两处分别守卫。
+    // 弹幕不进入标题池由 douyinContentTitle 的 playerContainer 守卫保证：
+    // anchor 在播放器容器内时只认归属范围内的 video-desc；desc 不可达时
+    // 再把该播放器模块从近似 walk 中剔除（模块内除 desc 外只有弹幕/控件
+    // 文本），防止弹幕经 leaf 池冒充标题；播放器外的卡片 caption 走既有路径。
+    let douyinPlayerModule = null;
+    try {
+      if (["douyin.com", "www.douyin.com"].includes(new URL(global.location?.href ?? "").hostname)) {
+        douyinPlayerModule = anchorEl?.closest?.("[class*='playerContainer'], .xgplayer") ?? null;
+      }
+    } catch { /* ignore */ }
+    let fallback = "";
+    let fallbackScore = -Infinity;
+    const body = doc.body || doc.documentElement || null;
+    for (const module of titleModules(doc, anchorEl)) {
+      if (module === douyinPlayerModule) continue;
+      const hit = moduleTitle(module, { leafFallback: module !== body });
+      if (!hit) continue;
+      if (hit.score > fallbackScore) {
+        fallbackScore = hit.score;
+        fallback = hit.text;
+      }
+      if (hit.isHeading || hit.score >= MODULE_TITLE_ACCEPT_SCORE) return hit.text;
+    }
+    return fallback;
+  }
+  // Douyin fast-path: detail/modal keeps document.title at the brand name;
+  // the real title lives in [data-e2e="video-desc"] (with hashtags appended).
+  function douyinContentTitle(doc, anchorEl = null) {
+    try {
+      if (!["douyin.com", "www.douyin.com"].includes(new URL(global.location.href).hostname)) return "";
+      // Semantic card fields carry the actual caption, including short titles,
+      // hashtags and words such as 分享 that generic chrome filters reject.
+      const card = anchorEl?.closest?.(".jingxuanVideoCard, .waterfall-videoCardContainer");
+      if (card) {
+        const caption = card.querySelector('[data-feed-ad-click-refer="title"]');
+        const cover = card.querySelector("img.discover-video-card-img");
+        return String(caption?.textContent || cover?.getAttribute("alt") || "")
+          .trim().replace(/\s+/gu, " ").slice(0, 200);
+      }
+      // Detail pages preload adjacent players. Never read a different player's
+      // description or its chapter summary to name this element. Douyin's own
+      // jingxuan player is NOT xgplayer — its container class carries
+      // "playerContainer"; missing it made the resolver fall through to the
+      // generic pool inside the player, where danmaku bullets won as titles.
+      const player = anchorEl?.closest?.(".xgplayer, [class*='playerContainer']");
+      if (anchorEl && !player) return "";
+      let root = player || doc;
+      if (!anchorEl) {
+        const players = [...(doc.querySelectorAll?.(".xgplayer, [class*='playerContainer']") ?? [])];
+        if (players.length) {
+          root = players.find(node => {
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+              && rect.top < global.innerHeight && rect.left < global.innerWidth
+              && global.getComputedStyle(node).visibility !== "hidden";
+          });
+          if (!root) return "";
+        }
+      }
+      if (root === doc) {
+        return cleanTitleText(doc.querySelector?.('[data-e2e="video-desc"]')?.textContent).slice(0, 200);
+      }
+      // The player container itself carries no description: walk upward to its
+      // owning modal/detail scope, but never past an ancestor that holds more
+      // than one player (adjacent preloaded players' descriptions are off
+      // limits). No desc → give up; the generic pool inside the player would
+      // name danmaku bullets.
+      let text = "";
+      let scope = root;
+      for (let hop = 0; scope && hop < 4; hop += 1) {
+        const playerCount = scope.querySelectorAll?.(".xgplayer, [class*='playerContainer']")?.length ?? 0;
+        if (hop > 0 && playerCount > 1) break;
+        text = cleanTitleText(scope.querySelector('[data-e2e="video-desc"]')?.textContent);
+        if (text) break;
+        scope = scope.parentElement;
+      }
+      return text.slice(0, 200);
+    } catch { return ""; }
+  }
+
   // Intelligently resolve the best page title from available metadata.
   // Different sites place the "real" content title in different locations:
   // some use og:title for the video name while document.title carries site
   // branding, and vice-versa. This scorer prefers the title that looks most
   // like specific content rather than a generic site name.
-  function resolvePageTitle(doc = document) {
+  // 抖音 SPA 的 feed 路由不重置 document.title/og meta：从详情页返回后二者
+  // 残留上一个视频的标题（实测复现）。feed 上页级标题整体不可信，行名只能
+  // 来自卡片语义字段或通用名。
+  function isDouyinFeedPage(href = global.location?.href) {
+    try {
+      const url = new URL(String(href ?? ""));
+      if (!["douyin.com", "www.douyin.com"].includes(url.hostname)) return false;
+      if (url.searchParams.has("modal_id")) return false;
+      return ["", "/", "/jingxuan", "/recommend"].includes(url.pathname.replace(/\/+$/u, "")) || url.pathname === "";
+    } catch {
+      return false;
+    }
+  }
+
+  function resolvePageTitle(doc = document, anchorEl = null) {
+    // X：页级标题（"xxx on X"/og）同样不作文件名——App 的命名信任模型里
+    // pageTitle 优先于 urlPath hint，必须从源头置空，文件名才能落到
+    // URL 媒体 ID（用户要求）。
+    if (isXHostURL(global.location?.href ?? "")) return "";
+    // feed 上无锚点的页级解析（docTitle/og）整体不可信；带锚点时先走下方
+    // douyin 快速路径，失败后同样不冒用残留的 og/docTitle。
+    const douyinFeed = isDouyinFeedPage();
+    if (douyinFeed && !anchorEl) return "";
     // YouTube SPA navigation never refreshes the og:title meta tag, so the
     // generic scorer below would keep the previous video's title forever.
     // The live player object always knows the current video.
@@ -844,6 +1624,26 @@
     } catch {
       // Fall back to the generic scorer.
     }
+    // Site fast-path: Douyin detail/modal title.
+    const douyin = douyinContentTitle(doc, anchorEl);
+    if (douyin) return douyin;
+    // feed 上卡片语义字段/desc 均未命中：宁可空标题，也不冒用残留的 og/docTitle。
+    if (douyinFeed) return "";
+    // Generic proximity: when we know the active player and the document
+    // title is generic/brand-only (typical SPA), prefer the title inside the
+    // player's own module.
+    if (anchorEl) {
+      let hostname = "";
+      try {
+        hostname = location.hostname;
+      } catch {
+        hostname = "";
+      }
+      if (isGenericOrBrandTitle(doc.title, hostname)) {
+        const generic = resolveContentTitle(doc, anchorEl);
+        if (generic) return generic;
+      }
+    }
     let ogTitle = "";
     let twitterTitle = "";
     if (typeof doc.querySelector === "function") {
@@ -854,11 +1654,6 @@
     }
     const docTitle = doc.title || "";
 
-    const candidates = [ogTitle, twitterTitle, docTitle]
-      .map((t) => t.trim().replace(/\s+/g, " "))
-      .filter((t) => t.length >= 2);
-    if (candidates.length === 0) return "";
-
     let hostname = "";
     try {
       hostname = location.hostname.replace(/^www\./iu, "");
@@ -868,6 +1663,14 @@
     // Extract the recognizable site token from the hostname (e.g. "hanime1"
     // from "hanime1.me", "agedm" from "agedm.io") for branding detection.
     const siteToken = hostname.split(".")[0].toLowerCase();
+
+    const candidates = [ogTitle, twitterTitle, docTitle]
+      .map((t) => stripHostSuffix(
+        stripSiteSuffix(stripBrandSuffix(t.trim().replace(/\s+/g, " ")), siteToken),
+        hostname,
+      ))
+      .filter((t) => t.length >= 2);
+    if (candidates.length === 0) return "";
 
     let best = candidates[0];
     let bestScore = -Infinity;
@@ -1073,41 +1876,30 @@
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
   }
 
-  /// Overlay element-scope filtering (scope system): the overlay anchors to
-  /// a single media element and shows only candidates within that element's
-  /// scope — the element's own resources (ownURLs: absolute src/currentSrc/
-  /// poster URLs and blob:/mse: placeholders) and video/audio candidates
-  /// attributable to the player (site adapters, paired m4s, streaming
-  /// manifests, video/audio MIME, blob/MSE). Page-level images and other
-  /// direct links are page-scope and shown only in the Popup. Pure function:
-  /// ownURLs is a Set or array; comparison is URL equality only (fragments
-  /// stripped on both sides). Per-element network attribution on
-  /// multi-video pages is future architecture work; the current
-  /// implementation attributes video traffic to the in-page player (on
-  /// single-video pages, the only anchor).
+  // Only explicit element attribution may enter an overlay. The caller
+  // supplies live DOM URLs and URLs resolved by a bounded site association.
+  // Unknown ownership remains in the Popup, including video/audio traffic.
   function filterCandidatesForElementScope(candidates, ownURLs) {
-    if (!Array.isArray(candidates)) return candidates;
-    // Accepts a Set or array; copies item by item instead of an instanceof
-    // check so cross-realm sets (unit-test vm environments) and any
-    // iterable input work.
+    if (!Array.isArray(candidates)) return [];
     const own = new Set();
     try {
-      for (const item of ownURLs ?? []) own.add(item);
-    } catch {
-      // Non-iterable input is treated as having no own resources.
-    }
-    const inScope = (candidate) => {
+      for (const item of ownURLs ?? []) {
+        if (typeof item === "string") own.add(item.split("#", 1)[0]);
+      }
+    } catch {}
+    return candidates.filter((candidate) => {
       if (!candidate || typeof candidate.url !== "string") return false;
-      if (candidate.siteAdapter) return true;
-      if (candidate.pairKind === "m4s-pair") return true;
-      if (candidate.format === "hls" || candidate.format === "dash" || candidate.format === "dash-json") return true;
+      if (!own.has(candidate.url.split("#", 1)[0])) return false;
+      if (candidate.pairKind === "m4s-pair"
+          && (!own.has(String(candidate.pairVideoUrl || "").split("#", 1)[0])
+            || !own.has(String(candidate.pairAudioUrl || "").split("#", 1)[0]))) return false;
+      if (candidate.format === "image") return false;
       const mime = String(candidate.mime ?? "").toLowerCase();
-      if (candidate.format === "video" || mime.startsWith("video/")) return true;
-      if (candidate.format === "audio" || mime.startsWith("audio/")) return true;
-      if (candidate.url.startsWith("blob:") || candidate.url.startsWith("mse:")) return true;
-      return own.has(candidate.url.split("#", 1)[0]);
-    };
-    return candidates.filter(inScope);
+      if (mime.startsWith("image/")) return false;
+      return Boolean(candidate.siteAdapter)
+        || ["video", "audio", "hls", "dash", "dash-json", "blob"].includes(candidate.format)
+        || mime.startsWith("video/") || mime.startsWith("audio/");
+    });
   }
 
   global.MacIDMMediaUtils = Object.freeze({
@@ -1120,6 +1912,10 @@
     normalizeResourceURL,
     redactedURL,
     resolvePageTitle,
+    resolveContentTitle,
+    isGenericOrBrandTitle,
+    stripBrandSuffix,
+    stripHostSuffix,
     shortName,
     extractM4sInfo,
     m4sGroupKey,
@@ -1127,10 +1923,14 @@
     mediaExtension,
     coalesceMediaCandidates,
     isBilibiliPageURL,
+    bilibiliVideoIDFromURL,
+    extractBilibiliCardIdentity,
+    collectBilibiliPreviewIdentities,
     qualityLabel,
     codecFamily,
     variantDisplayLabel,
     smartMediaName,
+    filenameHintSourceFor,
     resolutionLabel,
     estimateVariantSize,
     estimateYouTubeMergedSize,
@@ -1140,6 +1940,7 @@
     filterCandidatesForElementScope,
     formatBytes,
     formatDuration,
+    isDouyinFeedPage,
     youTubeVideoIDFromURL,
     isYouTubeWatchPage,
   });

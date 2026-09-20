@@ -56,6 +56,40 @@ final class MessageProtocolTests: XCTestCase {
         XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(request)))
     }
 
+    func testFilenameHintSourceAcceptsTrustModelValues() throws {
+        for source in ["browserResolved", "titleDerived", "urlPath"] {
+            let request = MessageRequest(
+                requestId: UUID().uuidString,
+                idempotencyKey: "profile:download-42",
+                type: "download.create",
+                payload: [
+                    "browserDownloadId": .number(42),
+                    "url": .string("https://example.com/file.zip"),
+                    "filenameHint": .string("file.zip"),
+                    "filenameHintSource": .string(source),
+                ]
+            )
+            let decoded = try MessageCodec.decodeRequest(MessageCodec.encode(request))
+            XCTAssertEqual(decoded.payload["filenameHintSource"]?.stringValue, source)
+        }
+    }
+
+    func testUnknownFilenameHintSourceIsRejected() throws {
+        let request = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:download-42",
+            type: "download.create",
+            payload: [
+                "browserDownloadId": .number(42),
+                "url": .string("https://example.com/file.zip"),
+                "filenameHint": .string("file.zip"),
+                "filenameHintSource": .string("contentDisposition"),
+            ]
+        )
+
+        XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(request)))
+    }
+
     func testValidDownloadEnqueueDoesNotRequireBrowserDownloadID() throws {
         let request = MessageRequest(
             requestId: UUID().uuidString,
@@ -389,6 +423,71 @@ final class MessageProtocolTests: XCTestCase {
             payload: [:]
         )
         XCTAssertEqual(try client.send(request).type, "pong")
+    }
+
+    func testAppActivateValidatesAndRejectsUnknownFields() throws {
+        let bare = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:activate-1",
+            type: "app.activate",
+            payload: [:]
+        )
+        XCTAssertNoThrow(try MessageCodec.decodeRequest(MessageCodec.encode(bare)))
+
+        let withFlag = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:activate-2",
+            type: "app.activate",
+            payload: ["userInitiated": .bool(true)]
+        )
+        XCTAssertNoThrow(try MessageCodec.decodeRequest(MessageCodec.encode(withFlag)))
+
+        let invalid = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:activate-3",
+            type: "app.activate",
+            payload: ["url": .string("https://example.com")]
+        )
+        XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(invalid)))
+    }
+
+    func testUserInitiatedFlagIsAcceptedOnDownloadAndInspect() throws {
+        let enqueue = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:enqueue-ui",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://example.com/media.mp4"),
+                "userInitiated": .bool(true),
+            ]
+        )
+        let decodedEnqueue = try MessageCodec.decodeRequest(MessageCodec.encode(enqueue))
+        XCTAssertEqual(decodedEnqueue.payload["userInitiated"]?.boolValue, true)
+
+        let inspect = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:inspect-ui",
+            type: "media.inspect",
+            payload: [
+                "url": .string("https://example.com/master.m3u8"),
+                "mediaKind": .string("hls"),
+                "userInitiated": .bool(true),
+            ]
+        )
+        XCTAssertNoThrow(try MessageCodec.decodeRequest(MessageCodec.encode(inspect)))
+    }
+
+    func testNonBooleanUserInitiatedIsRejected() throws {
+        let request = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:enqueue-bad-ui",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://example.com/media.mp4"),
+                "userInitiated": .string("yes"),
+            ]
+        )
+        XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(request)))
     }
 
     private func shortTemporaryDirectory(prefix: String) -> URL {

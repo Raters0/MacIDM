@@ -61,6 +61,7 @@ enum CLIWorker {
         do {
             _ = try store.mutate(id) { $0.status = .running }
             let engine = DownloadEngine(
+                hlsExecutor: HLSDownloadExecutor(merger: ffmpegService),
                 dashExecutor: DASHDownloadExecutor(merger: ffmpegService)
             )
             let result = try await engine.download(

@@ -18,12 +18,29 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
 
     func open(draft: DownloadDraft?, model: AppModel) {
         var view = NewDownloadView(draft: draft)
-        let window = NSWindow(
+        // 使用带 .nonactivatingPanel 的 NSPanel：面板自身能成为 key window
+        // 接收键盘输入，但不会激活整个 App。这样打开新建任务面板时，主窗口
+        // 保持原有状态（隐藏就继续隐藏、在浏览器后面就继续在后面），不会
+        // 被 NSApp.activate 一并带到前台；提交下载后面板关闭，主界面也不
+        // 会"再弹出来一次"。
+        let window = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 688, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        // 面板一出现就成为 key window，用户无需先点击即可输入地址。
+        window.becomesKeyOnlyIfNeeded = false
+        // 浮层级别：.accessory 模式下 App 非活跃时，.normal 层级的窗口会被
+        // 前台应用（浏览器）遮挡，orderFrontRegardless 不可靠（macOS 14+）。
+        // .floating 确保面板始终位于其他应用普通窗口之上，同时
+        // .nonactivatingPanel 保证不抢占 App 焦点。
+        window.level = .floating
+        // NSPanel 默认 hidesOnDeactivate=true：若 App 曾被短暂激活后用户切回
+        // 浏览器，面板会被自动隐藏。确认窗必须保持可见直到用户操作。
+        window.hidesOnDeactivate = false
+        // macOS 26+ 玻璃材质默认底是灰的：确认窗用主题表面积色（浅色=白）。
+        window.backgroundColor = AppTheme.windowSurfaceNSColor
         let key = ObjectIdentifier(window)
         coordinator.prepareForWindowOpen(
             windowID: key,
@@ -94,7 +111,11 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
         }
         modelsByWindow[key] = model
         windows.append(window)
-        NSApp.activate(ignoringOtherApps: true)
+        // 仅把确认面板本身置于最前并成为 key window：.nonactivatingPanel
+        // 保证这一步不会激活 App，因此主窗口的可见性与层级完全不受影响。
+        // orderFrontRegardless 让面板即使 App 未激活（如 .accessory 菜单栏
+        // 模式）也能浮在最上层；makeKeyAndOrderFront 让它直接接收键盘输入。
+        window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -113,6 +134,12 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
         if let appToRestore = coordinator.windowWillClose(windowID: key) {
             DispatchQueue.main.async {
                 guard !appToRestore.isTerminated else { return }
+                // 面板使用 .nonactivatingPanel，打开时从未激活 App，用户原本
+                // 的前台应用一直保持焦点。只有当 MacIDM 此刻确实是前台应用
+                // 时（例如用户中途手动点了主窗口），才把焦点归还给记录的原
+                // 应用；否则不抢占，避免用户已切换到别的应用后被错误拉回。
+                let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                guard frontmostPID == NSRunningApplication.current.processIdentifier else { return }
                 appToRestore.activate(options: [.activateIgnoringOtherApps])
             }
         }

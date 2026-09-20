@@ -10,6 +10,6 @@ export function applyM4sPairing(payload) {
   if (!payload || !Array.isArray(payload.candidates)) return payload;
   return {
     ...payload,
-    candidates: media.coalesceMediaCandidates(payload.candidates, payload.title ?? "", payload.pageUrl ?? ""),
+    candidates: media.coalesceMediaCandidates(payload.candidates, payload.titleSource === "card" ? "" : payload.title ?? "", payload.pageUrl ?? ""),
   };
 }

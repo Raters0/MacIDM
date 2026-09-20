@@ -153,6 +153,9 @@ enum BrowserTakeoverError: LocalizedError {
     case takeoverNotFound
     case invalidState
     case abandoned
+    /// The user dismissed the confirmation choosing to also cancel the paused
+    /// browser download (as opposed to handing it back to the browser).
+    case userCancelledBrowser
 
     var errorDescription: String? {
         switch self {
@@ -170,6 +173,8 @@ enum BrowserTakeoverError: LocalizedError {
             String(localized: "浏览器接管状态不允许当前操作。")
         case .abandoned:
             String(localized: "该浏览器接管请求已被放弃，请使用新的请求标识重新提交。")
+        case .userCancelledBrowser:
+            String(localized: "用户取消了接管，并要求同时取消浏览器下载。")
         }
     }
 }

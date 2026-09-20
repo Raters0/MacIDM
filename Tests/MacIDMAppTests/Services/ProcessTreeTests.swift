@@ -4,7 +4,7 @@ import XCTest
 @testable import MacIDMApp
 
 /// Process-table utilities backing the yt-dlp process-group lifecycle
-/// (docs/AI交接.md §3/§6). Termination behavior itself is covered by
+/// Termination behavior itself is covered by
 /// `ManagedToolSessionTests`.
 ///
 /// 每一棵树都由测试自己放进**专属进程组**（`POSIX_SPAWN_SETPGROUP`，

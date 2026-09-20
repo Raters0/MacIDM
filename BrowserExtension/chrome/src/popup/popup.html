@@ -33,6 +33,10 @@
             <span data-i18n="popup.filterNoiseLabel">过滤噪声候选</span>
             <input id="sniff-governance-toggle" type="checkbox" role="switch">
           </label>
+          <label class="menu-row">
+            <span data-i18n="popup.previewLabel">资源预览</span>
+            <input id="preview-toggle" type="checkbox" role="switch">
+          </label>
           <!-- Threshold inputs (disabled while governance is off): sizes are
                entered in KB and stored internally in bytes. The minimum
                resource size stays plainly visible; the two fine-grained
@@ -82,6 +86,7 @@
       <section class="media-section" aria-labelledby="media-title">
         <div class="section-heading">
           <h2 id="media-title" data-i18n="popup.pageMedia">本页媒体</h2>
+          <span id="media-loading" class="sniff-spinner" hidden></span>
           <span id="media-count"></span>
         </div>
         <p id="filtered-note" class="filtered-note" hidden></p>
@@ -97,6 +102,7 @@
     <script src="../shared/media-utils.js"></script>
     <script src="../shared/youtube-format-utils.js"></script>
     <script src="../shared/media-presentation.js"></script>
+    <script src="../shared/media-metadata-probe.js"></script>
     <script src="../shared/category.js"></script>
     <script src="../shared/panel-ui.js"></script>
     <script src="../shared/slim-scrollbar.js"></script>

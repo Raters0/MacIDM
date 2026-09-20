@@ -46,6 +46,11 @@
   // published again only once attribution evidence holds — never fall back
   // to the old document.title.
   let confirmedPageTitle = typeof document.title === "string" ? document.title : "";
+  // Provenance of confirmedPageTitle: a proximity-resolved title may be
+  // replaced by a newer proximity result (hovering the next card on a feed),
+  // while a document.title/snapshot-adopted specific title stays locked to
+  // avoid flapping on gallery pages.
+  let confirmedFromProximity = false;
   // Used only for change detection: at the transition instant
   // document.title is still the old page's title and cannot be published,
   // but we need to know when the SPA framework updates it.
@@ -55,6 +60,10 @@
   // deliver the new page's snapshot before the SPA title update, when
   // document.title is still the old page's).
   let staleTitleAtTransition = "";
+  // SPA title fallback timer: some SPAs never update document.title on route
+  // change; after a short settle window we accept proximity/structured title
+  // evidence instead of leaving the page title empty forever.
+  let spaTitleFallbackTimer;
   // Sniff false-positive governance settings cache (undefined → the default
   // in shared/sniff-governance.js). The snapshot path is synchronous and
   // reads the cache first; storage changes refresh it asynchronously and
@@ -79,11 +88,28 @@
       sendResponse({ ok: true, ...snapshot() });
       return false;
     }
+    if (message?.type === "macidm.probeMediaMeta") {
+      // 页面上下文探针：popup（扩展源）的 <video preload=metadata> 会被抖音
+      // 等签名 CDN 拒绝（缺页面 referer/cookie）；在页面内探测后回填 popup。
+      const probe = globalThis.MacIDMMediaMetadataProbe;
+      const urls = Array.isArray(message?.urls)
+        ? message.urls.filter((u) => typeof u === "string")
+        : [];
+      if (!probe?.probeCandidates || urls.length === 0) {
+        sendResponse({ ok: true, results: [] });
+        return false;
+      }
+      probe.probeCandidates(urls.map((url) => ({ url })), { priority: "interactive" })
+        .then((results) => sendResponse({ ok: true, results: results ?? [] }))
+        .catch(() => sendResponse({ ok: false, results: [] }));
+      return true; // 异步 sendResponse
+    }
     if (message?.type === "macidm.addMediaCandidate") {
       // Candidate confirmed via background webRequest response-header
       // observation → confidence "headers".
       addCandidate({
         ...message.candidate,
+        updateOnly: message.updateOnly === true,
         confidence:
           CONFIDENCE_RANK[message.candidate?.confidence] != null
             ? message.candidate.confidence
@@ -177,11 +203,26 @@
       return false;
     }
 
-    // A real SPA transition: reset state completely.
+    // A real SPA transition: reset state completely. Resources still owned
+    // by mounted players survive: same-document modal opens (feed →
+    // ?modal_id=…) would otherwise drop streams preloaded before the
+    // transition that playback never re-requests, leaving the Popup in the
+    // listening state forever. The observer retains those blobs' ownership
+    // across resets, so an unmounted player's URLs (YouTube A→B) stay
+    // cleared and cross-video hygiene is preserved.
+    const liveURLs = globalThis.MacIDMMediaElementScope?.liveURLs?.() ?? null;
+    const retained = [];
+    if (liveURLs && liveURLs.size > 0) {
+      for (const [key, candidate] of candidates) {
+        if (liveURLs.has(candidate.url)) retained.push([key, candidate]);
+      }
+    }
     candidates.clear();
+    for (const [key, candidate] of retained) candidates.set(key, candidate);
     lastNotification = "";
     staleTitleAtTransition = typeof document.title === "string" ? document.title : "";
     confirmedPageTitle = "";
+    confirmedFromProximity = false;
     lastDomTitle = staleTitleAtTransition;
     youTubePlayerSnapshot = null;
 
@@ -210,6 +251,17 @@
       window.postMessage({ type: RESET_SNIFF_STATE_MESSAGE }, "*");
     } catch {}
 
+    // SPA title fallback: give the framework ~2s to settle, then accept
+    // whatever title evidence (document.title or proximity-resolved) exists.
+    if (spaTitleFallbackTimer != null) {
+      clearTimeout(spaTitleFallbackTimer);
+    }
+    spaTitleFallbackTimer = setTimeout(() => {
+      spaTitleFallbackTimer = undefined;
+      adoptTitleIfAttributed(true);
+      refreshResolvedTitle(true);
+    }, 2_000);
+
     globalThis.MacIDMOverlay?.handlePageTransition?.(location.href);
     scanDOMFull();
     scheduleNotification(true);
@@ -220,10 +272,10 @@
     return handlePageTransition();
   }
 
-  function adoptTitleIfAttributed() {
+  function adoptTitleIfAttributed(force = false) {
     const domTitle = typeof document.title === "string" ? document.title.slice(0, 300).trim() : "";
     if (!domTitle) return;
-    if (staleTitleAtTransition && domTitle === staleTitleAtTransition) return;
+    if (!force && staleTitleAtTransition && domTitle === staleTitleAtTransition) return;
     const urlVideoId =
       globalThis.MacIDMYouTubeFormats?.videoIdFromPageURL?.(location.href) ?? "";
     if (urlVideoId) {
@@ -231,6 +283,55 @@
     }
     if (confirmedPageTitle !== domTitle) {
       confirmedPageTitle = domTitle;
+      confirmedFromProximity = false;
+      scheduleNotification(true);
+    }
+  }
+
+  // The currently-playing (else largest visible) media element, used as the
+  // anchor for proximity-based content-title resolution.
+  function activeMediaAnchor() {
+    const medias = document.querySelectorAll("video, audio");
+    let largest = null;
+    let largestArea = 0;
+    for (const el of medias) {
+      if (!el.paused && el.readyState >= 2) return el;
+      const rect = el.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      if (area > largestArea) {
+        largestArea = area;
+        largest = el;
+      }
+    }
+    return largest;
+  }
+
+  let lastResolvedTitleAt = 0;
+  // Adopt a proximity/structured-resolved title when the confirmed title is
+  // empty or a generic brand/page name (typical SPA detail/modal pages whose
+  // document.title never updates). A specific confirmed title wins to avoid
+  // flapping on gallery/list pages.
+  function refreshResolvedTitle(force = false) {
+    const now = Date.now();
+    if (!force && now - lastResolvedTitleAt < 1_000) return;
+    lastResolvedTitleAt = now;
+    if (!mediaUtils?.resolvePageTitle) return;
+    let resolved = "";
+    try {
+      resolved = mediaUtils.resolvePageTitle(document, activeMediaAnchor());
+    } catch {
+      return;
+    }
+    if (!resolved) return;
+    const current = String(confirmedPageTitle || "").trim();
+    const currentGeneric =
+      current === "" ||
+      (mediaUtils.isGenericOrBrandTitle
+        ? mediaUtils.isGenericOrBrandTitle(current, location.hostname)
+        : false);
+    if ((currentGeneric || confirmedFromProximity) && resolved !== current) {
+      confirmedPageTitle = resolved;
+      confirmedFromProximity = true;
       scheduleNotification(true);
     }
   }
@@ -248,6 +349,7 @@
   function scanDOMFull() {
     resetIfPageChanged();
     publishTitleIfChanged();
+    refreshResolvedTitle();
 
     if (discovery?.extractFullDOMCandidates) {
       const fullCandidates = discovery.extractFullDOMCandidates(document, location.href, discovery.isMediaCandidate);
@@ -349,6 +451,9 @@
         ? mediaUtils.normalizeResourceURL(candidate.url)
         : candidate.url);
     const previous = candidates.get(key);
+    // Probe metadata updates an observed resource; it cannot discover a new
+    // resource (in particular an adapter's HTML page URL).
+    if (raw?.updateOnly && !previous) return false;
     if (previous) {
       if (groupKey) {
         const previousInfo = mediaUtils.extractM4sInfo?.(previous.url);
@@ -363,6 +468,9 @@
           size: preferred.size ?? previous.size ?? candidate.size,
           duration: preferred.duration ?? previous.duration ?? candidate.duration,
           confidence: higherConfidence(previous, candidate),
+          // A display-only server filename (Content-Disposition) arriving via
+          // a later probe report survives the merge.
+          ...(candidate.serverFilename ? { serverFilename: candidate.serverFilename } : {}),
         };
         if (
           merged.mime !== previous.mime ||
@@ -377,13 +485,17 @@
         }
         return false;
       }
+      candidates.delete(key);
+      candidates.set(key, previous);
       const merged = {
         ...previous,
         mime: previous.mime || candidate.mime,
         size: previous.size ?? candidate.size,
         duration: previous.duration ?? candidate.duration,
         confidence: higherConfidence(previous, candidate),
-        format: candidate.format || previous.format,
+        format: previous.format === "dash-json" ? "dash-json"
+          : mediaUtils.mediaFormat(candidate.url, previous.mime || candidate.mime),
+        ...(candidate.serverFilename ? { serverFilename: candidate.serverFilename } : {}),
         sizeProbeFailed:
           candidate.sizeProbeFailed === true
             ? true
@@ -450,18 +562,114 @@
     }
   }
 
+  function douyinFeedCardCandidates() {
+    const cache = globalThis.MacIDMDouyinDetailCache;
+    try {
+      if (!cache?.feedCardCandidates) return [];
+      if (!/(^|\.)douyin\.com$/iu.test(location.hostname ?? "")) return [];
+      const cards = document.querySelectorAll?.(".jingxuanVideoCard, .waterfall-videoCardContainer");
+      if (!cards?.length) return [];
+      // aweme_id 在卡片的链接/埋点属性里而非可见文本，用 outerHTML；
+      // 只拼接一次，逐条目 includes 判定。
+      let text = "";
+      for (const card of cards) text += card.outerHTML ?? "";
+      if (!text) return [];
+      return cache.feedCardCandidates((awemeID) => text.includes(awemeID));
+    } catch {
+      return [];
+    }
+  }
+
   function snapshot() {
+    for (const candidate of globalThis.MacIDMMediaElementScope?.recoverableCandidates?.() ?? []) {
+      addCandidate(candidate);
+    }
+    // 抖音详情预解析：modal_id 匹配时合成详情直链候选（有界站点关联），
+    // 让详情 FAB 无需等待播放器拉流即可出现。
+    for (const candidate of globalThis.MacIDMDouyinDetailCache?.associatedCandidates?.(location.href) ?? []) {
+      addCandidate(candidate);
+    }
+    // feed 卡片关联：弹窗关闭后预览字节是预加载的、没有新请求可观察；
+    // 对 DOM 中出现其 aweme_id 的卡片合成详情直链候选，让钉住的 FAB
+    // （overlay 合成 hover 路径）有可归属的候选。卡片文本扫描仅在详情
+    // 缓存非空时进行。
+    for (const candidate of douyinFeedCardCandidates()) {
+      addCandidate(candidate);
+    }
     const title = String(confirmedPageTitle ?? "").slice(0, 300);
     const observed = Array.from(candidates.values()).slice(0, maxCandidates);
     const governed = globalThis.MacIDMSniffGovernance
       ? globalThis.MacIDMSniffGovernance.applySniffGovernance(observed, governanceSettings)
       : { candidates: observed, filteredSummary: { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 } };
+    // Title provenance for consumers: a title resolved from one card's module
+    // on a gallery page must not name other cards' resources. "card" means the
+    // confirmed title is card-scoped (page-level resolution disagrees); then
+    // synthesized pair/segment names drop the page title and rows fall back
+    // to per-candidate card attribution stamped below.
+    let titleSource = confirmedFromProximity ? "content" : "document";
+    if (confirmedFromProximity && mediaUtils?.resolvePageTitle) {
+      try {
+        const pageLevel = mediaUtils.resolvePageTitle(document, null);
+        if (pageLevel !== title) titleSource = "card";
+      } catch {
+        titleSource = "card";
+      }
+    }
+    const synthesisTitle = titleSource === "card"
+      || (mediaUtils?.isGenericOrBrandTitle?.(title, location.hostname) ?? false)
+      ? "" : title;
+    // Bilibili list/homepage hover previews: attach card identity (bvid +
+    // heading title) so the coalesced list can synthesize a site adapter
+    // candidate instead of raw m4s + the page branding title.
+    const previewIdentities = mediaUtils?.collectBilibiliPreviewIdentities
+      ? mediaUtils.collectBilibiliPreviewIdentities(document, location.href)
+      : [];
+    const attributed = globalThis.MacIDMMediaElementScope?.annotateOwnership?.(governed.candidates) ?? governed.candidates;
+    const coalesced = mediaUtils?.coalesceMediaCandidates
+      ? mediaUtils.coalesceMediaCandidates(attributed, synthesisTitle, location.href, previewIdentities)
+      : governed.candidates;
+    // Per-candidate card attribution for direct-src resources (Douyin feed
+    // previews): the popup names and submits such rows by their own card's
+    // caption instead of the page-level title (which on galleries is either
+    // branding or one arbitrary card's caption). Cover images are attributed
+    // too — on a gallery most rows are image candidates whose src appears
+    // on the card element that carries the caption.
+    let stamped = coalesced;
+    if (mediaUtils?.resolveContentTitle) {
+      const cardTitleByURL = new Map();
+      try {
+        const candidateURLs = new Set(coalesced.map((candidate) => candidate?.url).filter(Boolean));
+        let resolvedCount = 0;
+        for (const el of [...document.querySelectorAll("video, audio"), ...document.querySelectorAll("img")]) {
+          if (resolvedCount >= 40) break;
+          const url = el.currentSrc
+            || (el.tagName === "IMG" ? el.src : el.getAttribute?.("src"))
+            || "";
+          const owned = el.tagName === "IMG"
+            ? (candidateURLs.has(url) ? [{ url }] : [])
+            : (globalThis.MacIDMMediaElementScope?.filterCandidates?.(el, coalesced, location.href) ?? []);
+          if (!owned.length) continue;
+          const cardTitle = mediaUtils.resolveContentTitle(document, el);
+          if (cardTitle) {
+            for (const candidate of owned) cardTitleByURL.set(candidate.url, cardTitle);
+            resolvedCount += 1;
+          }
+        }
+      } catch {
+        // Attribution is best-effort; rows fall back to page-level rules.
+      }
+      if (cardTitleByURL.size > 0) {
+        stamped = coalesced.map((candidate) => {
+          const cardTitle = cardTitleByURL.get(candidate?.url);
+          return cardTitle ? { ...candidate, cardTitle } : candidate;
+        });
+      }
+    }
     return {
       pageUrl: location.href,
       title,
-      candidates: mediaUtils?.coalesceMediaCandidates
-        ? mediaUtils.coalesceMediaCandidates(governed.candidates, title, location.href)
-        : governed.candidates,
+      titleSource,
+      candidates: stamped,
       filteredSummary: governed.filteredSummary,
     };
   }
@@ -554,6 +762,25 @@
       if (!event || event.source !== window) return;
       const data = event.data;
       if (!data || typeof data !== "object") return;
+
+      // The scope listener validates this snapshot later in the same message
+      // dispatch. Publish on the debounce, after that validation has completed.
+      if (data.type === "macidm.mediaSourceSnapshot" && data.pageURL === location.href) {
+        scheduleNotification();
+        return;
+      }
+
+      // 抖音详情预加载数据：直链入库后立即发布快照（弹窗打开时不再有
+      // 网络请求可观察，详情 FAB 依赖这份预解析候选）。
+      if (data.type === "macidm.douyin.detail") {
+        try {
+          globalThis.MacIDMDouyinDetailCache?.store?.(data);
+        } catch {
+          // 缓存失败不影响页面。
+        }
+        scheduleNotification();
+        return;
+      }
 
       // 1. Fetch capture candidate
       if (data.type === FETCH_CAPTURE_MESSAGE) {
@@ -653,6 +880,7 @@
         if (snapshotTitle) {
           if (confirmedPageTitle !== snapshotTitle) {
             confirmedPageTitle = snapshotTitle;
+            confirmedFromProximity = false;
             titleAdopted = true;
           }
         } else {

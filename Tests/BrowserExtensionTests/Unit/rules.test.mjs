@@ -2,7 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEFAULT_SETTINGS } from "../../../BrowserExtension/chrome/src/shared/constants.js";
-import { shouldTakeover } from "../../../BrowserExtension/chrome/src/background/rules.js";
+import { shouldTakeover, isBodyCarryingMethod } from "../../../BrowserExtension/chrome/src/background/rules.js";
+
+test("only body-carrying methods are treated as non-replayable (HEAD probe must not block takeover)", () => {
+  assert.equal(isBodyCarryingMethod("POST"), true);
+  assert.equal(isBodyCarryingMethod("put"), true);
+  assert.equal(isBodyCarryingMethod("PATCH"), true);
+  assert.equal(isBodyCarryingMethod("DELETE"), true);
+  // A player's HEAD probe of the same media URL must NOT suppress the later
+  // GET download takeover.
+  assert.equal(isBodyCarryingMethod("HEAD"), false);
+  assert.equal(isBodyCarryingMethod("OPTIONS"), false);
+  assert.equal(isBodyCarryingMethod("GET"), false);
+  assert.equal(isBodyCarryingMethod(""), false);
+  assert.equal(isBodyCarryingMethod(undefined), false);
+});
 
 test("known matching file above threshold is taken over", () => {
   const result = shouldTakeover(

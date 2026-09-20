@@ -80,6 +80,7 @@ struct EngineDownloadRunner: AppDownloadRunning {
             )
         }
         let engine = DownloadEngine(
+            hlsExecutor: HLSDownloadExecutor(merger: dashMerger),
             dashExecutor: DASHDownloadExecutor(merger: dashMerger),
             connectionPolicyLearner: policyLearner
         )

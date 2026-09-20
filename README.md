@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Resources/AppIcon.iconset/icon_256x256.png" alt="MacIDM" width="96" />
   <h1>MacIDM</h1>
-  <p>A macOS media downloader written in Swift, with a Chrome extension for media sniffing. Optimized specifically for <a href="https://www.bilibili.com/">Bilibili</a> and <a href="https://www.youtube.com/">YouTube</a>.</p>
+  <p>A native macOS media downloader written in Swift, designed around streamed I/O and bounded memory use, with a Chrome extension for media sniffing.</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://github.com/Raters0/MacIDM/releases">Download</a> · <a href="#quick-start">Quick start</a></p>
 </div>
 
@@ -15,7 +15,7 @@ MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser medi
 
 1. The browser extension discovers and selects resources; downloads run in the local App and its download backends. You can also paste a download link directly in the App.
 
-The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and opening the App's new-task window (currently optimized specifically for [Bilibili](https://www.bilibili.com/) and [YouTube](https://www.youtube.com/)):
+The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and opening the App's new-task window:
 
 <p><img src="README-assets/page-sniff-en.gif" alt="English walkthrough: open the media panel, select a resource and open a new download task" width="900" /></p>
 
@@ -30,6 +30,13 @@ The walkthrough below shows clicking the floating button on a video / audio reso
 - Proxy, global rate limiting, Chinese and English interfaces, CLI, and a local HTTP API are also supported. The CLI can read status, control tasks, and support automation scripts.
 - Filename hiding is supported, to avoid triggering AI Agent sensitive-word checks.
 - Logs are stored by level; when using AI-assisted debugging, this reduces exposure of sensitive information (such as cookies) to third parties.
+
+### Mainstream sites with dedicated optimizations
+
+- [Bilibili](https://www.bilibili.com/)
+- [YouTube](https://www.youtube.com/)
+- [Douyin](https://www.douyin.com/)
+- [X / Twitter](https://www.x.com/)
 
 ### Planned updates
 

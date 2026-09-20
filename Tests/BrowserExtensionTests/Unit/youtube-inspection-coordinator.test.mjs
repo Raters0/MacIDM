@@ -7,7 +7,7 @@ import {
   safeCategoryFromAppResult,
 } from "../../../BrowserExtension/chrome/src/background/youtube-inspection-coordinator.js";
 
-// docs/AI交接.md §5.1–5.4 的自动化门禁：共享解析协调器必须保证
+// chrome-extension-spec §5.8 的自动化门禁：共享解析协调器必须保证
 // 页内持续补全、稳定判定、单一 in-flight、SPA 隔离、部分结果保留。
 
 const PAGE_URL = "https://www.youtube.com/watch?v=abc123";
@@ -252,7 +252,7 @@ test("retry 强制重启失败的解析并最终完成", async () => {
   assert.equal(calls.app, 2);
 });
 
-// ---- §2：同视频仅参数变化时的状态键一致性（docs/AI交接.md 2026-08-29）----
+// ---- §2：同视频仅参数变化时的状态键一致性（chrome-extension-spec §5.8）----
 
 test("同 videoId 仅参数变化：终态快照可被新 URL 消费，且不重启 yt-dlp", async () => {
   const { coordinator, calls } = makeHarness({

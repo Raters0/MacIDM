@@ -147,7 +147,7 @@ export class YouTubeInspectionCoordinator {
     return this.snapshot(record);
   }
 
-  /// User-triggered re-parse for partial/failed outcomes (spec §5.3 #6).
+  /// User-triggered re-parse for partial/failed outcomes (chrome-extension-spec §5.8 #6).
   retry({ tabId, url }) {
     return this.ensure({ tabId, url, force: true });
   }
@@ -421,7 +421,7 @@ export class YouTubeInspectionCoordinator {
   }
 }
 
-/// Safe error category for the App/yt-dlp fallback outcome (spec §5.4).
+/// Safe error category for the App/yt-dlp fallback outcome (chrome-extension-spec §5.8).
 /// Internal categories stay distinct; user-facing copy maps them later.
 export function safeCategoryFromAppResult(result) {
   if (!result || typeof result !== "object") return "unknown";

@@ -321,7 +321,7 @@ test("dedup keeps the best fps/bitrate within the same height+container+codec gr
 
   const formats = context.MacIDMYouTubeFormats.formatsFromPlayerResponse(pr);
   // 同为 1080 MP4 H.264：保留帧率更高的 299，而不是先出现的 137；
-  // 选中项的精确 itag 原样携带（docs/AI交接.md §4.3）。
+  // 选中项的精确 itag 原样携带（technical-spec §3.4）。
   assert.equal(formats.length, 1);
   assert.equal(formats[0].itag, 299);
   assert.equal(formats[0].fps, 60);
@@ -727,7 +727,7 @@ test("modern VOD responses without isLive flags pass via explicit isLiveContent=
   // often omit isLive/isUpcomingLive and only carry an explicit
   // isLiveContent=false. After live is structurally ruled out, the in-page
   // channel must be allowed through, otherwise in-page parsing always falls
-  // back to yt-dlp (AI handover doc §5.3).
+  // back to yt-dlp (chrome-extension-spec §5.8).
   const fixture = playerResponseFixture({ details: {} });
   delete fixture.videoDetails.isLive;
   delete fixture.videoDetails.isUpcomingLive;

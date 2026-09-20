@@ -53,6 +53,7 @@ test("accurately classifies timeout error codes per request type", async () => {
 
   const testCases = [
     { type: "ping", expectedCode: "PING_TIMEOUT" },
+    { type: "app.activate", expectedCode: "ACTIVATE_TIMEOUT" },
     { type: "media.inspect", expectedCode: "INSPECT_TIMEOUT" },
     { type: "download.enqueue", expectedCode: "ENQUEUE_TIMEOUT" },
     { type: "download.create", expectedCode: "TAKEOVER_TIMEOUT" },
@@ -315,4 +316,42 @@ test("纯 ping 超时绝不能使主机判定为 busy", async () => {
   });
 
   assert.equal(client.isHostBusy(), false, "ping 超时后绝不能将主机判定为 busy");
+});
+
+test("activate() 发送 app.activate 用户主动唤醒请求并在响应到达时 resolve", async () => {
+  let messageListener = null;
+  const posted = [];
+  const port = {
+    onMessage: { addListener(listener) { messageListener = listener; } },
+    onDisconnect: { addListener() {} },
+    postMessage(req) { posted.push(req); },
+  };
+  const client = new NativeClient({ connectNative: () => port });
+  await client.connect();
+  const createRequest = (type, idempotencyKey, payload) => ({
+    protocolVersion: 1,
+    requestId: crypto.randomUUID(),
+    idempotencyKey,
+    type,
+    payload,
+  });
+
+  const pending = client.activate(createRequest);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "app.activate");
+  assert.ok(
+    posted[0].idempotencyKey.startsWith("activate:"),
+    "app.activate 使用独立的幂等键前缀，区别于 ping",
+  );
+
+  messageListener({
+    protocolVersion: 1,
+    requestId: posted[0].requestId,
+    status: "ok",
+    type: "app.activated",
+    payload: { appVersion: "1.0.0" },
+  });
+
+  const response = await pending;
+  assert.equal(response.type, "app.activated");
 });

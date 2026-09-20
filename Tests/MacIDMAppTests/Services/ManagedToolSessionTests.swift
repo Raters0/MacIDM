@@ -4,7 +4,7 @@ import XCTest
 @testable import MacIDMApp
 
 /// Process-group lifecycle tests for the shared yt-dlp wrapper
-/// (docs/AI交接.md §3): the dedicated group must cover TERM-resistant
+/// (technical-spec §3.4): the dedicated group must cover TERM-resistant
 /// survivors, grace-period newcomers and output-channel holders, and settle
 /// budget exhaustion must surface as a diagnosable failure.
 final class ManagedToolSessionTests: XCTestCase {

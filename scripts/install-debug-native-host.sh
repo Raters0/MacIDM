@@ -57,6 +57,11 @@ fi
 # installed).
 default_browser_dirs=(
     "$HOME/Library/Application Support/Google/Chrome"
+    # ego lite reads both its user-level directory and the profile directory.
+    # Registering only the profile one leaves a stale user-level manifest (for
+    # example one still pointing at the removed legacy "MacIDM Debug.app") able
+    # to shadow the current host, so both are refreshed on every install.
+    "$HOME/Library/Application Support/Citro Labs/ego lite"
     "$HOME/Library/Application Support/Citro Labs/ego lite/Default"
     "$HOME/Library/Application Support/Chromium"
     "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"

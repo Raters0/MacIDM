@@ -10,6 +10,22 @@
   const MIN_ELEMENT_WIDTH = 220;
   const MIN_ELEMENT_HEIGHT = 120;
   const Z_INDEX = "2147483646";
+  // Hover-autoplay card bounds for the persistent-FAB heuristic: a stable
+  // cover container in this size range whose transient <video> comes and goes
+  // with pointer hover keeps its FAB pinned to the card after preview stops.
+  const MIN_CARD_WIDTH = 200;
+  const MAX_CARD_WIDTH = 700;
+  const MIN_CARD_HEIGHT = 150;
+  const MAX_CARD_HEIGHT = 500;
+  // Cap with LRU eviction: when full, unpinning the oldest persistent FAB
+  // (not refusing the new pin) keeps fresh hover previews reachable.
+  const MAX_PERSISTENT = 12;
+  // Empty-candidate grace: SPA episode switches and sniffing restarts
+  // transiently publish zero candidates. Unmounting FABs immediately makes
+  // them vanish until re-sniffing catches up (and miss permanently when the
+  // reload is served from cache); a connected element survives the window,
+  // only sustained emptiness unmounts it.
+  const EMPTY_CANDIDATES_GRACE_MS = 10_000;
 
   // i18n core + locale catalogs load before this script (manifest order).
   // The indirection keeps the overlay functional even if the global is
@@ -19,11 +35,12 @@
   }
 
   let pageTitle = "";
+  let pageTitleSource = "document";
   let candidates = [];
   let rawCandidates = [];
-  // Redacted filter counts for false-positive suppression (same snapshot
-  // source as the Popup); holds the three count keys.
-  let filteredSummary = { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 };
+  // Timestamp of the first sync that published an empty candidate list;
+  // 0 means "currently non-empty" (or freshly navigated).
+  let candidatesEmptySince = 0;
   let openPanelFor = null;
   let openPanelSignature = "";
   let syncScheduled = false;
@@ -34,7 +51,9 @@
   let tabTitleFetched = false;
   let lastSyncedPageURL = "";
   let lastSyncedVideoID = "";
-  // Page-session epoch (AI handover doc §3.3): incremented on a real page
+  // 当前打开的抖音详情弹窗 aweme_id：关闭时用它把 FAB 钉回对应小卡片。
+  let lastDouyinModalID = "";
+  // Page-session epoch (chrome-extension-spec §5.7/§5.8): incremented on a real page
   // transition; a late async tab-title reply whose epoch differs from the
   // one captured at request time is ignored entirely so it cannot pollute
   // the new page.
@@ -61,12 +80,17 @@
   // Inspection failures render as the red short text on the row (clicking
   // the row degrades to a direct download); keyed like inspectedVariants.
   const inspectionFailures = new Map(); // candidate url -> message
+  // Duration backfilled from inspected variants (Bilibili playurl, HLS
+  // sub-playlist total). Candidate objects are rebuilt on every sync, so
+  // this cache is what keeps the main-row duration slot filled across
+  // snapshots; keyed like inspectedVariants.
+  const inspectedDurations = new Map(); // candidate url -> seconds
   // In-flight inspections show "Parsing…" inside an expanded submenu.
   const inspectingUrls = new Set();
   // Candidate URL whose quality submenu is accordion-expanded (one at a
   // time); preserved across panel rebuilds triggered by fresh data.
   let openSubFor = null;
-  // YouTube shared-inspection snapshots (AI handover doc §5.1–5.2):
+  // YouTube shared-inspection snapshots (chrome-extension-spec §5.8):
   // candidate url -> snapshot. Shares the background coordinator's single
   // inspection and its stage state with the Popup.
   const youTubeInspections = new Map();
@@ -80,7 +104,7 @@
 
   const attachments = new Map(); // element -> { host, shadow, button }
 
-  // Unified YouTube page identity (AI handover doc §2): the primary key for
+  // Unified YouTube page identity (chrome-extension-spec §5.8): the primary key for
   // inspection snapshots, variant caches, auto-inspection dedupe and expand
   // state is the videoId, not the changeable full URL; non-YouTube
   // candidates keep using the original URL key. Normalization is only for
@@ -100,6 +124,7 @@
   function resetInspectionState() {
     autoInspectedUrls.clear();
     inspectedVariants.clear();
+    inspectedDurations.clear();
     inspectionFailures.clear();
     inspectingUrls.clear();
     youTubeInspections.clear();
@@ -196,8 +221,8 @@
     });
   }
 
-  /// The overlay's immediate defense against SPA navigation (AI handover
-  /// doc §5.1): the content script's transition snapshot has a 120 ms
+  /// The overlay's immediate defense against SPA navigation
+  /// (chrome-extension-spec §5.8): the content script's transition snapshot has a 120 ms
   /// notification debounce, so for the first few hundred ms after
   /// pushState the panel would keep its open state. The overlay itself can
   /// synchronously see `location.href`: DOM mutation callbacks compare the
@@ -223,6 +248,16 @@
     cachedTabTitle = "";
     closeAllPanels();
     resetInspectionState();
+    // 抖音详情弹窗关闭：弹窗播放器 FAB 随播放器卸载，而用户刚看完这条
+    // 视频——小卡片 FAB 不应要求重新 hover。对含该 aweme_id 的卡片合成
+    // 一次 hover，预览视频出现后走现有 attach→离开→persistent 链钉住。
+    const incomingDouyinModal = douyinModalIDOf(currentURL);
+    if (incomingDouyinModal) {
+      lastDouyinModalID = incomingDouyinModal;
+    } else if (lastDouyinModalID) {
+      pinDouyinCardForClosedModal(lastDouyinModalID);
+      lastDouyinModalID = "";
+    }
   }
 
   function install() {
@@ -275,10 +310,15 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["style", "class", "hidden", "width", "height"],
+      attributeFilter: ["style", "class", "id", "hidden", "width", "height", "src", "poster",
+        "data-src", "data-video", "data-url", "data-hls", "data-dash", "data-mp4"],
     });
+    global.addEventListener("loadedmetadata", scheduleSync, { capture: true });
+    global.addEventListener("emptied", scheduleSync, { capture: true });
     global.addEventListener("scroll", scheduleReposition, { passive: true, capture: true });
     global.addEventListener("resize", scheduleReposition, { passive: true });
+    document.addEventListener?.("fullscreenchange", scheduleSync);
+    global.addEventListener("playing", scheduleSync, { capture: true });
     scheduleSync();
   }
 
@@ -296,6 +336,15 @@
         Boolean(previousVideoId) && incomingVideoId === previousVideoId;
       lastSyncedPageURL = incomingURL;
       lastSyncedVideoID = incomingVideoId;
+      // 抖音弹窗关闭检测在 handleURLTransitionIfNeeded（MutationObserver 驱动，
+      // 实时性更好）；这里只补记录，避免两条路径遗漏切换。
+      const incomingDouyinModal = douyinModalIDOf(incomingURL);
+      if (incomingDouyinModal) {
+        lastDouyinModalID = incomingDouyinModal;
+      } else if (lastDouyinModalID) {
+        pinDouyinCardForClosedModal(lastDouyinModalID);
+        lastDouyinModalID = "";
+      }
       tabTitleFetched = false;
       cachedTabURL = "";
       cachedTabTitle = "";
@@ -303,7 +352,7 @@
       // differ, so re-query to refresh the header authorize entry.
       refreshCookiePermission();
       if (!sameYouTubeVideo) {
-        // Real page transition (AI handover doc §3.1): synchronously close
+        // Real page transition (chrome-extension-spec §5.8): synchronously close
         // every open panel before applying the new page's candidates and
         // refreshOpenPanel — the new page's panel must stay collapsed and
         // may only expand after the user clicks again on that page; it must
@@ -316,12 +365,32 @@
         // A→B discards the previous video's inspection snapshots and expand
         // state (§3.1/§5.1).
         resetInspectionState();
+        candidatesEmptySince = 0;
+        // Persistent hover-card FABs are NOT detached here: opening a modal
+        // over the feed hides them via isOccludedByModal (repositionAll), and
+        // closing the modal must restore them. Only a real page change
+        // unmounts their cover cards, which the identity/connectedness guards
+        // in persistentIdentityValid detect.
       }
     }
     pageTitle = String(snapshot?.title ?? "").slice(0, 300);
+    pageTitleSource = snapshot?.titleSource ?? "document";
     rawCandidates = Array.isArray(snapshot?.candidates) ? snapshot.candidates : [];
-    filteredSummary = readFilteredSummary(snapshot);
     candidates = coalesceCandidates(snapshot?.pageUrl || global.location?.href || "");
+    if (candidates.length > 0) {
+      candidatesEmptySince = 0;
+    } else if (candidatesEmptySince === 0) {
+      candidatesEmptySince = Date.now();
+    }
+    // Candidate objects are rebuilt on every sync: restore the duration a
+    // previous inspection backfilled so the main-row meta slot does not flap
+    // back to empty between snapshots.
+    for (const candidate of candidates) {
+      if (Number.isFinite(candidate?.duration) && candidate.duration > 0) continue;
+      const duration = inspectedDurations.get(candidateKey(candidate));
+      if (duration != null) candidate.duration = duration;
+    }
+    scheduleOverlayMetadataProbe(candidates);
     // Always fetch the tab title/URL from the background, even in the
     // top-level frame. The content script's location.href may differ from
     // the tab URL (SPA navigation, history.pushState) and cross-origin
@@ -337,24 +406,8 @@
   function coalesceCandidates(pageURL) {
     const coalescer = globalThis.MacIDMMediaUtils?.coalesceMediaCandidates;
     return typeof coalescer === "function"
-      ? coalescer(rawCandidates, pageTitle, pageURL)
+      ? coalescer(rawCandidates, pageTitleSource === "card" ? "" : pageTitle, pageURL)
       : rawCandidates;
-  }
-
-  // Redacted filter counts carried on the snapshot (technical-spec §8.4):
-  // invalid values are clamped to zero so page data cannot affect panel
-  // rendering.
-  function readFilteredSummary(snapshot) {
-    const raw = snapshot?.filteredSummary;
-    const count = (value) => {
-      const parsed = Number(value);
-      return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 0;
-    };
-    return {
-      diagnosticAudio: count(raw?.diagnosticAudio),
-      streamSegments: count(raw?.streamSegments),
-      smallResources: count(raw?.smallResources),
-    };
   }
 
   // ---- attachment lifecycle ----
@@ -383,20 +436,65 @@
       .slice(0, MAX_ATTACHMENTS);
     const keep = new Set(elements);
     for (const element of [...attachments.keys()]) {
-      if (!keep.has(element) || !isAttachable(element)) {
-        detach(element);
-        keep.delete(element);
+      const attachment = attachments.get(element);
+      if (keep.has(element) && isAttachable(element)) {
+        // Live element: refresh the scoped snapshot (used if hover removes the
+        // video) and resume live anchoring if it was persistent.
+        if (attachment) {
+          const card = findCardContainer(element);
+          const source = element.getAttribute?.("src") || element.currentSrc || "";
+          if (card !== attachment.cardContainer || source !== attachment.sourceSnapshot
+              || cardIdentity(card) !== attachment.cardIdentity) {
+            attachment.snapshotCandidates = [];
+            attachment.titleSnapshot = "";
+            attachment.cardContainer = card;
+            attachment.sourceSnapshot = source;
+            attachment.cardIdentity = cardIdentity(card);
+          }
+          attachment.persistent = false;
+          const scoped = scopeCandidatesForElement(element, candidates)
+            .filter((candidate) => candidate.supported !== false);
+          attachment.snapshotCandidates = scoped;
+          const liveTitle = displayTitleFor(element);
+          if (liveTitle) attachment.titleSnapshot = liveTitle;
+        }
+        continue;
       }
+      keep.delete(element);
+      // Hover-autoplay card: the transient <video> left but its stable cover
+      // card remains — keep the FAB pinned to the card so the user can still
+      // reach it after the preview stopped. An already-pinned attachment
+      // skips the entry gates: only the card's own disappearance, an identity
+      // change or a covering modal unpins it (repositionAll), so transient
+      // gate failures cannot make the pinned FAB flicker.
+      if (attachment?.persistent) continue;
+      if (enterPersistentMode(element, attachment)) continue;
+      // Empty-candidate grace: a still-connected element survives a transient
+      // zero-candidate window (episode switch, sniffing restart); only
+      // sustained emptiness beyond the grace unmounts it.
+      if (candidates.length === 0 && element.isConnected
+          && Date.now() - candidatesEmptySince < EMPTY_CANDIDATES_GRACE_MS) continue;
+      detach(element);
     }
     for (const element of elements) {
-      if (!attachments.has(element)) attach(element);
+      if (!attachments.has(element)) {
+        const card = findCardContainer(element);
+        // Hovering again creates a new video node. Replace the old card entry
+        // rather than leaving two buttons/panels at the same corner.
+        if (card) for (const [oldElement, old] of attachments) {
+          if (oldElement !== element && old.cardContainer === card) detach(oldElement);
+        }
+        attach(element);
+      }
     }
     repositionAll();
+    refreshOpenPanel();
   }
 
   function isAttachable(element) {
     if (!(element instanceof HTMLMediaElement)) return false;
-    if (candidates.length === 0) return false;
+    const scoped = scopeCandidatesForElement(element, candidates).some((candidate) => candidate.supported !== false);
+    if (!scoped || element.mediaKeys != null) return false;
     return findAnchorElement(element) != null;
   }
 
@@ -441,6 +539,334 @@
   function isElementVisible(element) {
     const style = global.getComputedStyle(element);
     return style.display !== "none" && style.visibility !== "hidden";
+  }
+
+  // Containment via parentElement walk so the rule works on real DOM nodes
+  // and on the unit-test shim alike.
+  function containsNode(root, node) {
+    for (let current = node; current; current = current.parentElement) {
+      if (current === root) return true;
+    }
+    return false;
+  }
+
+  // Site lightboxes keep the underlying page mounted: covered media stays
+  // connected, computed-visible and geometrically on-screen, so geometry-only
+  // visibility leaves stale FABs floating above the modal (x.com media
+  // viewer). Walk the hit stack at the anchor center top-down: reaching a
+  // fixed viewport-covering layer that does not contain the anchor before
+  // the anchor's own paint means a modal scrim/content paints above it.
+  // In-card click catchers and player chrome sit above the anchor but are
+  // reached after nothing modal — the anchor proxy comes first — and fixed
+  // full-page app shells contain every anchor, so both stay unoccluded.
+  function isOccludedByModal(anchor) {
+    if (typeof document.elementsFromPoint !== "function") return false;
+    const rect = anchor.getBoundingClientRect?.();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const viewW = global.innerWidth || 0;
+    const viewH = global.innerHeight || 0;
+    if (viewW <= 0 || viewH <= 0) return false;
+    const cx = Math.min(Math.max(rect.left + rect.width / 2, 0), viewW - 1);
+    const cy = Math.min(Math.max(rect.top + rect.height / 2, 0), viewH - 1);
+    let stack = null;
+    try {
+      stack = document.elementsFromPoint(cx, cy);
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(stack) || stack.length === 0) return false;
+    const isAnchorPaint = (element) => element === anchor || containsNode(element, anchor);
+    for (const element of stack) {
+      if (isAnchorPaint(element)) return false;
+      if (typeof element.getBoundingClientRect !== "function") continue;
+      const style = global.getComputedStyle(element);
+      if (style.position !== "fixed" || style.display === "none" || style.visibility === "hidden") continue;
+      const box = element.getBoundingClientRect();
+      if (box.width < viewW * 0.9 || box.height < viewH * 0.9) continue;
+      if (containsNode(element, anchor)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  // positionHost parks the button just inside the anchor's right edge; an
+  // anchor whose right edge lies far outside the viewport (a carousel row
+  // that pre-mounts the next slide off-screen) would park the FAB where no
+  // one can reach it, so hide the host instead.
+  function fabBoxInView(rect) {
+    const viewW = global.innerWidth || 0;
+    if (viewW <= 0) return true;
+    return rect.right - 6 > 0 && rect.right - 34 < viewW;
+  }
+
+  // Modal players can be laid out wider than the viewport (Douyin's modal
+  // video box overflows both edges while the visible picture is letterboxed
+  // inside it). Such an anchor covers the whole viewport: hiding its FAB as
+  // "off-screen" would remove the button from the only player on the page,
+  // so the placement clamps to the viewport edge instead.
+  function anchorCoversViewport(rect) {
+    const viewW = global.innerWidth || 0;
+    if (viewW <= 0) return false;
+    return rect.left <= 0 && rect.right >= viewW && rect.width >= viewW;
+  }
+
+  function douyinModalIDOf(rawURL) {
+    try {
+      const url = new URL(String(rawURL ?? ""), "https://www.douyin.com/");
+      if (!/(^|\.)douyin\.com$/iu.test(url.hostname)) return "";
+      return url.searchParams.get("modal_id") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  // 抖音精选卡片 DOM 内嵌 aweme_id（链接/埋点属性），用它定位刚看过
+  // 的那张卡。
+  function findDouyinCardByAwemeID(awemeID) {
+    if (!awemeID) return null;
+    for (const card of document.querySelectorAll(
+      ".jingxuanVideoCard, .waterfall-videoCardContainer, [data-e2e='waterfall-item']",
+    )) {
+      try {
+        if (card.outerHTML && card.outerHTML.includes(awemeID)) return card;
+      } catch {
+        // outerHTML 不可用（测试 shim）：回退 textContent。
+        if (card.textContent && card.textContent.includes(awemeID)) return card;
+      }
+    }
+    return null;
+  }
+
+  // 合成 hover：mouseover/enter 触发页面预览自动播放；预览视频出现并被
+  // overlay 附着后合成 mouseout/leave——视频卸载走 enterPersistentMode
+  // 钉住 FAB。5 秒内预览未出现则放弃（普通 hover 路径仍可用）。
+  function pinDouyinCardForClosedModal(awemeID) {
+    const card = findDouyinCardByAwemeID(awemeID);
+    if (!card || typeof card.dispatchEvent !== "function") return;
+    const fire = (type, bubbles) => {
+      try {
+        card.dispatchEvent(new MouseEvent(type, { bubbles, cancelable: true, view: global }));
+      } catch {
+        // 合成事件失败不阻塞主流程。
+      }
+    };
+    fire("mouseover", true);
+    fire("mouseenter", false);
+    const deadline = Date.now() + 5000;
+    const tick = () => {
+      const video = card.querySelector?.("video");
+      if (video && attachments.has(video)) {
+        fire("mouseout", true);
+        fire("mouseleave", false);
+        return;
+      }
+      if (Date.now() < deadline) {
+        global.setTimeout?.(tick, 250);
+      } else if (video) {
+        // 预览已出现但尚未附着（候选未到位）：仍合成离开，后续的
+        // hover 循环会重新触发附着。
+        fire("mouseout", true);
+        fire("mouseleave", false);
+      }
+    };
+    global.setTimeout?.(tick, 250);
+  }
+
+  // A cover card container is a bounded, visible ancestor that carries a
+  // persistent cover (an <img> thumbnail or a CSS background image). Hover-
+  // autoplay feeds mount a transient <video> inside it; the container outlives
+  // the video, so it is a stable anchor for a persistent FAB.
+  function hasCoverImage(container) {
+    if (container.querySelector("img")) return true;
+    try {
+      const bg = global.getComputedStyle(container).backgroundImage;
+      if (bg && bg !== "none") return true;
+    } catch {
+      // Ignore style read failures; fall through to false.
+    }
+    return false;
+  }
+
+  function cardIdentity(card) {
+    const image = card?.querySelector?.("img");
+    return image ? `${image.getAttribute("src") || ""}|${image.getAttribute("alt") || ""}` : "";
+  }
+
+  function findCardContainer(element) {
+    // The image box is stable while Douyin mounts/removes its preview shell.
+    // Its hashed inner wrappers can change size during player startup.
+    const siteCard = element.closest?.(".jingxuanVideoCard, .waterfall-videoCardContainer");
+    const cover = siteCard?.querySelector?.(".videoImage");
+    if (cover) return cover;
+    let ancestor = element.parentElement;
+    for (let depth = 0; ancestor && depth < 6; depth += 1) {
+      if (isElementVisible(ancestor)) {
+        const box = ancestor.getBoundingClientRect?.();
+        if (box) {
+          const inRange =
+            box.width >= MIN_CARD_WIDTH && box.width <= MAX_CARD_WIDTH &&
+            box.height >= MIN_CARD_HEIGHT && box.height <= MAX_CARD_HEIGHT;
+          if (inRange && hasCoverImage(ancestor)) return ancestor;
+        }
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return null;
+  }
+
+  function countPersistent() {
+    let n = 0;
+    for (const [, attachment] of attachments) if (attachment.persistent) n += 1;
+    return n;
+  }
+
+  // Switch a detached-by-hover attachment to persistent mode: pin the FAB to
+  // the stable cover card and keep the last scoped candidate snapshot so the
+  // panel still has content after the preview video was removed.
+  function enterPersistentMode(element, attachment) {
+    if (!attachment) return false;
+    const card = attachment.cardContainer;
+    const liveSource = element.getAttribute?.("src") || element.currentSrc || "";
+    // Hover teardown often empties a still-connected video before removing it.
+    // An empty source is not evidence of a different video in the same card.
+    if (element.isConnected && ((liveSource && liveSource !== attachment.sourceSnapshot)
+        || !containsNode(card, element))) return false;
+    if (!card || !card.isConnected || !isElementVisible(card)) return false;
+    const box = card.getBoundingClientRect();
+    const semanticCard = card.closest?.(".jingxuanVideoCard, .waterfall-videoCardContainer");
+    if (box.width < MIN_CARD_WIDTH || (!semanticCard && box.width > MAX_CARD_WIDTH)) return false;
+    if (box.height < MIN_CARD_HEIGHT || (!semanticCard && box.height > MAX_CARD_HEIGHT)) return false;
+    // A site modal covering the card is not a finished hover preview: a
+    // persistent FAB pinned here would float above the modal.
+    if (isOccludedByModal(card)) return false;
+    if (!attachment.snapshotCandidates?.length || cardIdentity(card) !== attachment.cardIdentity) return false;
+    if (countPersistent() >= MAX_PERSISTENT) {
+      // LRU eviction: unpin the oldest persistent FAB so this fresh hover
+      // preview can still pin its card (refusing the pin would leave the
+      // newest hovered card without any button).
+      let oldest = null;
+      for (const [oldElement, old] of attachments) {
+        if (oldElement === element || !old.persistent) continue;
+        if (!oldest || old.persistentSince < oldest[1].persistentSince) oldest = [oldElement, old];
+      }
+      if (!oldest) return false;
+      detach(oldest[0]);
+    }
+    attachment.persistent = true;
+    attachment.persistentSince = Date.now();
+    return true;
+  }
+
+  // Scoped candidates for the panel: a persistent (hover-away) attachment uses
+  // its retained snapshot because the live element is gone; a live attachment
+  // uses the real-time element scope.
+  function persistentIdentityValid(element, attachment) {
+    const card = attachment.cardContainer;
+    return card?.isConnected && cardIdentity(card) === attachment.cardIdentity
+      && (!element.isConnected || (containsNode(card, element)
+        && (!(element.getAttribute?.("src") || element.currentSrc)
+          || (element.getAttribute?.("src") || element.currentSrc) === attachment.sourceSnapshot)));
+  }
+
+  function scopedCandidatesForElement(element) {
+    const attachment = attachments.get(element);
+    if (attachment?.persistent) {
+      if (!persistentIdentityValid(element, attachment)) return [];
+      if (Array.isArray(attachment.snapshotCandidates) && attachment.snapshotCandidates.length > 0) {
+        return attachment.snapshotCandidates.filter((candidate) => candidate.supported !== false);
+      }
+      return [];
+    }
+    return scopeCandidatesForElement(element, candidates);
+  }
+
+  // ---- real-media metadata probe (duration/resolution/codec) ----
+  const metadataProbeAttempted = new Set();
+  let panelMetadataController = null;
+  global.addEventListener?.("pagehide", () => metadataProbeAttempted.clear());
+  function probeMetaFor(candidate) {
+    return globalThis.MacIDMMediaMetadataProbe?.cached?.(candidate?.url) ?? null;
+  }
+  function probeFingerprintFor(candidate) {
+    const meta = probeMetaFor(candidate);
+    if (!meta) return "";
+    return `${meta.duration ?? ""}|${meta.width ?? ""}|${meta.height ?? ""}|${meta.codec ?? ""}`;
+  }
+  // Probe candidates that lack authoritative metadata; when results land,
+  // refresh the open panel so its meta rows pick up duration/resolution/codec.
+  function scheduleOverlayMetadataProbe(list, priority = "background", signal) {
+    const probe = globalThis.MacIDMMediaMetadataProbe;
+    if (!probe?.probeCandidates) return;
+    const targets = (Array.isArray(list) ? list : [])
+      .filter((c) => probe.needsProbe?.(c) && (priority === "interactive" || !metadataProbeAttempted.has(c.url)));
+    if (targets.length === 0) return;
+    for (const c of targets) {
+      metadataProbeAttempted.add(c.url);
+      if (metadataProbeAttempted.size > 200) metadataProbeAttempted.delete(metadataProbeAttempted.values().next().value);
+    }
+    global.setTimeout(() => {
+      probe.probeCandidates(targets, { priority, signal, onResult(result) {
+        if (result?.meta) refreshOpenPanel(true);
+      } })
+        .catch(() => {});
+    }, 150);
+  }
+
+  // Shared FAB placement: top-right outside the anchor rect (unchanged
+  // policy), clamped to the viewport edge for anchors that overflow it.
+  function positionHost(attachment, rect, anchor) {
+    const scrollX = global.scrollX || document.documentElement.scrollLeft || 0;
+    const scrollY = global.scrollY || document.documentElement.scrollTop || 0;
+    const viewW = global.innerWidth || 0;
+    const rightEdge = anchorCoversViewport(rect) && viewW > 0
+      ? Math.min(rect.left + rect.width, viewW + 6)
+      : rect.left + rect.width;
+    attachment.host.style.left = `${rightEdge + scrollX}px`;
+    // Prefer above the element; fall back to inside top-right when there
+    // is not enough room above (e.g. video flush with the iframe top, or a
+    // fixed site header owning the outside band — Douyin detail).
+    if (hasOutsideRoom(anchor, rect)) {
+      attachment.host.style.top = `${rect.top + scrollY - 32}px`;
+    } else {
+      attachment.host.style.top = `${rect.top + scrollY + 6}px`;
+    }
+  }
+
+  // Generic outside-room probe: the 32px band above the anchor's top-right
+  // must be free or held by ordinary flow content. A fixed/sticky page
+  // chrome (site header/nav) owning that band means an outside FAB would
+  // float over unrelated UI, so placement falls back inside the anchor.
+  // Static flow content (title blocks, previous grid rows) still counts as
+  // room — the button painting above it is the unchanged policy.
+  function hasOutsideRoom(anchor, rect) {
+    if (rect.top < 32) return false;
+    if (typeof document.elementsFromPoint !== "function") return true;
+    const viewW = global.innerWidth || 0;
+    const viewH = global.innerHeight || 0;
+    if (viewW <= 0 || viewH <= 0) return true;
+    const x = Math.min(Math.max(rect.right - 20, 0), viewW - 1);
+    // Sample the intended FAB box (top edge and center): a header whose
+    // bottom edge cuts into the box still owns part of it.
+    for (const y of [rect.top - 26, rect.top - 16]) {
+      let stack = null;
+      try {
+        stack = document.elementsFromPoint(x, y);
+      } catch {
+        return true;
+      }
+      if (!Array.isArray(stack) || stack.length === 0) continue;
+      const top = stack[0];
+      if (!top || top === document.body || top === document.documentElement) continue;
+      if (top === anchor || containsNode(top, anchor) || containsNode(anchor, top)) continue;
+      const style = global.getComputedStyle(top);
+      // Full-bleed bands pinned to the viewport top are site headers even
+      // when static; column-width flow content (title blocks, grid rows)
+      // still counts as room.
+      const box = top.getBoundingClientRect?.();
+      const fullBleedTop = Boolean(box) && viewW > 0 && box.width >= viewW * 0.9 && box.top <= 4;
+      if (style.position === "fixed" || style.position === "sticky" || fullBleedTop) return false;
+    }
+    return true;
   }
 
   function attach(element) {
@@ -532,7 +958,7 @@
           font-weight: 600; color: light-dark(#111318, #fff);
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        /* Expanded candidate full title (AI handover doc §5.5): .item.open
+        /* Expanded candidate full title (chrome-extension-spec §5.8): .item.open
            switches to full multi-line wrapping. The panel already has a
            340px max height with internal scrolling, so long titles only add
            content height. */
@@ -611,7 +1037,22 @@
       togglePanel(element, shadow, button);
     }, true);
     document.documentElement.appendChild(host);
-    attachments.set(element, { host, shadow, button });
+    attachments.set(element, {
+      host,
+      shadow,
+      button,
+      // Stable cover-card container for hover-autoplay cards (persistent FAB).
+      cardContainer: findCardContainer(element),
+      persistent: false,
+      persistentSince: 0,
+      snapshotCandidates: scopeCandidatesForElement(element, candidates).filter(c => c.supported !== false),
+      sourceSnapshot: element.getAttribute?.("src") || element.currentSrc || "",
+      cardIdentity: cardIdentity(findCardContainer(element)),
+      // Panel title cached while the element is live: a detached hover
+      // preview has no ancestor chain left, and re-resolving proximity then
+      // would leak another card's caption into the persistent panel.
+      titleSnapshot: displayTitleFor(element),
+    });
   }
 
   function detach(element) {
@@ -629,34 +1070,50 @@
 
   function repositionAll() {
     for (const [element, attachment] of attachments) {
-      if (!element.isConnected || candidates.length === 0) {
+      // Persistent (hover-card) FABs: anchored to the stable cover container.
+      // No TTL: they live as long as the card (identity + connectedness guards),
+      // are hidden while a modal covers them, and the oldest is LRU-evicted
+      // once MAX_PERSISTENT pins exist.
+      if (attachment.persistent) {
+        const card = attachment.cardContainer;
+        if (!persistentIdentityValid(element, attachment)) {
+          detach(element);
+          continue;
+        }
+        const box = card.getBoundingClientRect();
+        const cardVisible = box.bottom > 0 && box.top < global.innerHeight && box.width >= MIN_CARD_WIDTH;
+        if (!cardVisible || isOccludedByModal(card)) {
+          attachment.host.style.display = "none";
+          continue;
+        }
+        positionHost(attachment, box, card);
+        attachment.host.style.display = "";
+        continue;
+      }
+      // Never detach on an empty candidate window here: a transient
+      // candidates === [] (SPA episode switch, sniffing restart) must not
+      // remove the FAB; syncAttachments' isAttachable gate is the single
+      // place that unmounts unscoped live elements.
+      if (!element.isConnected) {
         detach(element);
         continue;
       }
-      // Anchor to the media element itself, or to its visible player
-      // container while a cover hides the element (findAnchorElement).
-      // A missing anchor only hides the host instead of detaching it:
-      // scroll events do not re-run syncAttachments, so detaching here
-      // would leave the fab gone forever after scrolling the video back
-      // into view.
-      const anchor = findAnchorElement(element);
+      // A hover card's cover container outlives the transient preview video
+      // and carries no hover-scale transform: placing on it keeps the FAB at
+      // the same card corner in live and persistent modes, so mounting or
+      // removing the preview video never makes the button jump.
+      const card = attachment.cardContainer;
+      const stable = card && card.isConnected && isElementVisible(card) ? card : null;
+      const anchor = stable ?? findAnchorElement(element);
       if (!anchor) {
         attachment.host.style.display = "none";
         continue;
       }
       const rect = anchor.getBoundingClientRect();
-      const scrollX = global.scrollX || document.documentElement.scrollLeft;
-      const scrollY = global.scrollY || document.documentElement.scrollTop;
-      attachment.host.style.left = `${rect.left + scrollX + rect.width}px`;
-      // Prefer above the element; fall back to inside top-right when there
-      // is not enough room above (e.g. video flush with the iframe top).
-      if (rect.top >= 32) {
-        attachment.host.style.top = `${rect.top + scrollY - 32}px`;
-      } else {
-        attachment.host.style.top = `${rect.top + scrollY + 6}px`;
-      }
+      positionHost(attachment, rect, anchor);
       const visible =
-        rect.bottom > 0 && rect.top < global.innerHeight && rect.width >= MIN_ELEMENT_WIDTH;
+        rect.bottom > 0 && rect.top < global.innerHeight && rect.width >= MIN_ELEMENT_WIDTH
+        && (anchorCoversViewport(rect) || fabBoxInView(rect)) && !isOccludedByModal(anchor);
       attachment.host.style.display = visible ? "" : "none";
     }
   }
@@ -694,47 +1151,14 @@
     }
   }
 
-  // ---- element scope (scoped model) ----
+  // ---- element scope ----
 
-  // The anchor media element's own resource URLs: src/currentSrc, the
-  // poster cover and child <source> elements (fragment stripped;
-  // blob:/mse: placeholders kept as-is). The poster is an element
-  // attribute and 100% attributable — image-host domains cannot
-  // distinguish covers from recommended thumbnails, but the attribute can.
-  function elementOwnURLs(element) {
-    const urls = new Set();
-    const add = (raw) => {
-      if (!raw) return;
-      const str = String(raw);
-      if (/^(?:blob:|mse:)/iu.test(str)) {
-        urls.add(str);
-        return;
-      }
-      try {
-        const url = new URL(str, global.location?.href);
-        if (url.protocol === "http:" || url.protocol === "https:") {
-          url.hash = "";
-          urls.add(url.href);
-        }
-      } catch {}
-    };
-    try {
-      add(element.currentSrc || element.getAttribute("src"));
-      add(element.getAttribute("poster"));
-      for (const source of element.querySelectorAll("source")) {
-        add(source.getAttribute("src"));
-      }
-    } catch {}
-    return urls;
-  }
-
-  // The overlay only shows candidates within the anchor element's scope
-  // (rules in media-utils.filterCandidatesForElementScope); page-level
-  // resources belong to the whole-page scope and are shown by the Popup.
   function scopeCandidatesForElement(element, list) {
-    const filter = globalThis.MacIDMMediaUtils?.filterCandidatesForElementScope;
-    if (typeof filter !== "function") return list;
-    return filter(list, elementOwnURLs(element));
+    const filter = globalThis.MacIDMMediaElementScope?.filterCandidates;
+    // Dependency failure must never expand a local panel to page scope.
+    return typeof filter === "function"
+      ? filter(element, list, global.location?.href)
+      : [];
   }
 
   // ---- panel ----
@@ -758,6 +1182,8 @@
   function togglePanel(element, shadow, button) {
     const existing = shadow.querySelector(".panel");
     if (existing) {
+      panelMetadataController?.abort();
+      panelMetadataController = null;
       // The thumb is mounted on .wrap and does not disappear with
       // panel.remove(); detach it first.
       detachPanelScrollbar();
@@ -770,10 +1196,15 @@
       return;
     }
     closeAllPanels();
+    panelMetadataController = global.AbortController ? new global.AbortController() : null;
+    scheduleOverlayMetadataProbe(scopedCandidatesForElement(element), "interactive", panelMetadataController?.signal);
     const panel = buildPanel(element, shadow, button);
     // Narrow anchors: cap the adaptive panel width at the anchor width
     // minus the side gutters so it never spills past the player edge.
-    const anchor = findAnchorElement(element);
+    const attachmentForWidth = attachments.get(element);
+    const anchor = attachmentForWidth?.persistent
+      ? attachmentForWidth.cardContainer
+      : findAnchorElement(element);
     if (anchor) {
       const anchorWidth = Math.floor(anchor.getBoundingClientRect().width);
       if (anchorWidth - 16 < 500) {
@@ -791,6 +1222,8 @@
   }
 
   function closeAllPanels() {
+    panelMetadataController?.abort();
+    panelMetadataController = null;
     detachPanelScrollbar();
     for (const [, attachment] of attachments) {
       attachment.shadow.querySelector(".panel")?.remove();
@@ -808,22 +1241,26 @@
   function panelSignature() {
     return JSON.stringify([
       pageTitle,
+      openPanelFor ? displayTitleFor(openPanelFor) : "",
       // The element's own resources (currentSrc/poster may change with
       // playback/stream switches) take part in the signature: when
       // candidates are unchanged but ownURLs differ the panel must still
       // refresh, or the scope-filtered results go stale.
-      openPanelFor ? [...elementOwnURLs(openPanelFor)].sort() : [],
+      openPanelFor ? scopedCandidatesForElement(openPanelFor).map((candidate) => candidate.url) : [],
       candidates.map((candidate) => [
         candidate.url,
         candidate.size ?? null,
         candidate.supported !== false,
         candidate.displayName ?? "",
+        candidate.cardTitle ?? "",
+        candidate.pairKind ?? "",
+        candidate.fileExtension ?? "",
         Array.isArray(candidate.variants) ? candidate.variants.length : 0,
         inspectionFailures.get(candidateKey(candidate)) ?? "",
         youTubeInspections.get(candidateKey(candidate))?.stage ?? "",
         youTubeInspections.get(candidateKey(candidate))?.variantCount ?? 0,
+        probeFingerprintFor(candidate),
       ]),
-      filteredSummary,
     ]);
   }
 
@@ -873,7 +1310,7 @@
     // element's scope (the element's own resources + video/audio candidates
     // attributable to the player); page-level images etc. belong to the
     // whole-page scope and are only shown in the Popup.
-    const scoped = scopeCandidatesForElement(element, candidates)
+    const scoped = scopedCandidatesForElement(element)
       .filter((candidate) => candidate.supported !== false);
     const supported = globalThis.MacIDMMediaUtils?.sortCandidatesForDisplay
       ? globalThis.MacIDMMediaUtils.sortCandidatesForDisplay(scoped)
@@ -952,40 +1389,28 @@
       empty.className = "item static";
       empty.textContent = t("overlay.listening");
       panel.append(empty);
-      appendFilteredNote(panel);
       return panel;
     }
 
     for (const candidate of supported.slice(0, 20)) {
-      panel.append(buildItem(candidate));
+      panel.append(buildItem(candidate, element));
     }
-    appendFilteredNote(panel);
     // The overlay scrollbar is not mounted here: at this point the panel
     // is not yet inserted into the shadow DOM, so attach must be performed
     // by the caller (togglePanel / refreshOpenPanel) after insertion.
     return panel;
   }
 
-  // "Filtered N suspected noise candidates": explainable feedback for
-  // false-positive suppression, containing only redacted counts
-  // (diagnosticAudio + streamSegments + smallResources) and no URLs.
-  function appendFilteredNote(panel) {
-    const filteredTotal = filteredSummary.diagnosticAudio + filteredSummary.streamSegments + filteredSummary.smallResources;
-    if (filteredTotal <= 0) return;
-    const note = document.createElement("div");
-    note.className = "item static filtered-note";
-    note.setAttribute("data-macidm-filtered-note", "");
-    note.textContent = t("common.filteredNoise", { count: filteredTotal });
-    panel.append(note);
-  }
-
-  function buildItem(candidate) {
+  function buildItem(candidate, element = openPanelFor) {
     const item = document.createElement("div");
     item.className = "item";
     item.setAttribute("data-macidm-item", "");
     item.setAttribute("data-macidm-item-url", candidate.url || "");
     item.setAttribute("data-macidm-item-format", candidate.format || "");
     item.setAttribute("data-macidm-item-site", candidate.siteAdapter || "");
+    // Pair provenance is observable for automation/acceptance probes: a
+    // merged split-stream row must be distinguishable from a lone stream.
+    item.setAttribute("data-macidm-item-pair", candidate.pairKind || "");
     item.setAttribute("data-macidm-item-status", "idle");
 
     // Cached inspection results are attached before any slot reads the
@@ -1005,6 +1430,11 @@
     if (Array.isArray(ytSnapshot?.variants) && ytSnapshot.variants.length > 0) {
       candidate.variants = ytSnapshot.variants;
       inspectedVariants.set(stateKey, ytSnapshot.variants);
+      const ytDuration = firstVariantDuration(ytSnapshot.variants);
+      if (ytDuration != null) {
+        candidate.duration ??= ytDuration;
+        inspectedDurations.set(stateKey, ytDuration);
+      }
     }
 
     // Inspection state computed up front: the main row's meta spinner and
@@ -1023,7 +1453,7 @@
     const name = document.createElement("div");
     name.className = "name";
     name.setAttribute("data-macidm-item-name", "");
-    const fullName = smartName(candidate);
+    const fullName = smartName(candidate, element);
     name.textContent = fullName;
     // Single-line ellipsis: the tooltip carries the full title plus the URL
     // (the dedicated source-link row was removed in v4).
@@ -1035,12 +1465,22 @@
     // shown, avoiding whole-row noise.
     const metaSlots = [formatLabel(candidate)];
     if (candidate.qualityLabel) metaSlots.push(candidate.qualityLabel);
+    // Real-media probe metadata (resolution/codec, duration below) fills gaps
+    // the URL cannot provide; never overrides an already-known value.
+    const probeMeta = probeMetaFor(candidate);
+    const probeHeight = probeMeta?.height || 0;
+    const resolutionSlot = (!candidate.qualityLabel && probeHeight)
+      ? (globalThis.MacIDMMediaUtils?.resolutionLabel?.(probeMeta?.width || 0, probeHeight) || "")
+      : "";
+    if (resolutionSlot) metaSlots.push(resolutionSlot);
     const sizeSlot = formatSize(candidate);
     if (![t("common.unknown"), t("common.sizeUnknown"), t("common.probing"), t("common.parsing")].includes(sizeSlot)) {
       metaSlots.push(sizeSlot);
     }
-    const durationSlot = formatDuration(candidate.duration);
+    const durationSlot = formatDuration(candidate.duration ?? probeMeta?.duration ?? null);
     if (durationSlot) metaSlots.push(durationSlot);
+    const codecSlot = globalThis.MacIDMMediaUtils?.codecFamily?.(probeMeta?.codec) || "";
+    if (codecSlot) metaSlots.push(codecSlot);
     // YouTube shared-inspection stage (§5.2): the collapsed main row shows
     // the stage text directly.
     if (ytSnapshot) {
@@ -1113,7 +1553,7 @@
     }
 
     const nodes = [item];
-    if (isOpen) nodes.push(buildSubmenu(candidate, item, submenuId, failureMessage));
+    if (isOpen) nodes.push(buildSubmenu(candidate, item, submenuId, failureMessage, element));
     const wrapper = document.createDocumentFragment();
     wrapper.append(...nodes);
     return wrapper;
@@ -1122,7 +1562,7 @@
   /// A single "download now" sub-item: candidates with no quality choice
   /// (direct links, failed inspections, single-quality streams) all submit
   /// to the App confirmation window through it.
-  function buildDownloadNowItem(candidate, itemEl) {
+  function buildDownloadNowItem(candidate, itemEl, element = openPanelFor) {
     const direct = document.createElement("button");
     direct.type = "button";
     direct.className = "sub-item";
@@ -1130,12 +1570,12 @@
     direct.textContent = t("overlay.downloadNow");
     direct.addEventListener("click", (event) => {
       event.stopPropagation();
-      submitDownload(candidate, null, itemEl);
+      submitDownload(candidate, null, itemEl, element);
     });
     return direct;
   }
 
-  function buildSubmenu(candidate, itemEl, submenuId, failureMessage) {
+  function buildSubmenu(candidate, itemEl, submenuId, failureMessage, element = openPanelFor) {
     const submenu = document.createElement("div");
     submenu.className = "submenu";
     submenu.setAttribute("data-macidm-submenu", "");
@@ -1148,14 +1588,14 @@
     // results keep growing in place; failures keep existing qualities plus
     // a retry.
     if (candidate.siteAdapter === "youtube") {
-      return renderYouTubeSubmenu(candidate, submenu, itemEl);
+      return renderYouTubeSubmenu(candidate, submenu, itemEl, element);
     }
     // Failed inspections no longer render blunt error copy (when
     // unauthorized the header already has the authorize entry; when logged
     // out it is handed to the Popup's site-session flow): the drawer simply
     // keeps the "download now" item.
     if (failureMessage) {
-      submenu.append(buildDownloadNowItem(candidate, itemEl));
+      submenu.append(buildDownloadNowItem(candidate, itemEl, element));
       return submenu;
     }
     // Branch for no variants: candidates needing parsing (HLS/DASH/
@@ -1173,7 +1613,7 @@
         submenu.append(parsing);
         return submenu;
       }
-      submenu.append(buildDownloadNowItem(candidate, itemEl));
+      submenu.append(buildDownloadNowItem(candidate, itemEl, element));
       return submenu;
     }
     const labeledVariants = candidate.variants
@@ -1183,7 +1623,7 @@
     if (labeledVariants.length === 0) {
       // Parsed but qualities indistinguishable: unify on the "download
       // now" sub-item.
-      submenu.append(buildDownloadNowItem(candidate, itemEl));
+      submenu.append(buildDownloadNowItem(candidate, itemEl, element));
       return submenu;
     }
     for (const { variant, label } of labeledVariants) {
@@ -1197,7 +1637,7 @@
       option.title = overlayVariantTooltip(variant);
       option.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const ok = await submitDownload(candidate, variant, itemEl);
+        const ok = await submitDownload(candidate, variant, itemEl, element);
         if (ok) {
           openSubFor = null;
           refreshOpenPanel(true);
@@ -1208,8 +1648,26 @@
     return submenu;
   }
 
+  // First positive duration across parsed variants: App inspections return
+  // a per-variant duration (Bilibili playurl, HLS sub-playlist total) and
+  // all variants of one asset share it, so the first hit is the asset's.
+  function firstVariantDuration(variants) {
+    for (const variant of Array.isArray(variants) ? variants : []) {
+      const value = variant?.duration;
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+    return null;
+  }
+
   function renderVariants(candidate, variants) {
     candidate.variants = variants;
+    // Backfill the main-row duration slot from the parsed variants (B站主行
+    // “时长”槽、HLS 行时长都从这里来); never overrides a known value.
+    const duration = firstVariantDuration(variants);
+    if (duration != null) {
+      candidate.duration ??= duration;
+      inspectedDurations.set(candidateKey(candidate), duration);
+    }
     // Persist the parsed outcome: candidate objects are rebuilt on every
     // syncCandidates call, and closing the panel destroys the rendered
     // DOM — the cache is the only place the result survives both.
@@ -1263,8 +1721,8 @@
     // completing instantly without going through App/yt-dlp; fall back to
     // the App inspection when page data is missing or the video ID does
     // not match. Shares the same resolution flow in youtube-format-utils.js
-    // with the Popup, keeping both quality lists identical (AI handover
-    // doc §5.1).
+    // with the Popup, keeping both quality lists identical
+    // (chrome-extension-spec §5.8).
     const isYouTube = candidate.siteAdapter === "youtube";
     try {
       const result = await globalThis.MacIDMYouTubeFormats.resolveYouTubeQualities({
@@ -1276,6 +1734,10 @@
           type: "media.inspect",
           tabId: cachedTabID || undefined,
           url: candidate.url,
+          // This panel only exists after the user clicked the media FAB, so
+          // the inspection is a user gesture: the Host may wake an App the
+          // user quit instead of answering with a launch timeout.
+          userInitiated: true,
           mediaKind: candidate.siteAdapter === "bilibili"
             ? "dash"
             : isYouTube
@@ -1353,7 +1815,7 @@
 
   /// YouTube submenu: partial results keep growing in place; failure/
   /// partial completion keeps existing qualities and appends a retry.
-  function renderYouTubeSubmenu(candidate, submenu, itemEl) {
+  function renderYouTubeSubmenu(candidate, submenu, itemEl, element = openPanelFor) {
     const snapshot = youTubeInspections.get(candidateKey(candidate));
     const variants = Array.isArray(snapshot?.variants) ? snapshot.variants : [];
     const labeledVariants = variants
@@ -1380,7 +1842,7 @@
       option.title = overlayVariantTooltip(variant);
       option.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const ok = await submitDownload(candidate, variant, itemEl);
+        const ok = await submitDownload(candidate, variant, itemEl, element);
         if (ok) {
           openSubFor = null;
           refreshOpenPanel(true);
@@ -1392,7 +1854,7 @@
       if (stage === "complete") {
         // Complete but indistinguishable: unify on the "download now"
         // sub-item.
-        submenu.append(buildDownloadNowItem(candidate, itemEl));
+        submenu.append(buildDownloadNowItem(candidate, itemEl, element));
         return submenu;
       }
       const parsing = document.createElement("div");
@@ -1417,7 +1879,7 @@
       // Failure/partial completion keeps existing qualities; with no
       // qualities the "download now" entry is still kept.
       if (labeledVariants.length === 0) {
-        submenu.append(buildDownloadNowItem(candidate, itemEl));
+        submenu.append(buildDownloadNowItem(candidate, itemEl, element));
       }
       const retry = document.createElement("button");
       retry.type = "button";
@@ -1515,7 +1977,7 @@
   // Returns true when the App accepted the submission. Feedback is a
   // top-center toast (shared/panel-ui.js) — the row only grays out for the
   // duration of the round-trip and keeps no "submitted" style state.
-  async function submitDownload(candidate, variant, itemEl) {
+  async function submitDownload(candidate, variant, itemEl, element = openPanelFor) {
     if (!itemEl || itemEl.classList.contains("busy")) return false;
     itemEl.classList.add("busy");
     itemEl.setAttribute("data-macidm-item-status", "submitting");
@@ -1531,7 +1993,11 @@
             : candidate.format,
         mime: variant?.mime ?? candidate.mime,
         filenameHint: variant?.filenameHint ?? candidate.filenameHint,
-        pageTitle: cleanedPageTitle(),
+        // Naming trust model (technical spec §8.1): tell the App whether the
+        // hint was synthesized from the page title or merely derived from the
+        // URL tail, so a URL-tail name never outranks the title on disk.
+        filenameHintSource: globalThis.MacIDMMediaUtils?.filenameHintSourceFor?.(candidate) ?? "urlPath",
+        pageTitle: displayTitleFor(element),
         pairVideoUrl: variant?.pairAudioUrl
           ? (variant?.pairVideoUrl ?? variant.url)
           : (variant?.pairVideoUrl ?? candidate.pairVideoUrl),
@@ -1583,18 +2049,42 @@
 
   // ---- naming / formatting ----
 
-  function smartName(candidate) {
+  // Per-attachment display title: the proximity-resolved title of the
+  // anchor element's own module (card/modal/player) so multi-card pages
+  // label rows with the hovered card's title instead of the page branding;
+  // falls back to the page-level resolver.
+  function displayTitleFor(element) {
+    const attachment = attachments.get(element);
+    // Persistent (or already-detached) hover-card attachment: reuse the
+    // title cached while the preview was live; its element can no longer
+    // resolve its own card module.
+    if (attachment?.titleSnapshot && (attachment.persistent || !element.isConnected)) {
+      return attachment.titleSnapshot;
+    }
+    if (element && globalThis.MacIDMMediaUtils?.resolveContentTitle) {
+      try {
+        const prox = globalThis.MacIDMMediaUtils.resolveContentTitle(document, element);
+        if (prox) return prox.slice(0, 120);
+      } catch {
+        // Fall through to the page-level title.
+      }
+    }
+    return cleanedPageTitle();
+  }
+
+  function smartName(candidate, element) {
     // Use the shared utility to keep naming consistent between Popup and
     // Overlay. Falls back to the local implementation if the shared module
     // is not loaded (e.g. in a cross-origin iframe before injection).
+    const base = displayTitleFor(element);
     if (globalThis.MacIDMMediaUtils?.smartMediaName) {
-      return globalThis.MacIDMMediaUtils.smartMediaName(candidate, cleanedPageTitle(), candidates.length);
+      return globalThis.MacIDMMediaUtils.smartMediaName(
+        candidate, base, candidates.length, global.location?.hostname ?? "");
     }
-    const base = cleanedPageTitle();
     const hint = String(candidate.filenameHint ?? "").trim();
     if (base) {
       if (hint && hint.toLowerCase().startsWith(base.toLowerCase())) return hint;
-      const generic = /^(index|master|playlist|media|video|audio|manifest)\b/i.test(hint);
+      const generic = /^(download|index|master|playlist|media|video|audio|manifest)\b/i.test(hint);
       return generic || candidates.length <= 1 ? base : `${base} · ${hint}`;
     }
     return hint || candidate.displayName || t("common.mediaResource");
@@ -1612,6 +2102,9 @@
       const resolved = globalThis.MacIDMMediaUtils.resolvePageTitle();
       if (resolved) return resolved.slice(0, 120);
     }
+    // 抖音 feed：SPA 不重置 document.title，残留的是上一个详情页的视频标题；
+    // og/meta/后台 tab title 同样残留 —— 页级标题整体不可信，回退通用名。
+    if (globalThis.MacIDMMediaUtils?.isDouyinFeedPage?.()) return "";
     const og =
       document.querySelector('meta[property="og:title"]')?.getAttribute("content") ||
       document.querySelector('meta[name="twitter:title"]')?.getAttribute("content") ||
@@ -1625,7 +2118,7 @@
     const extension = candidate ? candidate.fileExtension : value;
     if (candidate?.format === "hls") return t("common.formatHLS");
     if (candidate?.format === "dash") return t("common.formatDASH");
-    // YouTube product contract (AI handover doc §4.4): the final output is
+    // YouTube product contract (technical-spec §3.4): the final output is
     // uniformly MP4; a source variant's container (e.g. VP9's webm) is not
     // the final output container.
     if (candidate?.siteAdapter === "youtube") return "MP4";
@@ -1688,6 +2181,6 @@
     return globalThis.MacIDMMediaUtils?.formatDuration?.(seconds) ?? null;
   }
 
-  global.MacIDMOverlay = Object.freeze({ syncCandidates });
+  global.MacIDMOverlay = Object.freeze({ syncCandidates, refreshScope: scheduleSync });
   install();
 })(globalThis);
