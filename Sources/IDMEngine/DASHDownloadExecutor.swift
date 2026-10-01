@@ -81,6 +81,23 @@ extension DASHDownloadError: LocalizedError {
     }
 }
 
+extension DASHDownloadError {
+    /// Stable, persisted error code — the same contract as `IDMError.code`.
+    /// The App stores it on the task and maps it back to localized copy, so
+    /// these values are part of the on-disk state and must not be renamed
+    /// casually. Without them a DASH failure is indistinguishable from a
+    /// generic network error in the task list.
+    public var code: String {
+        switch self {
+        case .mergerUnavailable: "DASH_MERGER_UNAVAILABLE"
+        case .missingVideoRepresentation: "DASH_NO_VIDEO_TRACK"
+        case .invalidResponse: "DASH_INVALID_RESPONSE"
+        case .resumeCorrupt: "DASH_RESUME_CORRUPT"
+        case .resumeIncompatible: "DASH_RESUME_INCOMPATIBLE"
+        }
+    }
+}
+
 public struct DASHDownloadExecutor: Sendable {
     private let client: any HLSResourceClient
     private let parser: DASHParser

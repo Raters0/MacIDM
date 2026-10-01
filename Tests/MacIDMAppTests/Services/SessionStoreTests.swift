@@ -228,6 +228,38 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(secrets.values.isEmpty)
     }
 
+    // MARK: - Manual paste normalization
+
+    /// Beginners copy the whole DevTools line (`Cookie: a=1; b=2`); stored
+    /// verbatim it would replay as `Cookie: Cookie: …`. The manual entry point
+    /// strips the header name; the browser-capture path never sees one.
+    func testManualStoreStripsTheCookieHeaderNameFromWholeLineCopies() throws {
+        let (store, directory, secrets) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertEqual(
+            store.store(
+                domain: "example.com", cookie: "Cookie: sid=abc; theme=dark", userAgent: nil),
+            .stored)
+        XCTAssertEqual(secrets.values["example.com"], "sid=abc; theme=dark")
+        XCTAssertEqual(
+            httpsSession(store, host: "example.com").flatMap(store.cookieHeader(for:)),
+            "sid=abc; theme=dark")
+    }
+
+    func testPasteNormalizationCoversCaseSpacingAndFullWidthColon() {
+        XCTAssertEqual(SessionStore.normalizedPastedCookie("Cookie: sid=abc"), "sid=abc")
+        XCTAssertEqual(SessionStore.normalizedPastedCookie("cookie:sid=abc"), "sid=abc")
+        XCTAssertEqual(SessionStore.normalizedPastedCookie("COOKIE : sid=abc"), "sid=abc")
+        XCTAssertEqual(SessionStore.normalizedPastedCookie("  Cookie：sid=abc  "), "sid=abc")
+    }
+
+    func testPasteNormalizationKeepsValuesWithoutTheHeaderNameUnchanged() {
+        XCTAssertEqual(
+            SessionStore.normalizedPastedCookie("sid=abc; theme=dark"), "sid=abc; theme=dark")
+        XCTAssertEqual(SessionStore.normalizedPastedCookie("   "), "")
+    }
+
     // MARK: - Domain safety
 
     func testPublicSuffixAndIPLikeKeysAreRefused() throws {

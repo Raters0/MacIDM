@@ -115,12 +115,32 @@ final class SessionStore: ObservableObject {
     /// recorded while its credential was not accepted.
     @discardableResult
     func store(domain rawDomain: String, cookie: String, userAgent: String?) -> SessionStoreOutcome {
-        let trimmed = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = Self.normalizedPastedCookie(cookie)
         guard !trimmed.isEmpty else { return .emptyCookie }
         guard let domain = SessionDomainPolicy.sessionKey(forHost: rawDomain) else {
             return .rejectedDomain
         }
         return storeConfirmedHTTPS(domain: domain, cookie: trimmed, userAgent: userAgent)
+    }
+
+    /// Normalizes a manually pasted Cookie header. The paste sheet tells users
+    /// to copy the value after the colon, but beginners often copy the whole
+    /// DevTools line; stored verbatim it would replay as `Cookie: Cookie: …`
+    /// and fail. Strips one leading case-insensitive `cookie` + colon prefix
+    /// (ASCII or full-width) plus surrounding whitespace; a value pasted
+    /// without the prefix passes through unchanged. A hand-typed pair literally
+    /// named `cookie` is theoretically mangled, but the whole-line copy this
+    /// fixes is overwhelmingly more common.
+    static func normalizedPastedCookie(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let prefix = value.range(
+            of: "^cookie\\s*[:：]\\s*",
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            value = String(value[prefix.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value
     }
 
     /// Stores the session captured from a browser download. Only https sources

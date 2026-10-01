@@ -44,6 +44,27 @@ final class TaskLiveModelTests: XCTestCase {
         XCTAssertEqual(live.totalDuration, 137.4)
     }
 
+    /// 耗时列与 tooltip 是两个口径：净传输时长驱动列的值，端到端挂钟时长
+    /// 仍随快照推送（暂停后继续会让两者分叉，不得共用一个数）。
+    func testApplyMirrorsNetTransferDurationAndEndToEndWallClockSeparately() {
+        var task = makeTask()
+        let started = Date(timeIntervalSince1970: 10_000)
+        task.startedAt = started
+        task.updatedAt = started.addingTimeInterval(900)
+        task.activeTransferDuration = 120
+        let live = TaskLiveModel(task: task)
+
+        XCTAssertEqual(live.displayDuration, 120)
+        XCTAssertEqual(live.wallClockDuration, 900)
+
+        task.activeTransferDuration = 240
+        task.updatedAt = started.addingTimeInterval(1_000)
+        live.apply(task)
+
+        XCTAssertEqual(live.displayDuration, 240)
+        XCTAssertEqual(live.wallClockDuration, 1_000)
+    }
+
     func testApplyKeepsAverageSpeedNilUntilCompletionRecordsIt() {
         var task = makeTask()
         task.status = .running

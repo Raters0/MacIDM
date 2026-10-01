@@ -115,7 +115,7 @@
 "显示右侧详情栏" = "Show right detail panel";
 "隐藏右侧详情栏" = "Hide right detail panel";
 "显示或隐藏列表列" = "Show or hide table columns";
-"总耗时" = "Total time";
+"下载耗时" = "Download time";
 "添加下载" = "Add Download";
 "添加下载…" = "Add Download…";
 "暂停全部" = "Pause All";
@@ -614,6 +614,14 @@
 "服务器限流（HTTP 429）。请稍后重试，或降低并行请求数。" = "The server is rate-limiting (HTTP 429). Retry later or lower the parallel request count.";
 "服务器内部错误（HTTP %lld）。请稍后重试。" = "Server internal error (HTTP %lld). Please retry later.";
 "服务器返回错误（HTTP %lld）。请稍后重试。" = "The server returned an error (HTTP %lld). Please retry later.";
+"DASH 视频需要 ffmpeg 合并音视频轨。请安装 ffmpeg（如 brew install ffmpeg）后重启 MacIDM。" = "DASH videos need ffmpeg to merge the video and audio tracks. Install ffmpeg (e.g. brew install ffmpeg) and restart MacIDM.";
+"没有可用轨道" = "No usable track";
+"该 DASH 清单里没有可合并的视频或音频轨道，可能是加密或受限内容。" = "This DASH manifest has no mergeable video or audio track; it may be encrypted or restricted content.";
+"分片响应异常" = "Unexpected segment response";
+"服务器返回的分片内容与请求范围不符，请稍后重试或重新提交下载。" = "The segment the server returned does not match the requested range. Retry later or re-submit the download.";
+"DASH 断点记录与已下载分片不一致。点击「重试」将丢弃断点从头下载。" = "The DASH checkpoint no longer matches the downloaded segments. Click “Retry” to discard it and download from scratch.";
+"服务器上的资源已更新，旧分片无法继续拼接。请删除任务后重新下载。" = "The resource on the server was updated, so the old segments can no longer be stitched together. Remove the task and download again.";
+"保存位置重复" = "Duplicate destination";
 
 /* ---- Error analyzer diagnoses ---- */
 "用户主动操作" = "Intentional user action";
@@ -701,12 +709,22 @@
 "视频因版权主张被限制。" = "The video is restricted due to a copyright claim.";
 "该视频无法通过下载工具获取。" = "This video cannot be fetched by download tools.";
 "重新下载该任务；若反复失败说明源媒体已损坏。" = "Re-download the task; repeated failures mean the source media is broken.";
+"DASH 合并需要 ffmpeg，但当前没有可用工具链。" = "Merging DASH tracks needs ffmpeg, but no toolchain is available.";
+"DASH 媒体异常" = "DASH media problem";
+"重新提交该下载；若反复失败说明清单或分片本身有问题。" = "Re-submit the download; repeated failures mean the manifest or the segments themselves are broken.";
+"DASH 断点记录与磁盘上的临时分片不一致。" = "The DASH checkpoint does not match the temporary segments on disk.";
+"点击「重试」丢弃断点从头下载。" = "Click “Retry” to discard the checkpoint and download from scratch.";
+"服务器上的资源已更新，旧分片无法继续拼接。" = "The resource on the server was updated, so the old segments can no longer be stitched together.";
+"删除任务后重新下载。" = "Remove the task and download again.";
+"HLS 发布需要已配置且通过校验的 FFmpeg 工具链。" = "Publishing HLS output needs a configured and verified FFmpeg toolchain.";
+"在设置中配置 FFmpeg 工具链，或安装 ffmpeg 后重启应用。" = "Configure the FFmpeg toolchain in Settings, or install ffmpeg and restart the app.";
+"移除旧任务或为新任务选择其他文件名。" = "Remove the old task or pick a different filename for the new one.";
 
 /* ---- YouTube / Bilibili / site adapters ---- */
 "YouTube 下载需要已安装 yt-dlp（Debug 环境可执行 brew install yt-dlp）。" = "YouTube downloads require yt-dlp (in a Debug setup, run brew install yt-dlp).";
 "YouTube 下载请求无效。" = "The YouTube download request is invalid.";
 "YouTube 媒体提取失败；可尝试更新 yt-dlp 或稍后重试。" = "YouTube media extraction failed; try updating yt-dlp or retry later.";
-"YouTube 风控验证拦截了本次请求：请在浏览器中保持 YouTube 登录状态（下载组件会从 Chrome 读取登录 Cookie），稍后重试；若仍失败可尝试更新 yt-dlp。" = "YouTube's bot verification blocked this request: stay signed in to YouTube in the browser (the downloader reads login cookies from Chrome) and retry later; if it still fails, try updating yt-dlp.";
+"YouTube 风控验证拦截了本次请求：请在 Chrome 登录 YouTube 后，通过扩展面板授权 youtube.com 站点 Cookie 并重新提交下载（下载组件只使用你授权的会话，不读取浏览器本地 Cookie 数据库）；也可稍后重试或更新 yt-dlp。" = "YouTube's bot verification blocked this request: sign in to YouTube in Chrome, then grant youtube.com cookies in the MacIDM extension panel and re-submit the download (the downloader only uses the session you authorized and never reads Chrome's on-disk cookie database). Retrying later or updating yt-dlp can also help.";
 "YouTube 下载需要 JavaScript 运行时（Node.js 或 Deno）来解密视频签名。请安装 Node.js（brew install node）或 Deno（brew install deno）后重试。" = "YouTube downloads need a JavaScript runtime (Node.js or Deno) to decrypt video signatures. Install Node.js (brew install node) or Deno (brew install deno) and retry.";
 "该视频在你的地区不可用（地区限制）。可尝试配置代理后重试。" = "This video is unavailable in your region (geo-restriction). Try configuring a proxy and retry.";
 "该视频有年龄限制。请在 Chrome 中登录 YouTube 账号后重试。" = "This video is age-restricted. Sign in to a YouTube account in Chrome and retry.";
@@ -857,3 +875,17 @@
 "错误详情" = "Error Details";
 
 "查看错误详情" = "Show Error Details";
+
+"软件更新" = "Software Updates";
+
+"自动检查每天最多一次。" = "Checks automatically at most once a day.";
+
+"自动下载并安装更新" = "Automatically download and install updates";
+
+"关闭时每次安装前都会先征求同意。" = "When off, every installation asks for confirmation first.";
+
+"已是最新" = "Up to date";
+
+"查看新版本" = "View Release";
+
+"打开 GitHub 发布页面" = "Open the GitHub release page";

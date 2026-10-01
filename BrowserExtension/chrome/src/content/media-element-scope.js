@@ -146,10 +146,24 @@
       let root = null;
       let adapter = null;
       let url = pageURL;
-      if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)
-          && utils?.isYouTubeWatchPage(pageURL)) {
-        root = element.closest?.('[id="movie_player"]');
-        adapter = "youtube";
+      if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+        // List/home hover preview: one app-level floating player mounted
+        // outside every card, so the card link is not an ancestor and the
+        // preview DOM carries no video identity. The identity comes from the
+        // MAIN-world bridge cache and the adapter row is that video's watch
+        // URL — never the (multi-video) page URL.
+        const previewHost = element.closest?.("ytd-video-preview");
+        const preview = previewHost
+          ? global.MacIDMYouTubePreview?.current?.(global.document, pageURL)
+          : null;
+        if (preview?.pageURL) {
+          root = element.closest?.('[id="inline-preview-player"]') || previewHost;
+          url = preview.pageURL;
+          adapter = "youtube";
+        } else if (utils?.isYouTubeWatchPage(pageURL)) {
+          root = element.closest?.('[id="movie_player"]');
+          adapter = "youtube";
+        }
       } else if (host === "bilibili.com" || host.endsWith(".bilibili.com")) {
         const card = element.closest?.(".bili-video-card, .bili-video-card__image--hover, [class*='video-card']");
         if (card) {

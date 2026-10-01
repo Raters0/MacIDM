@@ -24,6 +24,8 @@ test("manifest public key produces the fixed development extension ID", async ()
     "src/shared/media-presentation.js",
     "src/shared/media-metadata-probe.js",
     "src/shared/douyin-detail-cache.js",
+    "src/shared/youtube-preview-identity.js",
+    "src/shared/youtube-player-metadata.js",
     "src/shared/sniff-governance.js",
     "src/shared/category.js",
     "src/shared/i18n.js",

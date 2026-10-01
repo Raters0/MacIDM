@@ -674,6 +674,51 @@
     };
   }
 
+  /// Adapter rows for the currently mounted YouTube hover previews (list,
+  /// home, channel and search pages, plus a watch page's related list). The
+  /// row URL is the previewed video's watch URL — never the page URL, which on
+  /// a list page carries no single-video identity. `excludeVideoIDs` skips the
+  /// page's own video and any adapter row a previous coalesce pass already
+  /// produced, so one videoId is never synthesized twice.
+  function youTubePreviewAdapterRows(previewIdentities, excludeVideoIDs = []) {
+    const rows = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(excludeVideoIDs) ? excludeVideoIDs : [excludeVideoIDs]) {
+      if (raw) seen.add(String(raw));
+    }
+    for (const identity of Array.isArray(previewIdentities) ? previewIdentities : []) {
+      if (identity?.siteAdapter !== "youtube") continue;
+      const videoId = identity?.videoId
+        ? String(identity.videoId)
+        : youTubeVideoIDFromURL(identity?.pageURL);
+      const page = normalizeHTTPURL(identity?.pageURL ?? "");
+      if (!videoId || !page || seen.has(videoId)) continue;
+      // The identity's URL must carry the same videoId it claims: a mismatched
+      // pair would attribute one video's row to another's URL.
+      if (youTubeVideoIDFromURL(page) !== videoId) continue;
+      // Never fall back to the multi-video page title (list-page branding);
+      // an unread preview title becomes the generic YouTube media label.
+      const title = String(identity.title ?? "").trim() || t("media.youtubeVideo");
+      const base = sanitizePairFilename(title);
+      seen.add(videoId);
+      rows.push({
+        url: page,
+        mime: "text/html",
+        format: "video",
+        fileExtension: "mp4",
+        supported: true,
+        displayName: title.slice(0, 80),
+        displayURL: redactedURL(page),
+        size: null,
+        filenameHint: `${base}.mp4`.slice(0, 255),
+        siteAdapter: "youtube",
+        pairNote: t("media.youtubePairNote"),
+        collapsed: false,
+      });
+    }
+    return rows;
+  }
+
   function coalesceMediaCandidates(candidates, pageTitle = "", pageURL = "", previewIdentities = []) {
     if (!Array.isArray(candidates)) return [];
     const isYouTubePage = isYouTubePageURL(pageURL);
@@ -701,20 +746,28 @@
     if (isYouTubeWatchPage(pageURL)) {
       const title = String(pageTitle).trim() || t("media.youtubeVideo");
       const base = sanitizePairFilename(title);
-      return [{
-        url: pageURL,
-        mime: "text/html",
-        format: "video",
-        fileExtension: "mp4",
-        supported: true,
-        displayName: title.slice(0, 80),
-        displayURL: redactedURL(pageURL),
-        size: null,
-        filenameHint: `${base}.mp4`.slice(0, 255),
-        siteAdapter: "youtube",
-        pairNote: t("media.youtubePairNote"),
-        collapsed: false,
-      }];
+      // A hover preview of another video mounted on this page is a different
+      // resource: it keeps its own adapter row instead of disappearing behind
+      // the page video's row.
+      return [
+        {
+          url: pageURL,
+          mime: "text/html",
+          format: "video",
+          fileExtension: "mp4",
+          supported: true,
+          displayName: title.slice(0, 80),
+          displayURL: redactedURL(pageURL),
+          size: null,
+          filenameHint: `${base}.mp4`.slice(0, 255),
+          siteAdapter: "youtube",
+          pairNote: t("media.youtubePairNote"),
+          collapsed: false,
+        },
+        ...youTubePreviewAdapterRows(previewIdentities, [
+          youTubeVideoIDFromURL(pageURL),
+        ]),
+      ];
     }
     const manifestHosts = new Set(
       paired
@@ -801,6 +854,16 @@
       });
       seenPreviewBvids.add(bvid);
     }
+
+    // YouTube list/homepage hover previews: the same per-card rule, but the
+    // identity comes from the preview player itself (the floating player is
+    // mounted outside every card, so no card link is reachable from it).
+    // Includes adapters already present in `paired` (second-pass coalesce /
+    // service-worker forwarding) so one videoId is never synthesized twice.
+    kept.push(...youTubePreviewAdapterRows(previewIdentities, [
+      ...kept,
+      ...paired.filter((candidate) => candidate?.siteAdapter === "youtube"),
+    ].map((candidate) => youTubeVideoIDFromURL(candidate?.url))));
 
     // Any live Bilibili site adapter (page or preview) covers bilivideo
     // streams better than a raw m4s observation: the adapter path re-resolves

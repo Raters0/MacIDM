@@ -35,15 +35,23 @@ struct YouTubeMediaInspector: MediaInspecting {
     /// Dual-channel diagnostic log; injected so unit tests never touch the
     /// user's real private log file.
     private let diagnosticLog: YouTubeDiagnosticEventLog
+    /// Optional shared record of allowed live verdicts. A successful inspection
+    /// has already paid for the same `-J --simulate` extraction the download's
+    /// live gate would run seconds later, so it is the natural place to record
+    /// the answer; `AppModel` wires the shared instance and unit tests leave it
+    /// nil to keep every run independent.
+    private let liveStatusCache: YouTubeLiveStatusCache?
 
     init(
         executableURL: URL? = nil,
-        diagnosticLog: YouTubeDiagnosticEventLog = .shared
+        diagnosticLog: YouTubeDiagnosticEventLog = .shared,
+        liveStatusCache: YouTubeLiveStatusCache? = nil
     ) {
         self.executableURL =
             executableURL
             ?? Self.locateExecutable(environment: ProcessInfo.processInfo.environment)
         self.diagnosticLog = diagnosticLog
+        self.liveStatusCache = liveStatusCache
     }
 
     var isExecutableAvailable: Bool { executableURL != nil }
@@ -58,6 +66,24 @@ struct YouTubeMediaInspector: MediaInspecting {
         }
         guard Self.isYouTubePage(url) else {
             throw MediaInspectionError.invalidPlaylist(String(localized: "URL 不是 YouTube 页面"))
+        }
+
+        // Same video, same credential shape, resolved inside the cache window:
+        // the format list cannot have changed, while another `-J` costs tens of
+        // seconds and fails outright under YouTube's bot check. Reusing it is
+        // also live-safe, because an entry is only ever written for an
+        // explicitly downloadable verdict — a blocked live stream is never
+        // cached and therefore always re-resolves here.
+        if let liveStatusCache,
+            let key = YouTubeLiveStatusCache.key(url: url, cookie: requestContext?.cookie),
+            let cachedVariants = liveStatusCache.cachedVariants(key),
+            !cachedVariants.isEmpty
+        {
+            AppLogger.shared.info(
+                .youtube,
+                "media.inspect served from the extraction cache host=\(hostOf(url))"
+            )
+            return MediaInspection(mediaKind: .http, variants: cachedVariants)
         }
 
         let inspectStart = Date()
@@ -129,6 +155,16 @@ struct YouTubeMediaInspector: MediaInspecting {
         let variants = buildVariants(from: info, pageURL: url)
         guard !variants.isEmpty else {
             throw MediaInspectionError.noFormats
+        }
+        // Positive, fully usable answer: hand the same verdict — and the quality
+        // list it produced — to the download path and to the next inspection of
+        // this video, so neither repeats the extraction. Only reached after the
+        // explicit VOD/ended-replay classification and a non-empty format list,
+        // so nothing short of "downloadable" is ever recorded.
+        if let liveStatusCache,
+            let key = YouTubeLiveStatusCache.key(url: url, cookie: requestContext?.cookie)
+        {
+            liveStatusCache.confirm(key, variants: variants)
         }
 
         return MediaInspection(mediaKind: .http, variants: variants)

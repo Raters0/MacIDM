@@ -1226,11 +1226,10 @@ private struct TaskTableView: View, Equatable {
                 }
 
                 if isColumnVisible("duration") {
-                    TableColumn("总耗时", value: \.sortDuration) { task in
+                    TableColumn("下载耗时", value: \.sortDuration) { task in
                         DurationCell(
                             task: task,
-                            live: synchronizer.liveModel(for: task.id),
-                            clock: synchronizer.clock
+                            live: synchronizer.liveModel(for: task.id)
                         )
                         .modifier(TableCellLayout())
                     }
@@ -1287,11 +1286,10 @@ private struct TaskTableView: View, Equatable {
                 }
                 .width(min: 75, ideal: 75)
 
-                TableColumn("总耗时", value: \.sortDuration) { task in
+                TableColumn("下载耗时", value: \.sortDuration) { task in
                     DurationCell(
                         task: task,
-                        live: synchronizer.liveModel(for: task.id),
-                        clock: synchronizer.clock
+                        live: synchronizer.liveModel(for: task.id)
                     )
                     .modifier(TableCellLayout())
                 }
@@ -1357,9 +1355,6 @@ private struct TaskTableView: View, Equatable {
                     description: appearance.tasksEmpty ? "点击「添加」或拖入下载链接" : "更改筛选条件或搜索内容"
                 )
             }
-        }
-        .overlay {
-            TableHeaderRuleOverlay()
         }
         .taskContextMenu(
             model: model, requestRemoval: requestRemoval,

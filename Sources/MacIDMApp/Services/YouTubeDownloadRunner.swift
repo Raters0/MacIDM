@@ -69,7 +69,7 @@ extension YouTubeDownloadError: LocalizedError {
         case .botCheckBlocked:
             String(
                 localized:
-                    "YouTube 风控验证拦截了本次请求：请在浏览器中保持 YouTube 登录状态（下载组件会从 Chrome 读取登录 Cookie），稍后重试；若仍失败可尝试更新 yt-dlp。"
+                    "YouTube 风控验证拦截了本次请求：请在 Chrome 登录 YouTube 后，通过扩展面板授权 youtube.com 站点 Cookie 并重新提交下载（下载组件只使用你授权的会话，不读取浏览器本地 Cookie 数据库）；也可稍后重试或更新 yt-dlp。"
             )
         case .nChallengeFailed:
             String(
@@ -163,9 +163,22 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
     /// kill the probe before its JSON output completes and misclassify it as
     /// unknown.
     private let liveProbeTimeout: TimeInterval
+    /// How often the live gate re-reads the control token. The gate's child
+    /// process cannot observe the token itself, so pause/cancel used to land
+    /// only when the probe finished on its own (measured 19–21 s in the field,
+    /// i.e. AppModel's 20 s stuck-transition fallback). One poll interval is
+    /// the worst-case latency for a pause during resolution; short values are
+    /// injected so unit tests do not have to wait.
+    private let liveProbeControlPollInterval: TimeInterval
     /// Stall budget for one download attempt; short values are injected so
     /// unit tests cover the stall/retry scenarios.
     private let downloadAttemptTimeout: TimeInterval
+    /// Record of recently allowed live verdicts, so a retry or a second quality
+    /// of the same video does not pay for another full extraction. Composition
+    /// decides: `AppModel` wires the shared instance, while `nil` (unit tests,
+    /// ad-hoc constructions) keeps today's probe-on-every-run behaviour instead
+    /// of leaking a verdict between unrelated runs.
+    private let liveStatusCache: YouTubeLiveStatusCache?
 
     init(
         executableURL: URL? = nil,
@@ -173,14 +186,18 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
         defaultExecutableResolver: (@Sendable () -> URL?)? = nil,
         diagnosticLog: YouTubeDiagnosticEventLog = .shared,
         liveProbeTimeout: TimeInterval = 120,
-        downloadAttemptTimeout: TimeInterval = 30
+        liveProbeControlPollInterval: TimeInterval = 0.1,
+        downloadAttemptTimeout: TimeInterval = 30,
+        liveStatusCache: YouTubeLiveStatusCache? = nil
     ) {
         self.injectedExecutableURL = executableURL
         self.defaultExecutableResolver = defaultExecutableResolver
         self.ffmpegRemuxer = ffmpegRemuxer
         self.diagnosticLog = diagnosticLog
         self.liveProbeTimeout = liveProbeTimeout
+        self.liveProbeControlPollInterval = liveProbeControlPollInterval
         self.downloadAttemptTimeout = downloadAttemptTimeout
+        self.liveStatusCache = liveStatusCache
     }
 
     func run(
@@ -296,14 +313,51 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
             // retryable inspection error.
             if isYouTube {
                 let probeStart = Date()
-                let outcome = try await probeLiveStatus(
-                    executableURL: executableURL,
-                    url: downloadURL,
-                    cookieFile: cookieFile,
-                    request: request
+                let cacheKey = YouTubeLiveStatusCache.key(
+                    url: request.url,
+                    cookie: request.requestContext?.cookie
                 )
+                // Same video, same credential shape, verdict still inside its
+                // window: the extraction answer cannot have changed, so skip the
+                // gate that measured 0–79 s here. Blocked/unknown/failed verdicts
+                // are never cached, so every other case still re-probes.
+                let cachedVerdict = cacheKey.map { liveStatusCache?.isConfirmed($0) ?? false } ?? false
+                if cachedVerdict {
+                    AppLogger.shared.info(
+                        .youtube,
+                        "yt-dlp live gate skipped from a cached downloadable verdict for task \(request.taskID)"
+                    )
+                    recordDiagnostic(
+                        request: request,
+                        selectionITag: selectedITag,
+                        event: "ytdlp.liveProbeSkipped",
+                        stage: "liveProbe",
+                        category: nil,
+                        exitStatus: 0,
+                        attempt: 0,
+                        startedAt: probeStart,
+                        output: "",
+                        cookieFile: cookieFile,
+                        excerptOverride: "reason=cachedDownloadableVerdict"
+                    )
+                }
+                let outcome: LiveProbeOutcome
+                if cachedVerdict {
+                    outcome = .allowed(stderr: "")
+                } else {
+                    outcome = try await probeLiveStatus(
+                        executableURL: executableURL,
+                        url: downloadURL,
+                        cookieFile: cookieFile,
+                        request: request,
+                        control: control
+                    )
+                }
                 switch outcome {
                 case .allowed(let stderr):
+                    if let cacheKey, !cachedVerdict {
+                        liveStatusCache?.confirm(cacheKey)
+                    }
                     // stderr from a successful probe (cookie-loading notices,
                     // runtime warnings) is not discarded either: when
                     // non-empty, one diagnostic event is recorded with only
@@ -728,7 +782,8 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
         executableURL: URL,
         url: URL,
         cookieFile: URL?,
-        request: DownloadRequest
+        request: DownloadRequest,
+        control: @escaping @Sendable () -> DownloadControl
     ) async throws -> LiveProbeOutcome {
         var arguments = [
             "-J", "--simulate", "--no-warnings", "--no-playlist",
@@ -756,14 +811,48 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
         // Process-level error classification: launch failures keep the
         // toolchain category; cancellation propagates; everything else
         // becomes unknown.
-        let result: (Int32, String, String)
-        do {
-            result = try await YouTubeInspectProcess(
+        let probe = Task {
+            try await YouTubeInspectProcess(
                 executableURL: executableURL,
                 arguments: arguments
             ).run(timeout: liveProbeTimeout)
+        }
+        // The probe child cannot watch the control token, and
+        // YouTubeInspectProcess.run already maps Swift cancellation onto
+        // requestCancel(), so a polling sentinel is all that is needed for
+        // pause/cancel to interrupt resolution instead of waiting for it.
+        // The sentinel reports which control state aborted the gate: the
+        // download phase raises IDMError.paused/.cancelled (see
+        // finishWithStopReason) and the App only treats those two as user
+        // control actions, while a bare CancellationError falls through to
+        // the generic failure bucket and reports a pause as NETWORK_ERROR.
+        // Both tasks are declared outside the do block so the catch clause
+        // can still read the sentinel's verdict.
+        let sentinel = Task { [liveProbeControlPollInterval] () -> DownloadControl? in
+            let interval = max(0.005, liveProbeControlPollInterval)
+            while !Task.isCancelled {
+                let state = control()
+                if state != .continue {
+                    probe.cancel()
+                    return state
+                }
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+            return nil
+        }
+        defer { sentinel.cancel() }
+        let result: (Int32, String, String)
+        do {
+            result = try await probe.value
         } catch is CancellationError {
-            throw CancellationError()
+            // The sentinel either already reported its verdict or leaves its
+            // loop on the next poll, so awaiting it here cannot stall: only
+            // an unattributed cancellation keeps the raw Swift error.
+            switch await sentinel.value {
+            case .pause: throw IDMError.paused
+            case .cancel: throw IDMError.cancelled
+            case .continue, .none: throw CancellationError()
+            }
         } catch MediaInspectionError.youTubeToolUnavailable {
             return .launchFailed
         } catch MediaInspectionError.processCleanupFailed {

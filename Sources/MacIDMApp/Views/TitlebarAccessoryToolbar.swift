@@ -239,7 +239,7 @@ private struct TitlebarLeadingControls: View {
 
     private static let allColumns: [(id: String, title: LocalizedStringKey)] = [
         ("filename", "文件名"), ("size", "大小"), ("status", "状态"),
-        ("speed", "速度"), ("duration", "总耗时"), ("date", "日期"), ("progress", "进度"),
+        ("speed", "速度"), ("duration", "下载耗时"), ("date", "日期"), ("progress", "进度"),
     ]
 }
 

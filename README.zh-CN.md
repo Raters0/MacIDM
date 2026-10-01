@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Resources/AppIcon.iconset/icon_256x256.png" alt="MacIDM" width="96" />
   <h1>MacIDM</h1>
-  <p>用 Swift 写的原生 macOS 媒体资源下载器，以流式处理和有界内存占用为设计目标，带一个 Chrome 媒体嗅探扩展。</p>
+  <p>用 Swift 写的原生 macOS 媒体资源下载器（内存占用低），带一个 Chrome 媒体嗅探扩展。</p>
   <p><a href="README.md">English</a> · <a href="https://github.com/Raters0/MacIDM/releases">下载</a> · <a href="#快速开始">快速开始</a></p>
 </div>
 

@@ -13,12 +13,20 @@
 // - Signed media URLs / signatureCipher are never read or forwarded.
 // - Publishing is change-driven plus a low-frequency poll fallback; requests
 //   from the content script trigger an immediate re-read.
+// - The feed-preview identity is published only while that preview player is
+//   live, and carries the videoId plus a length-capped title — no format list
+//   and no media URL.
 (function installMacIDMYouTubePlayerBridge(global) {
   if (global.__macIDMYouTubePlayerBridgeInstalled) return;
   global.__macIDMYouTubePlayerBridgeInstalled = true;
 
   const DATA_TYPE = "macidm.youTubePlayerData";
   const REQUEST_TYPE = "macidm.requestYouTubePlayerData";
+  // Feed-preview identity (list/home/channel pages and a watch page's related
+  // list): the floating preview player lives outside every card, so the card's
+  // adapter identity can only come from this read.
+  const PREVIEW_DATA_TYPE = "macidm.youTubePreviewIdentity";
+  const PREVIEW_REQUEST_TYPE = "macidm.requestYouTubePreviewIdentity";
   const MAX_FORMATS = 150;
   const MAX_STRING = 500;
   const POLL_MS = 1_000;
@@ -155,6 +163,7 @@
   }
 
   let lastFingerprint = "";
+  let lastPreviewFingerprint = "";
   let requestScheduled = false;
 
   function publish(force = false) {
@@ -183,14 +192,64 @@
     global.setTimeout(() => {
       requestScheduled = false;
       publish();
+      publishPreview();
     }, 120);
+  }
+
+  /// The floating hover-preview player's identity. Only a preview that is
+  /// actually playing a blob source counts: `ytd-video-preview` stays mounted
+  /// after the hover ends, and a stale videoId must never label another card.
+  /// Payload is the bounded identity only — never a signed media URL.
+  function readPreviewIdentity() {
+    try {
+      const host = document.querySelector("ytd-video-preview");
+      if (!host || typeof host.querySelector !== "function") return null;
+      const video = host.querySelector("video");
+      if (!video || Number(video.readyState) < 1) return null;
+      const source = video.currentSrc || video.getAttribute?.("src") || "";
+      if (typeof source !== "string" || !source.startsWith("blob:")) return null;
+      const player = host.querySelector("#inline-preview-player")
+        || host.querySelector(".html5-video-player");
+      if (!player || typeof player.getVideoData !== "function") return null;
+      const data = player.getVideoData();
+      const videoId = typeof data?.video_id === "string" ? data.video_id.trim() : "";
+      // Same identity rule as the shared module (§4.5): reject a missing or
+      // malformed id instead of publishing a row the App cannot resolve.
+      if (!/^[A-Za-z0-9_-]{5,}$/.test(videoId)) return null;
+      return { videoId, title: clipString(data?.title) };
+    } catch {
+      // Structured silence: the content script keeps the previous identity
+      // within its grace window and then drops the preview row.
+      return null;
+    }
+  }
+
+  function publishPreview() {
+    try {
+      const identity = readPreviewIdentity();
+      if (!identity) return;
+      const fingerprint = JSON.stringify(identity);
+      if (fingerprint === lastPreviewFingerprint) return;
+      lastPreviewFingerprint = fingerprint;
+      global.postMessage(
+        { type: PREVIEW_DATA_TYPE, payload: { ...identity, capturedAt: Date.now() } },
+        "*",
+      );
+    } catch {
+      // Ignore: a failed read must never break the page's own player.
+    }
   }
 
   // YouTube fires these custom events on SPA navigation / player updates;
   // the bounded poll below covers versions and states where they are absent.
   for (const eventName of ["yt-navigate-finish", "yt-page-data-updated", "yt-player-updated"]) {
     try {
-      document.addEventListener(eventName, schedulePublish);
+      document.addEventListener(eventName, () => {
+        // The content script drops its preview identity on a real transition;
+        // forgetting the fingerprint lets the same video republish afterwards.
+        lastPreviewFingerprint = "";
+        schedulePublish();
+      });
     } catch {
       // Event unavailable; polling still covers it.
     }
@@ -199,13 +258,18 @@
   global.addEventListener("message", (event) => {
     try {
       if (!event || event.source !== global) return;
-      if (event.data?.type !== REQUEST_TYPE) return;
+      const type = event.data?.type;
+      if (type !== REQUEST_TYPE && type !== PREVIEW_REQUEST_TYPE) return;
       schedulePublish();
+      if (type === PREVIEW_REQUEST_TYPE) publishPreview();
     } catch {
       // Ignore malformed requests.
     }
   });
 
-  global.setInterval(() => publish(), POLL_MS);
+  global.setInterval(() => {
+    publish();
+    publishPreview();
+  }, POLL_MS);
   schedulePublish();
 })(globalThis);

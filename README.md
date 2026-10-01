@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Resources/AppIcon.iconset/icon_256x256.png" alt="MacIDM" width="96" />
   <h1>MacIDM</h1>
-  <p>A native macOS media downloader written in Swift, designed around streamed I/O and bounded memory use, with a Chrome extension for media sniffing.</p>
+  <p>A native macOS media downloader written in Swift (low memory footprint), with a Chrome extension for media sniffing.</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://github.com/Raters0/MacIDM/releases">Download</a> · <a href="#quick-start">Quick start</a></p>
 </div>
 

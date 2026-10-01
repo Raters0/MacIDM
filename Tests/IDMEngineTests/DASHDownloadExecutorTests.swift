@@ -5,6 +5,27 @@ import XCTest
 @testable import IDMEngine
 
 final class DASHDownloadExecutorTests: XCTestCase {
+    /// `DASHDownloadError.code` 会被 App/CLI 持久化到任务上并跨进程传递，
+    /// 因此每个 case 都必须有独立、稳定的 code；重复或空值会让详情面板
+    /// 把不同病因渲染成同一句话。
+    func testEveryDashErrorCaseHasItsOwnStableCode() {
+        let cases: [DASHDownloadError] = [
+            .mergerUnavailable,
+            .missingVideoRepresentation,
+            .invalidResponse,
+            .resumeCorrupt,
+            .resumeIncompatible,
+        ]
+        let codes = cases.map(\.code)
+        XCTAssertEqual(Set(codes).count, codes.count, "DASH 错误 code 不得重复：\(codes)")
+        for code in codes {
+            XCTAssertFalse(code.isEmpty)
+            XCTAssertEqual(code, code.uppercased(), "错误 code 遵循大写常量约定，实际：\(code)")
+        }
+        XCTAssertEqual(DASHDownloadError.mergerUnavailable.code, "DASH_MERGER_UNAVAILABLE")
+        XCTAssertEqual(DASHDownloadError.resumeCorrupt.code, "DASH_RESUME_CORRUPT")
+    }
+
     func testSelectsHighestVideoAndAudioRepresentationsAndMerges() async throws {
         let fixture = makeFixture()
         let client = DASHScriptedClient(responses: fixture.responses)

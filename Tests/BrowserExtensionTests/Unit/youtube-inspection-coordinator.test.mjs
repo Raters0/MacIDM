@@ -601,3 +601,45 @@ test("发布去重签名覆盖 message：同阶段不同文案必须重发", asy
     "message 变化必须触发重新发布，不得在签名外无声变化",
   );
 });
+
+// 列表/首页悬浮卡片行的页内阶段：页面根本不可能持有该视频的播放器数据，
+// 内容脚本以终止性 reason 应答，协调器必须立刻进入共享回退，而不是空等
+// 满 pageBudgetMs 的「等待页面数据…」。
+test("终止性页内原因：一轮即止并立即启动共享回退，不出现等待阶段", async () => {
+  const { coordinator, calls } = makeHarness({
+    deterministic: true,
+    pageResults: [{ ok: false, reason: "pageDataUnavailable" }],
+    appResult: { ok: true, variants: [variant(1080, 137), variant(720, 136)] },
+  });
+  coordinator.ensure({ tabId: TAB_ID, url: PAGE_URL });
+  const snapshot = await waitForStage(coordinator, YOUTUBE_INSPECTION_STAGES.complete);
+  assert.equal(calls.page, 1, "终止性应答后不得继续轮询页内");
+  assert.equal(calls.app, 1, "应立刻进入共享 App/yt-dlp 回退");
+  assert.equal(snapshot.source, "app-ytdlp");
+  assert.equal(snapshot.variantCount, 2);
+  assert.ok(
+    !calls.published.some(
+      ({ snapshot: s }) => s.stage === YOUTUBE_INSPECTION_STAGES.pageWaitingForStableData,
+    ),
+    "不得出现「等待页面数据…」空转阶段",
+  );
+  assert.ok(
+    calls.published.some(
+      ({ snapshot: s }) => s.stage === YOUTUBE_INSPECTION_STAGES.fallbackInspecting,
+    ),
+    "用户应直接看到「正在使用 yt-dlp…」阶段",
+  );
+});
+
+test("可重试的 noPlayerData 仍耗尽页内观察窗口后才回退（不得误伤本页竞态）", async () => {
+  const { coordinator, calls } = makeHarness({
+    deterministic: true,
+    pageResults: [{ ok: false, reason: "noPlayerData" }],
+    appResult: { ok: true, variants: [variant(720, 136)] },
+  });
+  coordinator.ensure({ tabId: TAB_ID, url: PAGE_URL });
+  const snapshot = await waitForStage(coordinator, YOUTUBE_INSPECTION_STAGES.complete);
+  assert.ok(calls.page > 1, "noPlayerData 是本页数据晚到的竞态，必须继续轮询到预算结束");
+  assert.equal(calls.app, 1);
+  assert.equal(snapshot.source, "app-ytdlp");
+});

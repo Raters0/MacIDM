@@ -114,6 +114,15 @@ enum DownloadErrorAnalyzer {
         if let youtubeError = error as? YouTubeDownloadError {
             return diagnose(youtubeError: youtubeError, context: context)
         }
+        // DASH pairs and app-level toolchain guards own their failure modes:
+        // without these branches a missing FFmpeg or a corrupt DASH checkpoint
+        // lands in the generic fallback and is presented as an unknown error.
+        if let dashError = error as? DASHDownloadError {
+            return diagnose(dashError: dashError)
+        }
+        if let appModelError = error as? AppModelError {
+            return diagnose(appModelError: appModelError)
+        }
         return fallback(error: error, context: context)
     }
 
@@ -596,6 +605,78 @@ enum DownloadErrorAnalyzer {
             requiresSession: true,
             retryable: true
         )
+    }
+
+    // MARK: - DASH
+
+    private static func diagnose(dashError: DASHDownloadError) -> ErrorDiagnosis {
+        switch dashError {
+        case .mergerUnavailable:
+            return ErrorDiagnosis(
+                category: .toolchain,
+                title: String(localized: "缺少 FFmpeg"),
+                cause: String(localized: "DASH 合并需要 ffmpeg，但当前没有可用工具链。"),
+                recommendation: String(localized: "安装 ffmpeg（如 brew install ffmpeg）后重启应用。"),
+                requiresSession: false,
+                retryable: true
+            )
+        case .missingVideoRepresentation, .invalidResponse:
+            return ErrorDiagnosis(
+                category: .media,
+                title: String(localized: "DASH 媒体异常"),
+                cause: dashError.localizedDescription,
+                recommendation: String(
+                    localized: "重新提交该下载；若反复失败说明清单或分片本身有问题。"
+                ),
+                requiresSession: false,
+                retryable: true
+            )
+        case .resumeCorrupt:
+            return ErrorDiagnosis(
+                category: .storage,
+                title: String(localized: "断点数据损坏"),
+                cause: String(localized: "DASH 断点记录与磁盘上的临时分片不一致。"),
+                recommendation: String(localized: "点击「重试」丢弃断点从头下载。"),
+                requiresSession: false,
+                retryable: true
+            )
+        case .resumeIncompatible:
+            return ErrorDiagnosis(
+                category: .resource,
+                title: String(localized: "资源已变化"),
+                cause: String(localized: "服务器上的资源已更新，旧分片无法继续拼接。"),
+                recommendation: String(localized: "删除任务后重新下载。"),
+                requiresSession: false,
+                retryable: false
+            )
+        }
+    }
+
+    // MARK: - App-level errors
+
+    private static func diagnose(appModelError: AppModelError) -> ErrorDiagnosis {
+        switch appModelError {
+        case .ffmpegUnavailable:
+            return ErrorDiagnosis(
+                category: .toolchain,
+                title: String(localized: "缺少 FFmpeg"),
+                cause: String(localized: "HLS 发布需要已配置且通过校验的 FFmpeg 工具链。"),
+                recommendation: String(
+                    localized: "在设置中配置 FFmpeg 工具链，或安装 ffmpeg 后重启应用。"
+                ),
+                requiresSession: false,
+                retryable: true
+            )
+        case .duplicateDestination:
+            return ErrorDiagnosis(
+                category: .storage,
+                title: String(localized: "保存位置重复"),
+                cause: appModelError.localizedDescription,
+                recommendation: String(localized: "移除旧任务或为新任务选择其他文件名。"),
+                requiresSession: false,
+                retryable: false
+            )
+        }
     }
 
     private static func fallback(error: Error, context: Context) -> ErrorDiagnosis {

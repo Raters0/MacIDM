@@ -401,7 +401,7 @@ extension AppModel {
 
     static func appVersionString() -> String {
         let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let version = AppBuildInfo.marketingVersion ?? "unknown"
         let build = info?["CFBundleVersion"] as? String ?? ""
         let buildDate = info?["MacIDMBuildDate"] as? String ?? ""
         if !buildDate.isEmpty {

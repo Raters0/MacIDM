@@ -490,6 +490,12 @@
     if (!finalURL) return;
     const ct = String(contentType).toLowerCase();
 
+    // YouTube player responses belong to the dedicated metadata branch (see
+    // captureYouTubePlayerMetadata): their googlevideo single-track URLs are
+    // session-bound noise in a candidate list, and a second bounded read of the
+    // same JSON would double this frame's sniff cost for nothing.
+    if (isYouTubePlayerURL(finalURL)) return;
+
     // Redirect target may be the real media/manifest URL.
     if (finalURL !== requestURL && isMediaLikeURL(finalURL)) notify(finalURL);
 
@@ -805,6 +811,136 @@
     }).catch(() => {});
   }
 
+  // ===== YouTube player-response metadata capture =====
+  // 列表/首页的悬浮预览会为每个被悬浮的视频拉一次 `/youtubei/v1/player`
+  // （实测约 125KB，带完整 formats + adaptiveFormats）。浮层播放器不在任何
+  // 卡片内、页面 URL 也不带视频身份，因此这份响应是卡片画质面板唯一的页内
+  // 数据源。此处只取白名单元数据（绝不取 url / signatureCipher），交给
+  // ISOLATED world 的 shared/youtube-player-metadata.js 按 videoId 缓存，选轨/
+  // 去重/估算仍由既有的 youtube-format-utils 完成——MAIN world 不复制任何
+  // 选择逻辑。白名单与 shared 缓存的 pickFormat 必须逐字段保持同步（MAIN
+  // world 无法依赖 shared 模块，与抖音 detail 分支同一约束）。
+  const YOUTUBE_PLAYER_RE =
+    /^https?:\/\/(?:[^./]+\.)*youtube\.com\/youtubei\/v1\/player(?:[?/#]|$)/i;
+  const YOUTUBE_PLAYER_MESSAGE = "macidm.youtube.playerMetadata";
+  const YOUTUBE_PLAYER_MAX_BYTES = 1.5 * 1024 * 1024;
+  const YOUTUBE_PLAYER_MAX_FORMATS = 80;
+  const YOUTUBE_PLAYER_VIDEO_ID_RE = /^[A-Za-z0-9_-]{5,}$/;
+
+  function isYouTubePlayerURL(value) {
+    return YOUTUBE_PLAYER_RE.test(String(value ?? ""));
+  }
+
+  function pickYouTubePlayerFormat(format) {
+    if (!format || typeof format !== "object") return null;
+    const itag = Number.isFinite(format.itag) ? format.itag : undefined;
+    const height = Number.isFinite(format.height) ? format.height : undefined;
+    if (itag === undefined && height === undefined) return null;
+    const picked = {
+      itag,
+      width: Number.isFinite(format.width) ? format.width : undefined,
+      height,
+      bitrate: Number.isFinite(format.bitrate) ? format.bitrate : undefined,
+      fps: Number.isFinite(format.fps) ? format.fps : undefined,
+      mimeType: typeof format.mimeType === "string" ? format.mimeType.slice(0, 256) : undefined,
+      contentLength: typeof format.contentLength === "string"
+        ? format.contentLength.slice(0, 32)
+        : undefined,
+    };
+    for (const key of Object.keys(picked)) {
+      if (picked[key] === undefined) delete picked[key];
+    }
+    return picked;
+  }
+
+  function pickYouTubePlayerFormats(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const format of list) {
+      const picked = pickYouTubePlayerFormat(format);
+      if (picked) out.push(picked);
+      if (out.length >= YOUTUBE_PLAYER_MAX_FORMATS) break;
+    }
+    return out;
+  }
+
+  /// Pure parse: player-response JSON text → bounded metadata payload, or null.
+  /// A response without a usable videoId or without any track is rejected, so
+  /// nothing partial ever reaches the cache.
+  function parseYouTubePlayerMetadata(text) {
+    if (typeof text !== "string" || text.length === 0 || text.length > YOUTUBE_PLAYER_MAX_BYTES) {
+      return null;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    const details = json?.videoDetails;
+    const videoId = typeof details?.videoId === "string" ? details.videoId.trim() : "";
+    if (!YOUTUBE_PLAYER_VIDEO_ID_RE.test(videoId)) return null;
+    const streaming = json?.streamingData;
+    const formats = pickYouTubePlayerFormats(streaming?.formats);
+    const adaptiveFormats = pickYouTubePlayerFormats(streaming?.adaptiveFormats);
+    if (formats.length === 0 && adaptiveFormats.length === 0) return null;
+    const payload = {
+      videoId,
+      formats,
+      adaptiveFormats,
+    };
+    if (typeof details.title === "string" && details.title) {
+      payload.title = details.title.slice(0, 200);
+    }
+    if (typeof details.lengthSeconds === "string" || typeof details.lengthSeconds === "number") {
+      payload.lengthSeconds = String(details.lengthSeconds).slice(0, 12);
+    }
+    // Live semantics travel with the metadata so a card row can short-circuit
+    // "直播不支持" in-page instead of paying for an App/yt-dlp round trip;
+    // only explicit booleans are forwarded (missing stays missing → unknown →
+    // the App check still runs, §3.1 fail-closed).
+    for (const key of ["isLive", "isUpcomingLive", "isLiveContent"]) {
+      if (details[key] === true || details[key] === false) payload[key] = details[key];
+    }
+    return payload;
+  }
+
+  function postYouTubePlayerMetadata(payload) {
+    const postFn = typeof global.postMessage === "function"
+      ? global.postMessage
+      : (typeof window !== "undefined" && typeof window.postMessage === "function" ? window.postMessage : null);
+    if (!postFn) return;
+    postFn({ type: YOUTUBE_PLAYER_MESSAGE, payload }, "*");
+  }
+
+  function captureYouTubePlayerMetadata(response) {
+    if (!response || typeof response.clone !== "function") return;
+    response.clone().text().then((text) => {
+      const parsed = parseYouTubePlayerMetadata(text);
+      if (parsed) postYouTubePlayerMetadata(parsed);
+    }).catch(() => {});
+  }
+
+  /// XHR variant: the page may set responseType, so read whichever shape is
+  /// available (same handling as the Douyin detail branch).
+  function youTubePlayerMetadataFromXHR(xhr) {
+    try {
+      let text = null;
+      if (!xhr.responseType || xhr.responseType === "text") {
+        text = xhr.responseText;
+      } else if (xhr.responseType === "json") {
+        text = xhr.response ? JSON.stringify(xhr.response) : null;
+      } else if (xhr.responseType === "arraybuffer" && xhr.response) {
+        text = new TextDecoder().decode(new Uint8Array(xhr.response));
+      }
+      if (!text) return;
+      const parsed = parseYouTubePlayerMetadata(text);
+      if (parsed) postYouTubePlayerMetadata(parsed);
+    } catch {
+      // Never disturb the page.
+    }
+  }
+
   // ===== fetch patch =====
 
   try {
@@ -835,6 +971,13 @@
           try {
             if (requestURL && DOUYIN_DETAIL_RE.test(requestURL)) {
               captureDouyinDetail(response);
+            }
+          } catch {
+            // Never disturb the original response.
+          }
+          try {
+            if (isYouTubePlayerURL(requestURL || response?.url)) {
+              captureYouTubePlayerMetadata(response);
             }
           } catch {
             // Never disturb the original response.
@@ -893,6 +1036,9 @@
               }
             });
           }
+          if (captured && isYouTubePlayerURL(captured)) {
+            this.addEventListener("load", () => youTubePlayerMetadataFromXHR(this));
+          }
         } catch {
           // Sniffing must never abort the page's request.
         }
@@ -944,6 +1090,10 @@
       looksLikeDashJSONObject,
       scanJSONForMedia,
       isMediaLikeURL,
+      isYouTubePlayerURL,
+      parseYouTubePlayerMetadata,
+      YOUTUBE_PLAYER_MESSAGE,
+      YOUTUBE_PLAYER_MAX_BYTES,
       getMetrics,
       resetMetrics,
       cancelAllActiveReaders,

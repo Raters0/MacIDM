@@ -40,6 +40,16 @@ const RETRYABLE_STAGES = new Set([
   YOUTUBE_INSPECTION_STAGES.failed,
 ]);
 
+// Page-phase reasons that end the page phase immediately without ending the
+// inspection: the App/yt-dlp fallback still runs.
+//
+// `pageDataUnavailable` means the page can never supply this video's player
+// data (a list/home hover-preview card, or another video's watch page), so
+// riding out pageBudgetMs would only delay the same fallback. `noPlayerData`
+// is deliberately absent: on the page's own video it is a race that the budget
+// exists to absorb.
+const TERMINAL_PAGE_REASONS = new Set(["pageDataUnavailable"]);
+
 export const YOUTUBE_INSPECTION_DEFAULTS = Object.freeze({
   // Page-phase poll cadence and budget (spec §5.8 thresholds).
   pagePollMs: 1_500,
@@ -338,6 +348,12 @@ export class YouTubeInspectionCoordinator {
         record.stage = YOUTUBE_INSPECTION_STAGES.unsupported;
         record.safeReason = "liveUnsupported";
         this.publishTerminal(record);
+        return;
+      }
+      // A page that can never hold this video's data ends the page phase up
+      // front; the shared fallback starts now instead of after the budget.
+      if (pageResult?.ok === false && TERMINAL_PAGE_REASONS.has(pageResult.reason)) {
+        record.safeReason = String(pageResult.reason);
         return;
       }
       if (

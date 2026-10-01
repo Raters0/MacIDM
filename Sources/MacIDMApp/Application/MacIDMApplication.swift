@@ -226,6 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // handlers and reports whether the previous session died abnormally
         // — without this, crashes leave nothing in macidm.log.
         CrashReporter.install(logFileURL: AppLogger.shared.logFileURL)
+        // Sparkle wants the live application environment, which exists by
+        // now; the SwiftUI scene's .task below fires before that in some
+        // launches.
+        model?.updateEngine.start()
         // Cold-launch silence: when the user's preference is "close window
         // hides to menu bar", switch to .accessory policy IMMEDIATELY —
         // before SwiftUI creates the main window. This prevents the Dock

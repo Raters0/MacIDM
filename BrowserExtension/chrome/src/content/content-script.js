@@ -22,7 +22,22 @@
   // snapshot in memory.
   const YOUTUBE_PLAYER_DATA_MESSAGE = "macidm.youTubePlayerData";
   const YOUTUBE_PLAYER_REQUEST_MESSAGE = "macidm.requestYouTubePlayerData";
+  // Feed-preview identity (chrome-extension-spec §5.8): the floating hover
+  // preview player is mounted outside every card and its DOM carries no video
+  // identity, so the bridge forwards the previewed videoId + title and the
+  // shared cache turns it into a per-card adapter identity.
+  const YOUTUBE_PREVIEW_IDENTITY_MESSAGE = "macidm.youTubePreviewIdentity";
+  const YOUTUBE_PREVIEW_REQUEST_MESSAGE = "macidm.requestYouTubePreviewIdentity";
+  // Player-response metadata captured by the MAIN world from the page's own
+  // `/youtubei/v1/player` traffic: bounded format metadata per videoId, never a
+  // media URL. It is what lets a list-page card row answer qualities in-page.
+  const YOUTUBE_PLAYER_METADATA_MESSAGE = "macidm.youtube.playerMetadata";
   let youTubePlayerSnapshot = null; // { videoId, capturedAt, data }
+  // Liveness of the synthesized preview identity, for change-driven republish:
+  // a hover that starts or stops must refresh the candidate list even when no
+  // other observation changed.
+  let youTubePreviewPublished = false;
+  let lastYouTubePreviewNudgeAt = 0;
   // Candidate confidence tiers: repeated reports of the same candidate keep
   // the higher confidence.
   // dom (direct DOM read) > headers (confirmed via background webRequest
@@ -131,10 +146,33 @@
     return false;
   });
 
+  /// Can this page ever supply the requested video's player data? Page quality
+  /// extraction only reads the current page's player response, so a request for
+  /// a different videoId (a list/home hover-preview card, or another video's
+  /// watch page) has no data source here. Answering it with the retryable
+  /// `noPlayerData` would make the coordinator ride out its whole page budget
+  /// for a result that can never exist; report it as terminal instead so the
+  /// shared App/yt-dlp fallback starts immediately.
+  function pageCanSupplyYouTubeQualities(pageUrl) {
+    const formats = globalThis.MacIDMYouTubeFormats;
+    if (typeof formats?.videoIdFromPageURL !== "function") return true;
+    const requestedID = formats.videoIdFromPageURL(pageUrl);
+    if (!requestedID) return true; // non-video page URL: keep the structured answer
+    if (requestedID === formats.videoIdFromPageURL(location.href)) return true;
+    // A different video can still be answered from player-response metadata this
+    // page captured itself (a hover preview fetches one per hovered video); only
+    // with nothing cached is the answer structurally impossible.
+    return Boolean(globalThis.MacIDMYouTubePlayerMetadata?.has?.(requestedID));
+  }
+
   /// In-page quality response: extract from the current snapshot first;
   /// with no result, retry with bounded backoff within the deadline,
   /// asking the MAIN world bridge to re-read once before each retry.
   async function respondWithYouTubeQualities(pageUrl, waitMs, sendResponse) {
+    if (!pageCanSupplyYouTubeQualities(pageUrl)) {
+      sendResponse({ ok: false, reason: "pageDataUnavailable" });
+      return;
+    }
     const deadline = Date.now() + waitMs;
     let lastResult = null;
     for (;;) {
@@ -164,8 +202,23 @@
         youTubePlayerSnapshot.data,
         pageUrl,
       );
-      if (fromSnapshot?.ok === true || fromSnapshot?.reason === "liveUnsupported") {
+      if (fromSnapshot?.ok === true || fromSnapshot.reason === "liveUnsupported") {
         return fromSnapshot;
+      }
+    }
+    // List/home hover previews: the page fetched this video's player response
+    // moments ago (MAIN-world capture → metadata cache). Running it through the
+    // very same pipeline as a watch page gives the card row its qualities with
+    // no App/yt-dlp round trip and no bot-check dependency.
+    const metadata = globalThis.MacIDMYouTubePlayerMetadata;
+    const requestedID = formats?.videoIdFromPageURL?.(pageUrl) ?? "";
+    if (formats?.extractFromPlayerResponseObject && metadata && requestedID) {
+      const cached = metadata.playerResponseFor?.(requestedID);
+      if (cached) {
+        const fromCache = formats.extractFromPlayerResponseObject(cached, pageUrl);
+        if (fromCache?.ok === true || fromCache.reason === "liveUnsupported") {
+          return fromCache;
+        }
       }
     }
     return formats?.extractPageQualities?.(pageUrl)
@@ -180,6 +233,24 @@
     } catch {
       // Keep the existing polling snapshot path when the bridge is
       // unavailable.
+    }
+  }
+
+  /// A live preview player without an identity yet: ask the bridge for an
+  /// immediate read instead of waiting for its next poll, so the hover card's
+  /// entry does not lag the preview by up to a second.
+  function nudgeYouTubePreviewIdentity() {
+    const preview = globalThis.MacIDMYouTubePreview;
+    if (typeof preview?.hasLivePreviewPlayer !== "function") return;
+    try {
+      if (!preview.hasLivePreviewPlayer(document)) return;
+      if ((preview.identities?.(document, location.href) ?? []).length > 0) return;
+      const now = Date.now();
+      if (now - lastYouTubePreviewNudgeAt < 500) return;
+      lastYouTubePreviewNudgeAt = now;
+      window.postMessage({ type: YOUTUBE_PREVIEW_REQUEST_MESSAGE }, "*");
+    } catch {
+      // The bridge's own poll still covers this page.
     }
   }
 
@@ -225,6 +296,13 @@
     confirmedFromProximity = false;
     lastDomTitle = staleTitleAtTransition;
     youTubePlayerSnapshot = null;
+    // A preview identity belongs to the page session it was read on; the new
+    // page's own hover publishes a fresh one.
+    globalThis.MacIDMYouTubePreview?.clear?.();
+    // Same for captured player-response metadata: it is per-page-session data,
+    // and a stale videoId must never answer the new page's quality queries.
+    globalThis.MacIDMYouTubePlayerMetadata?.clear?.();
+    youTubePreviewPublished = false;
 
     // Clear incremental state and cancel old timers.
     pendingMutations = [];
@@ -621,9 +699,22 @@
     // Bilibili list/homepage hover previews: attach card identity (bvid +
     // heading title) so the coalesced list can synthesize a site adapter
     // candidate instead of raw m4s + the page branding title.
-    const previewIdentities = mediaUtils?.collectBilibiliPreviewIdentities
+    // YouTube list/homepage hover previews: the identity comes from the MAIN
+    // world bridge cache (the preview player is mounted outside every card).
+    nudgeYouTubePreviewIdentity();
+    const bilibiliPreviewIdentities = mediaUtils?.collectBilibiliPreviewIdentities
       ? mediaUtils.collectBilibiliPreviewIdentities(document, location.href)
       : [];
+    const youTubePreviewIdentities =
+      globalThis.MacIDMYouTubePreview?.identities?.(document, location.href) ?? [];
+    const previewIdentities = [...bilibiliPreviewIdentities, ...youTubePreviewIdentities];
+    // Publish the transition in both directions: a hover that starts adds the
+    // card row, a hover that ends removes it (no other observation may change).
+    const previewLive = youTubePreviewIdentities.length > 0;
+    if (previewLive !== youTubePreviewPublished) {
+      youTubePreviewPublished = previewLive;
+      scheduleNotification(true);
+    }
     const attributed = globalThis.MacIDMMediaElementScope?.annotateOwnership?.(governed.candidates) ?? governed.candidates;
     const coalesced = mediaUtils?.coalesceMediaCandidates
       ? mediaUtils.coalesceMediaCandidates(attributed, synthesisTitle, location.href, previewIdentities)
@@ -858,7 +949,26 @@
         return;
       }
 
-      // 5. YouTube Player Data Message
+      // 5. YouTube feed-preview identity (MAIN world bridge): bounded
+      // videoId + title for the floating hover-preview player. Republish only
+      // when the identity actually changed; the liveness flip is published
+      // from snapshot().
+      if (data.type === YOUTUBE_PREVIEW_IDENTITY_MESSAGE) {
+        if (globalThis.MacIDMYouTubePreview?.store?.(data.payload)) {
+          scheduleNotification(true);
+        }
+        return;
+      }
+
+      // 6. YouTube player-response metadata (MAIN world capture): bounded
+      // per-video format metadata, never a media URL. No candidate changes, so
+      // no republish — the coordinator's page poll picks it up.
+      if (data.type === YOUTUBE_PLAYER_METADATA_MESSAGE) {
+        globalThis.MacIDMYouTubePlayerMetadata?.store?.(data.payload);
+        return;
+      }
+
+      // 7. YouTube Player Data Message
       if (data.type === YOUTUBE_PLAYER_DATA_MESSAGE) {
         const payload = data.payload;
         const videoId = typeof payload?.videoId === "string" ? payload.videoId : "";

@@ -185,6 +185,49 @@ enum ErrorPresentation {
                         "HLS/DASH 视频需要 ffmpeg 才能合并与转码。请安装 ffmpeg（如 brew install ffmpeg）后重启 MacIDM，MacIDM 会自动检测系统中的 ffmpeg。"
                 )
             )
+        case "DASH_MERGER_UNAVAILABLE":
+            return Friendly(
+                title: String(localized: "缺少 FFmpeg"),
+                message: String(
+                    localized: "DASH 视频需要 ffmpeg 合并音视频轨。请安装 ffmpeg（如 brew install ffmpeg）后重启 MacIDM。"
+                )
+            )
+        case "DASH_NO_VIDEO_TRACK":
+            return Friendly(
+                title: String(localized: "没有可用轨道"),
+                message: String(
+                    localized: "该 DASH 清单里没有可合并的视频或音频轨道，可能是加密或受限内容。"
+                )
+            )
+        case "DASH_INVALID_RESPONSE":
+            return Friendly(
+                title: String(localized: "分片响应异常"),
+                message: String(
+                    localized: "服务器返回的分片内容与请求范围不符，请稍后重试或重新提交下载。"
+                )
+            )
+        case "DASH_RESUME_CORRUPT":
+            return Friendly(
+                title: String(localized: "断点数据损坏"),
+                message: String(
+                    localized: "DASH 断点记录与已下载分片不一致。点击「重试」将丢弃断点从头下载。"
+                )
+            )
+        case "DASH_RESUME_INCOMPATIBLE":
+            return Friendly(
+                title: String(localized: "资源已变化"),
+                message: String(
+                    localized: "服务器上的资源已更新，旧分片无法继续拼接。请删除任务后重新下载。"
+                )
+            )
+        case "DUPLICATE_DESTINATION":
+            return Friendly(
+                title: String(localized: "保存位置重复"),
+                message: fallbackMessage
+                    ?? String(
+                        localized: "该保存位置已存在于任务列表中，请先移除旧任务或选择新文件名。"
+                    )
+            )
         case "NEEDS_AUTH":
             return Friendly(
                 title: String(localized: "登录态已过期"),
@@ -222,6 +265,13 @@ enum ErrorPresentation {
             return Friendly(title: String(localized: "未生成媒体文件"), message: fallbackMessage ?? "")
         case "YTDLP_FFMPEG_UNAVAILABLE":
             return Friendly(title: String(localized: "缺少 FFmpeg"), message: fallbackMessage ?? "")
+        case "NETWORK_ERROR":
+            // The generic bucket for errors no typed branch covers: the panel
+            // must still show a localized headline instead of the raw code.
+            return Friendly(
+                title: String(localized: "网络错误"),
+                message: fallbackMessage ?? String(localized: "发生未知错误。")
+            )
         default:
             return Friendly(
                 title: code,

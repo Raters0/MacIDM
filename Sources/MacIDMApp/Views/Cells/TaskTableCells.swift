@@ -81,27 +81,40 @@ struct SizeCell: View {
     }
 }
 
-/// Displays total download duration off the shared ``DurationClock``; only
-/// these cells re-render on each tick, never the whole Table.
+/// 耗时列：净传输时长（与平均速度同口径），端到端挂钟时长放进 tooltip。
+///
+/// Values come from the row's live model, which is pushed on every progress
+/// flush, so this cell no longer needs a per-second clock: net transfer time
+/// only changes when bytes advance, and a paused or parsing task must look
+/// frozen rather than tick.
 struct DurationCell: View {
     let task: AppTask
     @ObservedObject var live: TaskLiveModel
-    @ObservedObject var clock: DurationClock
 
-    private var currentDuration: TimeInterval {
-        if live.status.isTerminal, let total = live.totalDuration ?? task.totalDuration {
-            return total
+    private var netText: String {
+        DisplayFormatting.duration(live.displayDuration)
+    }
+
+    /// Both measures stay visible on purpose: the column answer is the transfer
+    /// time, while support reports need the end-to-end figure (pauses, queueing,
+    /// yt-dlp parsing and remux included).
+    private var tooltip: String {
+        guard
+            let wall = live.wallClockDuration ?? task.wallClockDuration,
+            wall > live.displayDuration
+        else {
+            return "仅统计实际传输时间（已排除排队、暂停、解析与混流）"
         }
-        let anchor = task.startedAt ?? task.createdAt
-        if !live.status.isActive {
-            return max(0, task.updatedAt.timeIntervalSince(anchor))
-        }
-        return max(0, clock.now.timeIntervalSince(anchor))
+        return String(
+            localized: "实际传输 \(netText)；端到端 \(DisplayFormatting.duration(wall))（含暂停、解析与混流）"
+        )
     }
 
     var body: some View {
-        Text(DisplayFormatting.duration(currentDuration))
+        Text(netText)
             .monospacedDigit()
+            .help(tooltip)
+            .accessibilityLabel("下载耗时 \(netText)")
     }
 }
 

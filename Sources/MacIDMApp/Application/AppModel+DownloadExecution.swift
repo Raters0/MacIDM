@@ -680,6 +680,17 @@ extension AppModel {
         cleanUpExecution(id)
     }
 
+    /// Persisted code for a failure the typed branches in `finish(_:error:)`
+    /// do not cover. Errors that own a stable code keep it, so a DASH pair or
+    /// a missing FFmpeg toolchain is labelled with its real cause instead of
+    /// the generic network bucket; only genuinely unclassified errors stay
+    /// there.
+    static func persistedFailureCode(for error: Error) -> String {
+        if let dashError = error as? DASHDownloadError { return dashError.code }
+        if let appModelError = error as? AppModelError { return appModelError.code }
+        return "NETWORK_ERROR"
+    }
+
     func finish(_ id: UUID, error: Error, execution generation: Int? = nil) {
         guard isCurrentExecution(id, generation) else { return }
         if pendingRemovals.contains(id) {
@@ -730,6 +741,21 @@ extension AppModel {
             sessionStore.markAuthFailed(domain: host)
             enqueueSessionAlert(domain: host, expired: hadStoredSession, taskID: id)
         }
+        // Safety net for backends that surface a user control action as a
+        // bare Swift cancellation instead of IDMError.paused/.cancelled:
+        // the transitional state below was set by the user's own pause or
+        // cancel request, so settle on it rather than reporting a network
+        // failure with an internal CancellationError message.
+        let controlSettledStatus: AppTaskStatus?
+        if error is CancellationError {
+            switch task(with: id)?.status {
+            case .pausing: controlSettledStatus = .paused
+            case .cancelling: controlSettledStatus = .cancelled
+            default: controlSettledStatus = nil
+            }
+        } else {
+            controlSettledStatus = nil
+        }
         update(id) {
             $0.bytesPerSecond = 0
             $0.errorRecommendation = diagnosis?.recommendation
@@ -772,8 +798,15 @@ extension AppModel {
                 $0.errorMessage = youtubeError.localizedDescription
             } else {
                 $0.status = .failed
-                $0.errorCode = "NETWORK_ERROR"
+                $0.errorCode = Self.persistedFailureCode(for: error)
                 $0.errorMessage = ErrorPresentation.describe(error).message
+            }
+            if let controlSettledStatus {
+                $0.status = controlSettledStatus
+                $0.errorCode = nil
+                $0.errorMessage = nil
+                $0.errorRecommendation = nil
+                $0.errorCategory = nil
             }
         }
         // After setting the task error state, check whether a yt-dlp

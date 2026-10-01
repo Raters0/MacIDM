@@ -29,17 +29,37 @@ struct MenuBarIconLabel: View {
 
 struct MenuBarContentView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var surfaceColor: Color {
+        colorScheme == .dark ? Color(white: 0.12) : Color(white: 0.985)
+    }
 
     var body: some View {
-        VStack(spacing: 14) {
+        if #available(macOS 15.0, *) {
+            panelContent.containerBackground(surfaceColor, for: .window)
+        } else {
+            panelContent.background(surfaceColor)
+        }
+    }
+
+    private var panelContent: some View {
+        VStack(spacing: 16) {
             header
-            activityCard
-            actionGrid
+            activityOverview
+            actions
+            if case .updateAvailable(let latest, let releaseURL) = model.updateEngine.state {
+                updateBanner(latest: latest, releaseURL: releaseURL)
+            }
+            Divider()
             footer
         }
-        .padding(16)
-        .frame(width: 336)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(20)
+        .frame(width: 320)
+        // MenuBarExtra can retain its material even when a window container
+        // background is supplied. Paint an opaque surface behind the content
+        // as well, extending through the hosting view's safe area.
+        .background(surfaceColor.ignoresSafeArea())
     }
 
     private var header: some View {
@@ -58,13 +78,15 @@ struct MenuBarContentView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Text(DisplayFormatting.speed(model.aggregateSpeed))
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .monospacedDigit()
+            if model.activeCount > 0 {
+                Text(DisplayFormatting.speed(model.aggregateSpeed))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+            }
         }
     }
 
-    private var activityCard: some View {
+    private var activityOverview: some View {
         VStack(spacing: 12) {
             HStack(spacing: 0) {
                 metric(title: "活动", value: model.activeCount, color: AppTheme.accent)
@@ -102,20 +124,15 @@ struct MenuBarContentView: View {
                 .font(.caption)
             }
         }
-        .padding(12)
-        .background(
-            Color.primary.opacity(0.035),
-            in: RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        }
     }
 
-    private var actionGrid: some View {
-        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
-            GridRow {
+    private var actions: some View {
+        VStack(spacing: 8) {
+            panelButton("添加下载", systemImage: "plus", tint: AppTheme.accent, prominent: true) {
+                model.presentNewDownload(draft: nil)
+            }
+
+            HStack(spacing: 8) {
                 panelButton("暂停全部", systemImage: "pause.fill", tint: AppTheme.warning) {
                     pauseAll()
                 }
@@ -127,16 +144,48 @@ struct MenuBarContentView: View {
                 .disabled(!canResumeAny)
             }
 
-            GridRow {
-                panelButton("添加下载", systemImage: "plus", tint: AppTheme.accent) {
-                    model.presentNewDownload(draft: nil)
+            Button {
+                NotificationCenter.default.post(name: .macIDMRequestMainWindow, object: nil)
+            } label: {
+                HStack {
+                    Label("打开 MacIDM", systemImage: "macwindow")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
                 }
-
-                panelButton("打开 MacIDM", systemImage: "macwindow", tint: AppTheme.accent) {
-                    NotificationCenter.default.post(name: .macIDMRequestMainWindow, object: nil)
-                }
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(MenuBarPanelButtonStyle(tint: AppTheme.accent, showsIdleBackground: false))
         }
+    }
+
+    /// New-release banner from the app update check. Only appears when a
+    /// check found a newer GitHub release; clicking opens the release page
+    /// in the browser — the app never updates itself.
+    private func updateBanner(latest: String, releaseURL: URL) -> some View {
+        Button {
+            NSWorkspace.shared.open(releaseURL)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up.circle.fill")
+                Text("发现新版本 \(latest)")
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .foregroundStyle(AppTheme.warning)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerCursorOnHover()
+        .help("打开 GitHub 发布页面")
     }
 
     private var footer: some View {
@@ -147,7 +196,7 @@ struct MenuBarContentView: View {
             Text("Chrome 接管：\(model.browserBridgeStatus.title)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 8)
 
@@ -175,7 +224,7 @@ struct MenuBarContentView: View {
     private func metric(title: LocalizedStringKey, value: Int, color: Color) -> some View {
         VStack(spacing: 2) {
             Text(value, format: .number)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(color)
                 .monospacedDigit()
             Text(title)
@@ -189,6 +238,7 @@ struct MenuBarContentView: View {
         _ title: LocalizedStringKey,
         systemImage: String,
         tint: Color,
+        prominent: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -197,7 +247,7 @@ struct MenuBarContentView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 34)
         }
-        .buttonStyle(MenuBarPanelButtonStyle(tint: tint))
+        .buttonStyle(MenuBarPanelButtonStyle(tint: tint, prominent: prominent))
     }
 
     private var activitySummary: String {
@@ -250,29 +300,36 @@ struct MenuBarContentView: View {
 
 private struct MenuBarPanelButtonStyle: ButtonStyle {
     let tint: Color
+    var prominent = false
+    var showsIdleBackground = true
 
     func makeBody(configuration: Configuration) -> some View {
-        MenuBarPanelButtonLabel(configuration: configuration, tint: tint)
+        MenuBarPanelButtonLabel(
+            configuration: configuration, tint: tint, prominent: prominent,
+            showsIdleBackground: showsIdleBackground
+        )
     }
 }
 
 private struct MenuBarPanelButtonLabel: View {
     let configuration: MenuBarPanelButtonStyle.Configuration
     let tint: Color
+    let prominent: Bool
+    let showsIdleBackground: Bool
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     var body: some View {
         configuration.label
-            .foregroundStyle(isHovering && isEnabled ? tint : Color.primary)
+            .foregroundStyle(prominent ? Color.white : isHovering && isEnabled ? tint : Color.primary)
             .background(
-                Color.primary.opacity(configuration.isPressed ? 0.09 : isHovering ? 0.055 : 0.025),
+                prominent
+                    ? tint.opacity(configuration.isPressed ? 0.75 : isHovering ? 0.9 : 1)
+                    : Color.primary.opacity(
+                        configuration.isPressed ? 0.09 : isHovering ? 0.055 : showsIdleBackground ? 0.035 : 0
+                    ),
                 in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(isHovering ? 0.13 : 0.075), lineWidth: 1)
-            }
             .opacity(isEnabled ? 1 : 0.38)
             .contentShape(Rectangle())
             .pointerCursorOnHover(isEnabled: isEnabled)

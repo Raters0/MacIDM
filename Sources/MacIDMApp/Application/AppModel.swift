@@ -48,6 +48,10 @@ final class AppModel: ObservableObject {
     let bilibiliAdapter: BilibiliPlayurlAdapter
     let browserBridge = AppBrowserBridge()
     let ytdlpManager = YTDlpManager()
+    /// Sparkle-backed update engine (check, download, install, relaunch).
+    /// Started from the app delegate once NSApplication exists; Settings
+    /// and the menu bar panel render its state.
+    let updateEngine = AppUpdateEngine()
     /// Manages the "launch at login" registration via SMAppService.
     /// Exposed so SettingsView can bind a toggle and surface errors.
     let launchAtLoginManager = LaunchAtLoginManager()
@@ -247,7 +251,11 @@ final class AppModel: ObservableObject {
         let resolvedYouTubeDownloader =
             youtubeDownloader
             ?? YouTubeDownloadRunner(
-                ffmpegRemuxer: resolvedRemuxer
+                ffmpegRemuxer: resolvedRemuxer,
+                // Shared with the inspection entry points below: the live gate
+                // reuses a verdict this session already paid for instead of
+                // running the same extraction per download.
+                liveStatusCache: .shared
             )
         self.downloadRunner =
             downloadRunner
@@ -945,10 +953,18 @@ final class AppModel: ObservableObject {
     ) async throws -> [DownloadMediaOption] {
         let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmedURL) else { throw IDMError.invalidURL }
+        // The quality list must reflect the login state the download itself
+        // will use: a manually typed URL carries no browser context, so the
+        // stored site session stands in before any outbound request. Without
+        // it, inspection resolves as a guest (guest-quality list, "missing
+        // tracks") while the actual download runs logged in. Delivery stays
+        // same-origin (DownloadRequestContext.apply), so a page-host session
+        // never leaks to a cross-origin media CDN.
+        let effectiveContext = inspectionRequestContext(for: url, existing: requestContext)
         if BilibiliPlayurlAdapter.supports(url) {
             let playurlOptions = try await bilibiliAdapter.resolve(
                 pageURL: url,
-                requestContext: requestContext
+                requestContext: effectiveContext
             )
             return playurlOptions.map { option in
                 let displayLabel = bilibiliOptionLabel(for: option)
@@ -1000,9 +1016,9 @@ final class AppModel: ObservableObject {
             // dialog — it falls back to the single default option.
             guard YTDlpManager.isAvailable else { return fallback }
             let inspection = await Self.withTimeout(15) {
-                try await YouTubeMediaInspector().inspect(
+                try await YouTubeMediaInspector(liveStatusCache: .shared).inspect(
                     url: url,
-                    requestContext: requestContext,
+                    requestContext: effectiveContext,
                     mediaKind: .http
                 )
             }
@@ -1022,7 +1038,7 @@ final class AppModel: ObservableObject {
                     ),
                     label: variant.label,
                     encoding: MediaVariantLabel.family(forCodecs: variant.codecs),
-                    requestContext: requestContext,
+                    requestContext: effectiveContext,
                     backend: .youtubeExtractor,
                     estimatedSize: variant.estimatedSize,
                     duration: variant.duration
@@ -1037,7 +1053,7 @@ final class AppModel: ObservableObject {
                 filenameHint: filenameHint,
                 filenameHintSource: filenameHintSource,
                 pageTitle: pageTitle,
-                requestContext: requestContext
+                requestContext: effectiveContext
             )
         }
 
@@ -1064,7 +1080,7 @@ final class AppModel: ObservableObject {
             destination: URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
                 .appendingPathComponent(InputValidator.safeFilename(filenameHint ?? "download")),
             maximumParallelRequests: settings.maximumParallelRequests,
-            requestContext: requestContext
+            requestContext: effectiveContext
         )
         if let info = try? await browserProbe(probeRequest),
             !isHTMLMime(info.mimeType),
@@ -1094,7 +1110,7 @@ final class AppModel: ObservableObject {
 
         let discovery = try? await pageMediaDiscoverer.discover(
             url: url,
-            requestContext: requestContext
+            requestContext: effectiveContext
         )
         // A raw <title> usually carries the site brand ("… - Hanime1.me");
         // strip it against the page hosts before it becomes the filename base.
@@ -1111,7 +1127,7 @@ final class AppModel: ObservableObject {
                     sourceKind: candidate.sourceKind,
                     filenameHint: nil,
                     pageTitle: discoveredTitle,
-                    requestContext: requestContext
+                    requestContext: effectiveContext
                 )
                 options.append(contentsOf: inspected)
             } else {
@@ -1143,13 +1159,38 @@ final class AppModel: ObservableObject {
                 filenameHint: filenameHint,
                 filenameHintSource: filenameHintSource,
                 pageTitle: pageTitle,
-                requestContext: requestContext
+                requestContext: effectiveContext
             )
         {
             return fallback
         }
         guard !options.isEmpty else { throw WebPageMediaDiscoveryError.noCandidates }
         return options
+    }
+
+    /// Inspection-time stand-in for a browser context: a manually typed URL
+    /// has no cookie of its own, so the stored site session (captured by an
+    /// extension download or pasted by hand) fills in exactly like start()
+    /// does for the download itself. Only a missing cookie is filled — an
+    /// explicit browser context still wins field by field — and an
+    /// unreadable credential falls through to no-session rather than an
+    /// empty Cookie header that reads as "logged in".
+    func inspectionRequestContext(
+        for url: URL,
+        existing: DownloadRequestContext?
+    ) -> DownloadRequestContext {
+        if let existing, let cookie = existing.cookie, !cookie.isEmpty {
+            return existing
+        }
+        guard let stored = sessionStore.lookup(url: url),
+            let cookie = sessionStore.cookieHeader(for: stored),
+            !cookie.isEmpty
+        else { return existing ?? DownloadRequestContext() }
+        return DownloadRequestContext(
+            cookie: cookie,
+            referer: existing?.referer,
+            userAgent: existing?.userAgent ?? stored.userAgent
+        )
     }
 
     /// Asks yt-dlp to resolve a playable media URL for `url` (any site).
@@ -1675,6 +1716,17 @@ enum AppModelError: LocalizedError {
             String(localized: "该保存位置已存在于任务列表中，请先移除旧任务或选择新文件名。")
         case .ffmpegUnavailable:
             String(localized: "HLS 下载需要已配置且通过校验的 FFmpeg 工具链。")
+        }
+    }
+
+    /// Stable code persisted on the task, mirroring `IDMError.code`. A missing
+    /// FFmpeg toolchain is a local setup problem: without its own code the
+    /// failure is stamped as a generic network error and the detail panel
+    /// points the user at the wrong remedy.
+    var code: String {
+        switch self {
+        case .duplicateDestination: "DUPLICATE_DESTINATION"
+        case .ffmpegUnavailable: "FFMPEG_UNAVAILABLE"
         }
     }
 }

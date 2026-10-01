@@ -122,6 +122,17 @@ enum CLIWorker {
                 $0.workerPID = nil
             }
             throw error
+        } catch let dashError as DASHDownloadError {
+            // DASH failures own a stable code: keep it instead of flattening
+            // every non-IDMError into the generic network bucket, so the CLI
+            // and the App report the same cause for the same task.
+            _ = try? store.mutate(id) {
+                $0.status = .failed
+                $0.errorCode = dashError.code
+                $0.errorMessage = dashError.localizedDescription
+                $0.workerPID = nil
+            }
+            throw dashError
         } catch {
             _ = try? store.mutate(id) {
                 $0.status = .failed

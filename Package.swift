@@ -12,6 +12,12 @@ let package = Package(
         .executable(name: "MacIDMDesktop", targets: ["MacIDMApp"]),
         .executable(name: "macidm-host", targets: ["MacIDMHost"]),
     ],
+    dependencies: [
+        // Sparkle 2 powers the in-app auto-update (EdDSA-signed releases,
+        // appcast hosted as a GitHub Release asset). Zero-cost tier keeps
+        // the app bundle ad-hoc signed; see technical-spec §6.1/§6.2.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0")
+    ],
     targets: [
         .target(name: "IDMEngine"),
         .target(
@@ -25,7 +31,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacIDMApp",
-            dependencies: ["IDMEngine", "MacIDMBridge"],
+            dependencies: [
+                "IDMEngine",
+                "MacIDMBridge",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .executableTarget(name: "MacIDMHost", dependencies: ["MacIDMBridge"]),

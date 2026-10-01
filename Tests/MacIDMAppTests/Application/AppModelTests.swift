@@ -1663,6 +1663,95 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(cancelled.errorMessage)
     }
 
+    /// 反例：后端把用户的暂停/取消当成裸 Swift `CancellationError` 上抛时，
+    /// 收尾逻辑不得把任务记成「失败 / NETWORK_ERROR」并把内部报错文案交给用户；
+    /// `pausing/cancelling` 过渡态本身就是用户动作留下的证据。
+    func testBareCancellationInATransitionalControlStateSettlesAsPausedOrCancelled() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMCancellationSettleTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = try XCTUnwrap(makeIsolatedDefaults())
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        try model.addDownload(
+            urlString: "https://example.com/file.zip",
+            destination: directory.appendingPathComponent("file.zip"),
+            maximumParallelRequests: 8,
+            expectedSHA256: nil,
+            startImmediately: false
+        )
+        let task = try XCTUnwrap(model.tasks.first)
+
+        model.update(task.id) { $0.status = .pausing }
+        model.finish(task.id, error: CancellationError())
+        let paused = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(paused.status, .paused)
+        XCTAssertNil(paused.errorCode)
+        XCTAssertNil(paused.errorMessage)
+        XCTAssertNil(paused.errorCategory)
+        XCTAssertNil(paused.errorRecommendation)
+
+        model.update(task.id) { $0.status = .cancelling }
+        model.finish(task.id, error: CancellationError())
+        let cancelled = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(cancelled.status, .cancelled)
+        XCTAssertNil(cancelled.errorCode)
+        XCTAssertNil(cancelled.errorMessage)
+
+        // 没有过渡态证据时，裸取消仍按普通失败处理：这层网不得吞掉真错误。
+        model.update(task.id) { $0.status = .running }
+        model.finish(task.id, error: CancellationError())
+        let failed = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(failed.status, .failed)
+        XCTAssertEqual(failed.errorCode, "NETWORK_ERROR")
+    }
+
+    /// 反例：不属于 IDMError/FFmpegError/YouTubeDownloadError 的失败过去一律
+    /// 被盖上 NETWORK_ERROR 章，B 站 DASH 与 HLS 缺 FFmpeg 因此在列表里显示成
+    /// 「网络错误」，详情面板也拿不到对的分类与建议。
+    func testNonEngineFailuresKeepTheirOwnPersistedCodeAndCategory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMFailureCodeTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = try XCTUnwrap(makeIsolatedDefaults())
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        try model.addDownload(
+            urlString: "https://example.com/manifest.mpd",
+            destination: directory.appendingPathComponent("dash.mp4"),
+            maximumParallelRequests: 8,
+            expectedSHA256: nil,
+            startImmediately: false
+        )
+        let task = try XCTUnwrap(model.tasks.first)
+
+        model.finish(task.id, error: DASHDownloadError.mergerUnavailable)
+        let dash = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(dash.status, .failed)
+        XCTAssertEqual(dash.errorCode, DASHDownloadError.mergerUnavailable.code)
+        XCTAssertEqual(dash.errorCategory, ErrorDiagnosis.Category.toolchain.rawValue)
+
+        model.finish(task.id, error: AppModelError.ffmpegUnavailable)
+        let hls = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(hls.status, .failed)
+        XCTAssertEqual(hls.errorCode, AppModelError.ffmpegUnavailable.code)
+        XCTAssertEqual(hls.errorCategory, ErrorDiagnosis.Category.toolchain.rawValue)
+
+        // 真正无法归类的错误仍留在通用兜底，不得被这层改动吞掉。
+        struct OpaqueError: Error {}
+        model.finish(task.id, error: OpaqueError())
+        let opaque = try XCTUnwrap(model.tasks.first)
+        XCTAssertEqual(opaque.status, .failed)
+        XCTAssertEqual(opaque.errorCode, "NETWORK_ERROR")
+        XCTAssertEqual(opaque.errorCategory, ErrorDiagnosis.Category.unknown.rawValue)
+    }
+
     /// 产品契约（technical-spec §3.4）：YouTube 下载的源变体容器（如
     /// VP9 的 webm）不是最终输出容器；最终文件统一输出 MP4，标题自带的
     /// 容器后缀也被覆盖。普通直链保持自身扩展名不受影响。
@@ -1853,5 +1942,144 @@ final class HLSPlaylistURLEnforcementTests: XCTestCase {
             model.effectiveSourceKind(for: video, requested: .http, pairAudioURL: audio),
             .dash
         )
+    }
+
+    // MARK: - 解析阶段的站点会话接入
+
+    /// 手动输入的 B 站地址没有浏览器上下文：解析（寻找资源）必须带上已保存
+    /// 的站点会话，画质列表才能反映登录态。否则解析按游客出画质，而真正的
+    /// 下载却带着 Cookie，用户无从知道差异从何而来（实测回归：粘贴 Cookie
+    /// 后「寻找资源」仍只有 480p）。
+    func testBilibiliInspectionCarriesTheStoredSiteSession() async throws {
+        let directory = try makeInspectionDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = RecordingPlayurlClient(responses: [
+            "/x/web-interface/view": try bilibiliFixture("view"),
+            "/x/web-interface/nav": Data(#"{"code":-101,"data":{}}"#.utf8),
+            "/x/player/wbi/playurl": try bilibiliFixture("playurl"),
+        ])
+        let sessionStore = SessionStore(
+            directory: directory.appendingPathComponent("sessions"),
+            secrets: FakeSessionSecretStore()
+        )
+        sessionStore.store(
+            domain: "www.bilibili.com",
+            cookie: "SESSDATA=stored-cookie; DedeUserID=1",
+            userAgent: "StoredUA/1.0"
+        )
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: try XCTUnwrap(makeIsolatedDefaults())),
+            bilibiliAdapter: BilibiliPlayurlAdapter(client: client),
+            sessionStore: sessionStore
+        )
+
+        _ = try await model.resolveDownloadOptions(
+            urlString: "https://www.bilibili.com/video/BV1xx411c7mD")
+
+        let requests = await client.requests
+        let playurl = try XCTUnwrap(
+            requests.first { $0.url.path == "/x/player/wbi/playurl" }
+        )
+        XCTAssertEqual(playurl.requestContext?.cookie, "SESSDATA=stored-cookie; DedeUserID=1")
+        XCTAssertEqual(playurl.requestContext?.userAgent, "StoredUA/1.0")
+    }
+
+    /// 显式浏览器上下文按字段优先：已有的 Cookie 不得被存储会话覆盖。
+    func testBilibiliInspectionKeepsAnExplicitBrowserCookieOverTheStoredSession() async throws {
+        let directory = try makeInspectionDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = RecordingPlayurlClient(responses: [
+            "/x/web-interface/view": try bilibiliFixture("view"),
+            "/x/web-interface/nav": Data(#"{"code":-101,"data":{}}"#.utf8),
+            "/x/player/wbi/playurl": try bilibiliFixture("playurl"),
+        ])
+        let sessionStore = SessionStore(
+            directory: directory.appendingPathComponent("sessions"),
+            secrets: FakeSessionSecretStore()
+        )
+        sessionStore.store(domain: "www.bilibili.com", cookie: "SESSDATA=stored-cookie", userAgent: nil)
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: try XCTUnwrap(makeIsolatedDefaults())),
+            bilibiliAdapter: BilibiliPlayurlAdapter(client: client),
+            sessionStore: sessionStore
+        )
+
+        _ = try await model.resolveDownloadOptions(
+            urlString: "https://www.bilibili.com/video/BV1xx411c7mD",
+            requestContext: DownloadRequestContext(cookie: "BROWSER=1")
+        )
+
+        let requests = await client.requests
+        let playurl = try XCTUnwrap(
+            requests.first { $0.url.path == "/x/player/wbi/playurl" }
+        )
+        XCTAssertEqual(playurl.requestContext?.cookie, "BROWSER=1")
+    }
+
+    /// 没有存储会话时保持游客解析：不发请求头，也不发空 Cookie 头
+    /// （空值会被站点当成「已登录但无效」）。
+    func testBilibiliInspectionWithoutStoredSessionResolvesAsGuest() async throws {
+        let directory = try makeInspectionDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = RecordingPlayurlClient(responses: [
+            "/x/web-interface/view": try bilibiliFixture("view"),
+            "/x/web-interface/nav": Data(#"{"code":-101,"data":{}}"#.utf8),
+            "/x/player/wbi/playurl": try bilibiliFixture("playurl"),
+        ])
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: try XCTUnwrap(makeIsolatedDefaults())),
+            bilibiliAdapter: BilibiliPlayurlAdapter(client: client),
+            sessionStore: SessionStore(
+                directory: directory.appendingPathComponent("sessions"),
+                secrets: FakeSessionSecretStore()
+            )
+        )
+
+        _ = try await model.resolveDownloadOptions(
+            urlString: "https://www.bilibili.com/video/BV1xx411c7mD")
+
+        let requests = await client.requests
+        let playurl = try XCTUnwrap(
+            requests.first { $0.url.path == "/x/player/wbi/playurl" }
+        )
+        XCTAssertNil(playurl.requestContext?.cookie)
+    }
+
+    private func makeInspectionDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMInspectSession-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func bilibiliFixture(_ name: String) throws -> Data {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try Data(
+            contentsOf: root.appendingPathComponent("Tests/Fixtures/Bilibili/\(name).json"))
+    }
+}
+
+/// 记录 B 站解析实际发出的请求，供断言 Cookie 是否随请求携带。
+private actor RecordingPlayurlClient: HLSResourceClient {
+    let responses: [String: Data]
+    private(set) var requests: [HLSFetchRequest] = []
+
+    init(responses: [String: Data]) {
+        self.responses = responses
+    }
+
+    func fetch(_ request: HLSFetchRequest) async throws -> HLSFetchResponse {
+        requests.append(request)
+        guard let data = responses[request.url.path] else {
+            return HLSFetchResponse(data: Data(), finalURL: request.url, statusCode: 404)
+        }
+        return HLSFetchResponse(data: data, finalURL: request.url, statusCode: 200)
     }
 }

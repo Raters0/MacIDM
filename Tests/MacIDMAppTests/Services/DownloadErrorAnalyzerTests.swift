@@ -182,6 +182,47 @@ final class DownloadErrorAnalyzerTests: XCTestCase {
         )
     }
 
+    // MARK: - DASH / app-level layer
+
+    /// 反例：DASH 合并器缺失过去落到 fallback，被诊断成 unknown，
+    /// 详情页因此只能给出「稍后重试」这种对不上病因的建议。
+    func testDashMergerUnavailableIsAToolchainProblem() {
+        let diagnosis = DownloadErrorAnalyzer.diagnose(
+            error: DASHDownloadError.mergerUnavailable,
+            context: context
+        )
+        XCTAssertEqual(diagnosis.category, .toolchain)
+        XCTAssertTrue(diagnosis.recommendation.contains("ffmpeg"))
+        XCTAssertTrue(diagnosis.retryable)
+    }
+
+    func testDashResumeCorruptIsAStorageProblem() {
+        let diagnosis = DownloadErrorAnalyzer.diagnose(
+            error: DASHDownloadError.resumeCorrupt,
+            context: context
+        )
+        XCTAssertEqual(diagnosis.category, .storage)
+        XCTAssertTrue(diagnosis.retryable)
+    }
+
+    func testDashResumeIncompatibleIsAResourceChange() {
+        let diagnosis = DownloadErrorAnalyzer.diagnose(
+            error: DASHDownloadError.resumeIncompatible,
+            context: context
+        )
+        XCTAssertEqual(diagnosis.category, .resource)
+        XCTAssertFalse(diagnosis.retryable, "资源已变化时重试同一断点没有意义")
+    }
+
+    func testMissingFFmpegForHLSIsAToolchainProblem() {
+        let diagnosis = DownloadErrorAnalyzer.diagnose(
+            error: AppModelError.ffmpegUnavailable,
+            context: context
+        )
+        XCTAssertEqual(diagnosis.category, .toolchain)
+        XCTAssertFalse(diagnosis.requiresSession)
+    }
+
     // MARK: - Fallback
 
     func testUnknownErrorStillProducesDiagnosis() {

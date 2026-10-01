@@ -765,10 +765,18 @@ test("watch→首页：导航清理后延迟到达的旧播放器消息不得恢
     },
   );
   await settle(400);
+  // 首页不可能持有该视频的播放器数据：原因从可重试的 noPlayerData 收紧为
+  // 终止性 pageDataUnavailable（不让协调器用页内预算空等），而“旧快照消费不到”
+  // 的本条不变量必须仍然成立。
   assert.equal(
     response?.reason,
-    "noPlayerData",
+    "pageDataUnavailable",
     "延迟旧消息不得把旧快照写回页面会话",
+  );
+  assert.equal(response?.ok, false);
+  assert.ok(
+    !Array.isArray(response?.variants) || response.variants.length === 0,
+    "旧视频的画质不得出现在应答里",
   );
 });
 
@@ -838,7 +846,13 @@ test("首页收到任意带 videoId 的播放器消息：整条忽略", async ()
     },
   );
   await settle(400);
-  assert.equal(response?.reason, "noPlayerData", "首页不得持有旧视频快照");
+  // 同上：首页对旧视频 URL 的画质查询以终止性原因应答，且不得带出旧快照画质。
+  assert.equal(response?.reason, "pageDataUnavailable", "首页不得持有旧视频快照");
+  assert.equal(response?.ok, false);
+  assert.ok(
+    !Array.isArray(response?.variants) || response.variants.length === 0,
+    "旧视频的画质不得被应答",
+  );
 });
 
 test("watch B 收到 A 的延迟消息被忽略，随后 B 的匹配消息正常采用", async () => {
@@ -927,4 +941,65 @@ test("同视频参数变化后新到达的匹配快照仍正常接收，既有�
   );
   await settle(400);
   assert.equal(response?.ok, true, "参数变化后匹配快照仍能被消费");
+});
+
+// 列表/首页悬浮卡片行的页内画质查询：页内提取只读当前页的播放器响应，
+// 被询问的 videoId 与页面不同时根本不可能有数据。以可重试的 noPlayerData
+// 应答会让协调器白等满页内预算（实测 9 秒「等待页面数据…」），
+// 必须改成立即终止性应答，让共享 yt-dlp 回退立即开始。
+test("列表页悬浮卡片行的画质查询立即判定页内不可用", async () => {
+  const { context, getListener } = createSPAContentScriptVM({ startURL: "https://www.youtube.com/" });
+  context.top = context;
+  const listener = getListener();
+  let response = null;
+  const startedAt = Date.now();
+  const returned = listener(
+    {
+      type: "macidm.getYouTubeQualities",
+      pageUrl: "https://www.youtube.com/watch?v=cardvideo1",
+      waitMs: 5_000,
+    },
+    {},
+    (value) => {
+      response = value;
+    },
+  );
+
+  assert.equal(returned, true, "仍按异步应答语义保持消息通道");
+  await settle(30);
+  assert.equal(response?.ok, false);
+  assert.equal(
+    response?.reason,
+    "pageDataUnavailable",
+    "页面不可能持有该视频数据时必须终止性应答",
+  );
+  assert.ok(Date.now() - startedAt < 1_000, "不得等待 waitMs 预算，必须立即应答");
+});
+
+test("本页视频的画质查询不得误判为终止：仍保留可重试 noPlayerData", async () => {
+  const { context, getListener } = createSPAContentScriptVM({
+    startURL: "https://www.youtube.com/watch?v=abc123",
+  });
+  context.top = context;
+  const listener = getListener();
+  let response = null;
+  listener(
+    {
+      type: "macidm.getYouTubeQualities",
+      pageUrl: "https://www.youtube.com/watch?v=abc123&t=60s",
+      waitMs: 300,
+    },
+    {},
+    (value) => {
+      response = value;
+    },
+  );
+
+  await settle(700);
+  assert.equal(response?.ok, false);
+  assert.equal(
+    response?.reason,
+    "noPlayerData",
+    "同视频页内数据晚到是竞态，必须继续走有界重试而不是提前终止",
+  );
 });

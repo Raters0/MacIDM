@@ -33,7 +33,7 @@ extension AppModel {
                 return .ok(
                     requestId: request.requestId,
                     type: "pong",
-                    payload: ["appVersion": .string("1.0.1")]
+                    payload: ["appVersion": .string(AppBuildInfo.marketingVersion ?? "unknown")]
                 )
             case "app.activate":
                 // The user explicitly asked to open the App from the
@@ -44,7 +44,7 @@ extension AppModel {
                 return .ok(
                     requestId: request.requestId,
                     type: "app.activated",
-                    payload: ["appVersion": .string("1.0.1")]
+                    payload: ["appVersion": .string(AppBuildInfo.marketingVersion ?? "unknown")]
                 )
             case "download.create":
                 return try await prepareBrowserDownload(request, clientID: clientID, secret: secret)
@@ -223,7 +223,10 @@ extension AppModel {
         let requestContext = try browserRequestContext(from: request)
         let inspection: MediaInspection
         if rawMediaKind == "youtube" {
-            let youTubeInspector = YouTubeMediaInspector()
+            // Shares the live-verdict record with the download runner: this
+            // inspection already ran the extraction the download's live gate
+            // would otherwise repeat a few seconds later.
+            let youTubeInspector = YouTubeMediaInspector(liveStatusCache: .shared)
             inspection = try await youTubeInspector.inspect(
                 url: url,
                 requestContext: requestContext,

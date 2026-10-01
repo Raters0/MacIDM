@@ -344,7 +344,38 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     // Sorting helpers for Table column comparators
     var sortSize: Int64 { totalBytes ?? 0 }
     var sortSpeed: Double { averageSpeed ?? bytesPerSecond }
-    var sortDuration: TimeInterval { totalDuration ?? 0 }
+    /// The 「下载耗时」 column's value and its sort key must be the same number,
+    /// otherwise a sorted list looks ordered against figures the row does not
+    /// show.
+    var sortDuration: TimeInterval { displayDuration }
+
+    /// Value shown by the 「下载耗时」 column: cumulative **net transfer** time,
+    /// the same basis `averageSpeed` divides by, so a paused task keeps its
+    /// elapsed transfer seconds instead of silently absorbing the pause into
+    /// the number, and yt-dlp/live-probe parsing never inflates it.
+    ///
+    /// Rows that never accumulated net time (records written before the field
+    /// existed, or a task that failed before any byte advanced) fall back to the
+    /// recorded end-to-end duration and then to the wall clock up to the last
+    /// update — the same degradation `averageSpeed` uses, so the column never
+    /// reads 0 for a task that demonstrably downloaded something.
+    var displayDuration: TimeInterval {
+        if activeTransferDuration > 0 { return activeTransferDuration }
+        if let totalDuration { return totalDuration }
+        guard let startedAt else { return 0 }
+        return max(0, updatedAt.timeIntervalSince(startedAt))
+    }
+
+    /// End-to-end wall clock from the first `.running` until now/completion,
+    /// including user pauses, retry waits, parsing, remux and verification.
+    /// Kept for the column's tooltip and the support report so the two
+    /// measures stay distinguishable instead of replacing each other.
+    /// nil until the task has actually started running.
+    var wallClockDuration: TimeInterval? {
+        if let totalDuration { return totalDuration }
+        guard let startedAt else { return nil }
+        return max(0, updatedAt.timeIntervalSince(startedAt))
+    }
 
     var filename: String {
         URL(fileURLWithPath: destinationPath).lastPathComponent

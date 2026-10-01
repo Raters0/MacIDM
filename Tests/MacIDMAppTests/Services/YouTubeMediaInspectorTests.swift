@@ -618,6 +618,84 @@ final class YouTubeMediaInspectorTests: XCTestCase {
 
     // MARK: - Live status（technical-spec §3.4）
 
+    /// 构造输出固定 `-J` JSON 并把每次调用追加到 marker 的假 yt-dlp，
+    /// 用于断言「判定窗口内不得重复解析」。
+    private func makeCountingJSONExecutable(
+        json: String, marker: URL, directory: URL
+    ) throws -> URL {
+        let executable = directory.appendingPathComponent("fake-yt-dlp-count-\(UUID().uuidString)")
+        let script = "#!/bin/sh\nprintf 'i\\n' >> \"\(marker.path)\"\ncat <<'EOF'\n\(json)\nEOF\n"
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    private func inspectInvocations(_ marker: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: marker.path) else { return 0 }
+        let text = try String(contentsOf: marker, encoding: .utf8)
+        return text.split(separator: "\n").count
+    }
+
+    func testSecondInspectWithinTheCacheWindowRunsYtDlpOnce() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("inspect-invocations")
+        let executable = try makeCountingJSONExecutable(
+            json: "{\"live_status\": \"not_live\", \(vodFormats)}",
+            marker: marker,
+            directory: directory
+        )
+        let inspector = YouTubeMediaInspector(
+            executableURL: executable, liveStatusCache: YouTubeLiveStatusCache())
+        let url = URL(string: "https://www.youtube.com/watch?v=abcdef12345")!
+
+        let first = try await inspector.inspect(url: url, requestContext: nil, mediaKind: .http)
+        XCTAssertEqual(try inspectInvocations(marker), 1, "首次解析必须跑一次 yt-dlp")
+
+        let second = try await inspector.inspect(url: url, requestContext: nil, mediaKind: .http)
+        XCTAssertEqual(
+            try inspectInvocations(marker), 1,
+            "同一视频、同一凭据且判定未过期时不得重复解析"
+        )
+        XCTAssertEqual(second.variants.map(\.label), first.variants.map(\.label))
+        XCTAssertEqual(second.variants.map(\.url), first.variants.map(\.url))
+        XCTAssertEqual(second.variants.map(\.estimatedSize), first.variants.map(\.estimatedSize))
+
+        // 未接缓存的实例（等价于应用重启或另一会话）必须重新解析，
+        // 证明上面的跳过确实来自缓存。
+        let uncached = YouTubeMediaInspector(executableURL: executable)
+        _ = try await uncached.inspect(url: url, requestContext: nil, mediaKind: .http)
+        XCTAssertEqual(try inspectInvocations(marker), 2)
+    }
+
+    func testBlockedLiveInspectionIsNeverServedFromTheCache() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("live-inspect-invocations")
+        let executable = try makeCountingJSONExecutable(
+            json: "{\"is_live\": true, \"live_status\": \"is_live\", \(vodFormats)}",
+            marker: marker,
+            directory: directory
+        )
+        let inspector = YouTubeMediaInspector(
+            executableURL: executable, liveStatusCache: YouTubeLiveStatusCache())
+        let url = URL(string: "https://www.youtube.com/watch?v=abcdef12345")!
+
+        for _ in 0..<2 {
+            do {
+                _ = try await inspector.inspect(url: url, requestContext: nil, mediaKind: .http)
+                XCTFail("直播内容必须在解析阶段被拦截")
+            } catch let error as MediaInspectionError {
+                XCTAssertEqual(error, .unsupportedLiveStream)
+            }
+        }
+        XCTAssertEqual(
+            try inspectInvocations(marker), 2,
+            "被拦截的直播不得写入缓存，每次都必须重新解析（fail-closed）"
+        )
+    }
+
     /// 构造输出固定 `-J` JSON 的假 yt-dlp。
     private func makeJSONExecutable(json: String, directory: URL) throws -> URL {
         let executable = directory.appendingPathComponent("fake-yt-dlp-\(UUID().uuidString)")

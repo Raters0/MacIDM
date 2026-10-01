@@ -27,6 +27,10 @@ struct SettingsView: View {
     /// Site-session list starts collapsed to the most recent domains;
     /// the in-card toggle expands it to the full list.
     @State private var sessionsExpanded = false
+    /// Domain whose cookie was just copied; flips that row's ellipsis to a
+    /// checkmark for a moment. The cookie value is only read at click time,
+    /// never while the list renders.
+    @State private var copiedSessionDomain: String?
     @State private var selectedPage: SettingsPage = .general
 
     /// Control-column tiers. A single 300pt column for every control left
@@ -669,6 +673,17 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             rowDivider
+            updateCheckRow
+            rowDivider
+            toggleRow(
+                "自动下载并安装更新",
+                description: "关闭时每次安装前都会先征求同意。",
+                isOn: Binding(
+                    get: { model.updateEngine.automaticallyDownloadsUpdates },
+                    set: { model.updateEngine.automaticallyDownloadsUpdates = $0 }
+                )
+            )
+            rowDivider
             settingRow("构建时间") {
                 Text(buildDateText)
                     .monospacedDigit()
@@ -682,6 +697,56 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    /// App self-update (Settings → 关于), powered by Sparkle (technical-spec
+    /// §6.1). The check button delegates to Sparkle's standard driver UI;
+    /// the status text mirrors the engine state so the outcome stays
+    /// visible after Sparkle's dialogs close.
+    private var updateCheckRow: some View {
+        settingRow(
+            "软件更新",
+            description: "自动检查每天最多一次。",
+            controlColumnWidth: SettingsMetrics.mediumControlColumn
+        ) {
+            HStack(spacing: 8) {
+                if let text = updateStatusText(model.updateEngine.state) {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(updateStatusColor(model.updateEngine.state))
+                }
+                Button("检查更新") {
+                    model.updateEngine.checkForUpdates()
+                }
+                if case .updateAvailable(_, let releaseURL) = model.updateEngine.state {
+                    Button("查看新版本") {
+                        NSWorkspace.shared.open(releaseURL)
+                    }
+                }
+            }
+        }
+    }
+
+    private func updateStatusText(_ state: AppUpdateEngine.State) -> String? {
+        switch state {
+        case .idle:
+            nil
+        case .upToDate:
+            String(localized: "已是最新")
+        case .updateAvailable(let latest, _):
+            String(localized: "发现新版本 \(latest)")
+        case .failed(let message):
+            message
+        }
+    }
+
+    private func updateStatusColor(_ state: AppUpdateEngine.State) -> Color {
+        switch state {
+        case .idle: Color.secondary
+        case .upToDate: AppTheme.success
+        case .updateAvailable: AppTheme.warning
+        case .failed: AppTheme.danger
         }
     }
 
@@ -876,6 +941,9 @@ struct SettingsView: View {
     /// keyboard/VoiceOver users can tell the menus apart.
     private func sessionMenu(for session: StoredSession) -> some View {
         Menu {
+            Button("复制 Cookie") {
+                copySessionCookie(for: session)
+            }
             Button("更新 Cookie…") {
                 pasteDomain = CookiePasteDomain(domain: session.domain)
             }
@@ -884,7 +952,10 @@ struct SettingsView: View {
                 model.sessionStore.remove(domain: session.domain)
             }
         } label: {
-            Image(systemName: "ellipsis")
+            Image(systemName: copiedSessionDomain == session.domain ? "checkmark" : "ellipsis")
+                .foregroundStyle(
+                    copiedSessionDomain == session.domain ? AppTheme.success : Color.primary
+                )
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
@@ -894,6 +965,24 @@ struct SettingsView: View {
         .pointerCursorOnHover()
         .accessibilityLabel("管理 \(session.domain) 的站点会话")
         .help("管理站点会话")
+    }
+
+    /// Copies the stored cookie header back to the clipboard. The value is
+    /// resolved from the secret store when the menu item is clicked; a
+    /// session whose credential is gone (Keychain refused or wiped) copies
+    /// nothing rather than pasting stale data.
+    private func copySessionCookie(for session: StoredSession) {
+        guard let cookie = model.sessionStore.cookieHeader(for: session),
+            !cookie.isEmpty
+        else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cookie, forType: .string)
+        copiedSessionDomain = session.domain
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            if copiedSessionDomain == session.domain {
+                copiedSessionDomain = nil
+            }
+        }
     }
 
     // MARK: - Proxy
@@ -1036,9 +1125,11 @@ struct SettingsView: View {
     // MARK: - Build info
 
     private var appVersionText: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let version = AppBuildInfo.marketingVersion
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        if let version, let build {
+        // Sparkle needs CFBundleVersion to carry the marketing version, so
+        // the two are usually identical and printing both would repeat.
+        if let version, let build, build != version {
             return "\(version) (\(build))"
         }
         return version ?? String(localized: "未知")

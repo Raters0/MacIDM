@@ -296,6 +296,61 @@ final class AppTaskTests: XCTestCase {
         XCTAssertEqual(task.displayName(redacted: true), task.jobID)
     }
 
+    // MARK: - 耗时列口径（净传输时长 vs 端到端挂钟）
+
+    /// 用户暂停 10 分钟后继续：「下载耗时」列必须继续显示已经传输的那部分，
+    /// 而不是把暂停间隔吞进来；端到端时长只作为 tooltip / 支持报告数据保留。
+    func testDisplayDurationUsesNetTransferTimeAndIgnoresWallClockGap() {
+        var task = makeTask()
+        let started = Date(timeIntervalSince1970: 1_000)
+        task.startedAt = started
+        task.updatedAt = started.addingTimeInterval(600)
+        task.activeTransferDuration = 60
+        task.totalDuration = 600
+
+        XCTAssertEqual(task.displayDuration, 60)
+        XCTAssertEqual(task.sortDuration, 60)
+        XCTAssertEqual(task.wallClockDuration, 600)
+    }
+
+    /// 从未累计过净时长的历史行（字段引入前写入的记录）：退回已记录的端到端
+    /// 时长，已完成任务不得显示 0。
+    func testDisplayDurationFallsBackToRecordedTotalForLegacyRows() {
+        var task = makeTask()
+        task.status = .completed
+        task.startedAt = Date(timeIntervalSince1970: 2_000)
+        task.updatedAt = Date(timeIntervalSince1970: 2_300)
+        task.activeTransferDuration = 0
+        task.totalDuration = 300
+
+        XCTAssertEqual(task.displayDuration, 300)
+    }
+
+    /// 运行中、既无净时长也无完成记录（yt-dlp 尚未产出首个进度回调）：
+    /// 用截至最近一次更新的挂钟时长，不能归零也不能倒退。
+    func testDisplayDurationFallsBackToWallClockUntilCompletionRecordsTotal() {
+        var task = makeTask()
+        task.status = .running
+        task.startedAt = Date(timeIntervalSince1970: 3_000)
+        task.updatedAt = Date(timeIntervalSince1970: 3_045)
+        task.totalDuration = nil
+
+        XCTAssertEqual(task.displayDuration, 45)
+    }
+
+    /// 尚未首次进入 running（排队中）：净时长为 0，端到端时长为 nil；
+    /// 排队等待时间不得出现在任何一个数字里。
+    func testDisplayDurationIsZeroBeforeTheFirstRun() {
+        var task = makeTask()
+        task.status = .queued
+        task.startedAt = nil
+        task.totalDuration = nil
+        task.updatedAt = Date(timeIntervalSince1970: 5_000)
+
+        XCTAssertEqual(task.displayDuration, 0)
+        XCTAssertNil(task.wallClockDuration)
+    }
+
     private func makeTask() -> AppTask {
         AppTask(
             id: UUID(),

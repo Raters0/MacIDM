@@ -7,9 +7,8 @@ import SwiftUI
 /// download frequency: a body re-evaluation mid-gesture re-applies the
 /// selection binding onto the backing NSTableView, which aborts an
 /// in-progress rubber-band multi-selection. Before this bridge existed,
-/// every ~300 ms progress flush (via `@EnvironmentObject` model) and every
-/// 1 Hz duration tick (via `@StateObject` clock) re-evaluated the table,
-/// and no amount of drag-detection patching could keep up.
+/// every ~300 ms progress flush (via `@EnvironmentObject` model) re-evaluated
+/// the table, and no amount of drag-detection patching could keep up.
 ///
 /// The split is:
 /// - **Volatile values** (progress, speed, status) flow into per-task
@@ -32,11 +31,6 @@ final class TaskTableSynchronizer: ObservableObject {
     /// plain storage: mutating entries must not fire this object's
     /// `objectWillChange`, or the whole table would re-render.
     private(set) var liveModels: [UUID: TaskLiveModel] = [:]
-
-    /// Shared 1 Hz clock for elapsed-time cells. Cells observe it
-    /// directly; owning it here keeps the table view itself free of
-    /// `@StateObject` subscriptions.
-    let clock = DurationClock()
 
     // Wiring set once by AppModel after initialization.
     var provideRows: () -> [AppTask] = { [] }
@@ -98,6 +92,12 @@ final class TaskLiveModel: ObservableObject, Identifiable {
     /// recorded total the moment a task finishes, before the next
     /// structural change refreshes the table snapshot.
     @Published private(set) var totalDuration: TimeInterval?
+    /// The 「下载耗时」 cell's value (net transfer time) and its tooltip basis
+    /// (end-to-end wall clock). Mirrored here for the same reason as
+    /// `averageSpeed`: both change on every progress flush, while the table's
+    /// `AppTask` snapshot only rebuilds on structural changes.
+    @Published private(set) var displayDuration: TimeInterval = 0
+    @Published private(set) var wallClockDuration: TimeInterval?
 
     init(task: AppTask?) {
         id = task?.id ?? UUID()
@@ -123,30 +123,8 @@ final class TaskLiveModel: ObservableObject, Identifiable {
         bytesPerSecond = task.bytesPerSecond
         averageSpeed = task.averageSpeed
         totalDuration = task.totalDuration
-    }
-}
-
-/// Shared 1 Hz wall clock. Elapsed-time cells observe it directly so their
-/// per-second updates never propagate above cell level.
-final class DurationClock: ObservableObject, @unchecked Sendable {
-    @Published private(set) var now = Date()
-    // Optional so the stored property is initialized before the timer
-    // closure captures self.
-    private var timer: Timer?
-
-    init() {
-        // @unchecked Sendable: the timer fires on the main RunLoop, so the
-        // published mutation stays main-thread confined in practice.
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            self?.now = Date()
-        }
-        // .common keeps the tick flowing during scroll tracking too.
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-    }
-
-    deinit {
-        timer?.invalidate()
+        displayDuration = task.displayDuration
+        wallClockDuration = task.wallClockDuration
     }
 }
 

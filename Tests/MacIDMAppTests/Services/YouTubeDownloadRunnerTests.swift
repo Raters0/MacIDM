@@ -1603,6 +1603,277 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
         XCTAssertEqual(result.destination, destination)
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
     }
+
+    // MARK: - 直播判定复用（解析缓存）
+
+    /// 门槛阶段挂住很久的假 yt-dlp：没有取消能力时，暂停只能等它自己跑完
+    /// （现场实测要等到 AppModel 的 20 秒兜底定时器）。
+    private func makeSlowProbeExecutable(
+        directory: URL,
+        probeMarker: URL,
+        probeSeconds: Int
+    ) throws -> URL {
+        let executable = directory.appendingPathComponent("fake-yt-dlp-slow-probe")
+        let script =
+            [
+                "#!/bin/sh",
+                "simulate=0",
+                "output=\"\"",
+                "prev=\"\"",
+                "for arg in \"$@\"; do",
+                "  if [ \"$arg\" = \"--simulate\" ]; then simulate=1; fi",
+                "  if [ \"$prev\" = \"--output\" ]; then output=\"$arg\"; fi",
+                "  prev=\"$arg\"",
+                "done",
+                "if [ \"$simulate\" = \"1\" ]; then",
+                "  printf 'p\\n' >> \"\(probeMarker.path)\"",
+                "  sleep \(probeSeconds)",
+                "  printf '%s\\n' '{\"live_status\": \"not_live\"}'",
+                "  exit 0",
+                "fi",
+                "base=$(printf '%s' \"$output\" | sed 's/%(ext)s$//')",
+                "if [ -n \"$output\" ]; then printf 'fixture-media' > \"${base}mp4\"; fi",
+            ].joined(separator: "\n") + "\n"
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    func testPauseDuringTheLiveGateInterruptsResolutionPromptly() async throws {
+        let directory = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probeMarker = directory.appendingPathComponent("slow-probe-invocations")
+        let executable = try makeSlowProbeExecutable(
+            directory: directory, probeMarker: probeMarker, probeSeconds: 30)
+        let runner = YouTubeDownloadRunner(
+            executableURL: executable,
+            ffmpegRemuxer: FixtureYouTubeRemuxer(),
+            diagnosticLog: makeIsolatedDiagnosticLog(directory: directory),
+            liveProbeTimeout: 60,
+            liveProbeControlPollInterval: 0.02
+        )
+        let token = DownloadControlToken()
+        let destination = directory.appendingPathComponent("paused.mp4")
+        // 必须等门槛子进程真的跑起来再暂停：否则测到的是“启动前取消”竞态，
+        // 而不是“解析途中暂停”。
+        let pausedAt = TimestampBox()
+        Task {
+            for _ in 0..<500 {
+                if FileManager.default.fileExists(atPath: probeMarker.path) { break }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            pausedAt.set(Date())
+            token.pause()
+        }
+
+        var thrown: Error?
+        var returned: DownloadResult?
+        do {
+            returned = try await runner.run(
+                makeYouTubeRequest(destination: destination),
+                control: { token.read() },
+                progress: { _ in })
+        } catch {
+            thrown = error
+        }
+
+        let elapsed = Date().timeIntervalSince(try XCTUnwrap(pausedAt.get()))
+        XCTAssertEqual(try probeInvocations(probeMarker), 1, "直播门槛必须已经启动过")
+        XCTAssertLessThan(
+            elapsed, 6,
+            "暂停必须在一个轮询间隔内中断门槛解析，而不是等它跑完（实测 \(String(format: "%.2f", elapsed)) 秒）"
+        )
+        XCTAssertNil(returned, "被暂停的执行不得返回下载结果")
+        // 反例：门槛期间抛出裸 CancellationError 时，App 的收尾逻辑认不出
+        // 「用户暂停」，会落到兜底分支把任务记成「失败 / NETWORK_ERROR」，
+        // 用户看到的是一句 Swift.CancellationError。与下载阶段保持一致的
+        // IDMError.paused 才能被记成「已暂停」。
+        XCTAssertEqual(
+            thrown as? IDMError, .paused,
+            "门槛期间的暂停必须与下载阶段同语义，实际：\(String(describing: thrown))"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.path),
+            "被暂停的执行不得留下下载产物"
+        )
+    }
+
+    /// 门槛期间的「取消」同样必须走控制语义：任务记成「已取消」，
+    /// 而不是「失败」。暂停与取消是两个不同的用户动作，收尾时不得混为一谈。
+    func testCancelDuringTheLiveGateSurfacesAsCancelledNotFailure() async throws {
+        let directory = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probeMarker = directory.appendingPathComponent("slow-probe-invocations")
+        let executable = try makeSlowProbeExecutable(
+            directory: directory, probeMarker: probeMarker, probeSeconds: 30)
+        let runner = YouTubeDownloadRunner(
+            executableURL: executable,
+            ffmpegRemuxer: FixtureYouTubeRemuxer(),
+            diagnosticLog: makeIsolatedDiagnosticLog(directory: directory),
+            liveProbeTimeout: 60,
+            liveProbeControlPollInterval: 0.02
+        )
+        let token = DownloadControlToken()
+        let destination = directory.appendingPathComponent("cancelled.mp4")
+        // 与暂停用例相同的时序保证：等门槛子进程真的跑起来再取消，
+        // 测的才是「解析途中取消」而不是「启动前取消」。
+        Task {
+            for _ in 0..<500 {
+                if FileManager.default.fileExists(atPath: probeMarker.path) { break }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            token.cancel()
+        }
+
+        var thrown: Error?
+        var returned: DownloadResult?
+        do {
+            returned = try await runner.run(
+                makeYouTubeRequest(destination: destination),
+                control: { token.read() },
+                progress: { _ in })
+        } catch {
+            thrown = error
+        }
+
+        XCTAssertEqual(try probeInvocations(probeMarker), 1, "直播门槛必须已经启动过")
+        XCTAssertNil(returned, "被取消的执行不得返回下载结果")
+        XCTAssertEqual(
+            thrown as? IDMError, .cancelled,
+            "门槛期间的取消必须与下载阶段同语义，实际：\(String(describing: thrown))"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: destination.path),
+            "被取消的执行不得留下下载产物"
+        )
+    }
+
+    /// 记录每次 `--simulate` 解析调用的伪造 yt-dlp：直播判定走探测分支，
+    /// 真正的下载只写出产物文件。
+    private func makeProbeCountingExecutable(
+        directory: URL,
+        probeJSON: String,
+        probeMarker: URL
+    ) throws -> URL {
+        let executable = directory.appendingPathComponent("fake-yt-dlp-probe-count")
+        let script =
+            [
+                "#!/bin/sh",
+                "simulate=0",
+                "output=\"\"",
+                "prev=\"\"",
+                "for arg in \"$@\"; do",
+                "  if [ \"$arg\" = \"--simulate\" ]; then simulate=1; fi",
+                "  if [ \"$prev\" = \"--output\" ]; then output=\"$arg\"; fi",
+                "  prev=\"$arg\"",
+                "done",
+                "if [ \"$simulate\" = \"1\" ]; then",
+                "  printf 'p\\n' >> \"\(probeMarker.path)\"",
+                "  printf '%s\\n' '\(probeJSON)'",
+                "  exit 0",
+                "fi",
+                "base=$(printf '%s' \"$output\" | sed 's/%(ext)s$//')",
+                "if [ -n \"$output\" ]; then printf 'fixture-media' > \"${base}mp4\"; fi",
+            ].joined(separator: "\n") + "\n"
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    private func probeInvocations(_ marker: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: marker.path) else { return 0 }
+        let text = try String(contentsOf: marker, encoding: .utf8)
+        return text.split(separator: "\n").count
+    }
+
+    /// 同一视频的第二次下载不得再跑一次完整的 `-J --simulate` 解析（本机实测
+    /// 0–79 秒）：首次解析得出的「明确可下载」判定在窗口内直接复用。
+    func testCachedDownloadableVerdictSkipsTheLiveGateOnTheNextRun() async throws {
+        let directory = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probeMarker = directory.appendingPathComponent("probe-invocations")
+        let executable = try makeProbeCountingExecutable(
+            directory: directory,
+            probeJSON: #"{"live_status": "not_live"}"#,
+            probeMarker: probeMarker
+        )
+        let runner = YouTubeDownloadRunner(
+            executableURL: executable,
+            ffmpegRemuxer: FixtureYouTubeRemuxer(),
+            diagnosticLog: makeIsolatedDiagnosticLog(directory: directory),
+            liveStatusCache: YouTubeLiveStatusCache()
+        )
+
+        _ = try await runner.run(
+            makeYouTubeRequest(destination: directory.appendingPathComponent("first.mp4")),
+            control: { .continue },
+            progress: { _ in }
+        )
+        XCTAssertEqual(try probeInvocations(probeMarker), 1, "首次下载必须经过直播判定")
+
+        _ = try await runner.run(
+            makeYouTubeRequest(destination: directory.appendingPathComponent("second.mp4")),
+            control: { .continue },
+            progress: { _ in }
+        )
+        XCTAssertEqual(
+            try probeInvocations(probeMarker), 1,
+            "同一视频、同一凭据且判定未过期时必须跳过直播门槛"
+        )
+
+        // 未获得缓存的实例（等价于应用重启或另一会话）必须重新判定，
+        // 证明跳过确实来自缓存而不是偶发失效。
+        let uncachedRunner = YouTubeDownloadRunner(
+            executableURL: executable,
+            ffmpegRemuxer: FixtureYouTubeRemuxer(),
+            diagnosticLog: makeIsolatedDiagnosticLog(directory: directory)
+        )
+        _ = try await uncachedRunner.run(
+            makeYouTubeRequest(destination: directory.appendingPathComponent("third.mp4")),
+            control: { .continue },
+            progress: { _ in }
+        )
+        XCTAssertEqual(try probeInvocations(probeMarker), 2, "默认不共享缓存的构造必须重新解析")
+    }
+
+    /// fail-closed：被拦截的直播判定不得进缓存，否则下一次同视频会绕过直播
+    /// 门槛直接下载（§3.1 产品约束）。
+    func testBlockedLiveVerdictIsNeverReused() async throws {
+        let directory = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probeMarker = directory.appendingPathComponent("probe-invocations")
+        let executable = try makeProbeCountingExecutable(
+            directory: directory,
+            probeJSON: #"{"live_status": "is_live"}"#,
+            probeMarker: probeMarker
+        )
+        let cache = YouTubeLiveStatusCache()
+        let runner = YouTubeDownloadRunner(
+            executableURL: executable,
+            ffmpegRemuxer: FixtureYouTubeRemuxer(),
+            diagnosticLog: makeIsolatedDiagnosticLog(directory: directory),
+            liveStatusCache: cache
+        )
+
+        for name in ["first", "second"] {
+            do {
+                _ = try await runner.run(
+                    makeYouTubeRequest(destination: directory.appendingPathComponent("\(name).mp4")),
+                    control: { .continue },
+                    progress: { _ in }
+                )
+                XCTFail("直播内容必须被拦截：\(name)")
+            } catch let error as YouTubeDownloadError {
+                XCTAssertEqual(error, .liveStreamUnsupported)
+            }
+        }
+        XCTAssertEqual(
+            try probeInvocations(probeMarker), 2,
+            "被拦截的判定不能缓存，第二次仍须执行直播判定"
+        )
+    }
 }
 
 /// Thread-safe mutable URL box for injecting the "current" yt-dlp path
@@ -1724,5 +1995,23 @@ private final class ProgressCapture: @unchecked Sendable {
         lock.lock()
         storage.append(value)
         lock.unlock()
+    }
+}
+
+/// 跳线程传递一个时间戳：用于量“从暂停那一刻到执行真的结束”的延时。
+private final class TimestampBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date?
+
+    func set(_ date: Date) {
+        lock.lock()
+        value = date
+        lock.unlock()
+    }
+
+    func get() -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
