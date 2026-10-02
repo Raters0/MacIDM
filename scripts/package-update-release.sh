@@ -38,7 +38,10 @@ if [ ! -r "$public_key_path" ]; then
 fi
 public_key="$(tr -d '[:space:]' < "$public_key_path")"
 
-echo "[package-update-release] building app bundle..." >&2
+echo "[package-update-release] building app bundle (release configuration)..." >&2
+# Published bundles ship the optimized configuration: no DWARF, no absolute
+# source paths embedded in the binary.
+export MACIDM_APP_CONFIGURATION="${MACIDM_APP_CONFIGURATION:-release}"
 application_path="$(bash "$repository_root/scripts/build-debug-app.sh")"
 if [ ! -d "$application_path" ]; then
   echo "[package-update-release] expected app bundle not found: $application_path" >&2

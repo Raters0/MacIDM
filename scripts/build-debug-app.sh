@@ -3,7 +3,16 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "$0")/.." && pwd)"
-build_directory="$repository_root/.build/debug"
+# Debug is the daily-driver configuration. Release exists for published
+# bundles: optimized, no DWARF, so shipped binaries carry neither debug
+# info nor absolute source paths. Everything else in this script is
+# configuration-independent.
+app_configuration="${MACIDM_APP_CONFIGURATION:-debug}"
+case "$app_configuration" in
+  debug|release) ;;
+  *) echo "[build-debug-app] unsupported MACIDM_APP_CONFIGURATION: $app_configuration" >&2; exit 1 ;;
+esac
+build_directory="$repository_root/.build/$app_configuration"
 application_directory="$build_directory/MacIDM.app"
 contents_directory="$application_directory/Contents"
 
@@ -15,8 +24,8 @@ export SWIFT_MODULECACHE_PATH="${SWIFT_MODULECACHE_PATH:-$user_cache_root/swift}
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$user_cache_root/clang}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$user_cache_root/swiftpm}"
 mkdir -p "$SWIFT_MODULECACHE_PATH" "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
-swift build --disable-sandbox --product MacIDMDesktop >&2
-swift build --disable-sandbox --product macidm-host >&2
+swift build --disable-sandbox --configuration "$app_configuration" --product MacIDMDesktop >&2
+swift build --disable-sandbox --configuration "$app_configuration" --product macidm-host >&2
 
 # Icons are generated artifacts (deterministic); regenerate every build.
 bash "$repository_root/scripts/generate-icons.sh" >/dev/null
