@@ -212,7 +212,10 @@ extension AppModel {
         guard !task.status.isActive else {
             return failure(String(localized: "任务仍在运行，请先取消任务再删除"))
         }
-        remove(taskID, deletingFile: deleteFile)
+        remove(
+            taskID,
+            fileRemoval: deleteFile ? .deletePermanently : .keepFiles
+        )
         exportStatus()
         return MonitorHTTPServer.AgentResponse(
             ok: true,

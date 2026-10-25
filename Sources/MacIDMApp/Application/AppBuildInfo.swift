@@ -6,8 +6,9 @@ import Foundation
 /// Info.plist value written by `scripts/build-debug-app.sh` instead of a
 /// hardcoded literal that drifts on the next release bump.
 enum AppBuildInfo {
-    /// `CFBundleShortVersionString` (e.g. "1.0.2"), or nil outside a real
-    /// app bundle (plain SwiftPM runs, test hosts).
+    /// The bundle's `CFBundleShortVersionString` (the marketing version pinned
+    /// by `scripts/build-debug-app.sh`), or nil outside a real app bundle
+    /// (plain SwiftPM runs, test hosts).
     static var marketingVersion: String? {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     }

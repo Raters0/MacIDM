@@ -11,6 +11,10 @@ enum FilenameHintSource: String, Sendable {
     /// Synthesized from the page title or link text (site-adapter candidates,
     /// m4s pairs, Download-All anchor text); semantically equivalent to a title.
     case titleDerived
+    /// Returned by the user-configured semantic-title service with at least
+    /// the configured confidence (technical spec §8.1). Ranks like a
+    /// title-derived hint; a user edit still wins.
+    case modelJudged
     /// Derived only from the URL path tail; never outranks the page title.
     /// Also the conservative default for payloads from older extensions.
     case urlPath
@@ -30,6 +34,11 @@ struct DownloadDraft: Equatable, Sendable {
     let sourceKind: DownloadSourceKind
     let requestContext: DownloadRequestContext?
     let pageTitle: String?
+    /// Page-harvested candidate titles (semantic-title arbitration input,
+    /// technical spec §8.1); scope marks the anchored card vs page level.
+    /// Empty when the extension did not send them or the source surface has
+    /// no page DOM (popup, takeover).
+    let titleCandidates: [SemanticTitleCandidate]
     let mimeType: String?
     let pairAudioURL: URL?
     let pairCID: String?
@@ -49,6 +58,7 @@ struct DownloadDraft: Equatable, Sendable {
         sourceKind: DownloadSourceKind = .http,
         requestContext: DownloadRequestContext? = nil,
         pageTitle: String? = nil,
+        titleCandidates: [SemanticTitleCandidate] = [],
         mimeType: String? = nil,
         pairAudioURL: URL? = nil,
         pairCID: String? = nil,
@@ -64,6 +74,7 @@ struct DownloadDraft: Equatable, Sendable {
         self.sourceKind = sourceKind
         self.requestContext = requestContext
         self.pageTitle = pageTitle
+        self.titleCandidates = titleCandidates
         self.mimeType = mimeType
         self.pairAudioURL = pairAudioURL
         self.pairCID = pairCID

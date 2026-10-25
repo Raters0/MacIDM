@@ -11,9 +11,17 @@ import SwiftUI
 final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked Sendable {
     static let shared = DownloadDraftWindowManager()
 
+    /// How long to wait after a system dialog closes before raising the panel.
+    /// The focus hand-back to the previous application measured 4 ms after an
+    /// immediate raise on a live install; this clears that with room to spare
+    /// while staying below the time it takes a user to click anywhere.
+    private static let systemDialogSettleDelay: TimeInterval = 0.3
+
     private var windows: [NSWindow] = []
     private var draftsByWindow: [ObjectIdentifier: DownloadDraft] = [:]
     private var modelsByWindow: [ObjectIdentifier: AppModel] = [:]
+    private var observesCredentialAccess = false
+    private var settleScheduled = false
     let coordinator = DownloadDraftWindowCoordinator()
 
     func open(draft: DownloadDraft?, model: AppModel) {
@@ -33,18 +41,26 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
         window.becomesKeyOnlyIfNeeded = false
         // 浮层级别：.accessory 模式下 App 非活跃时，.normal 层级的窗口会被
         // 前台应用（浏览器）遮挡，orderFrontRegardless 不可靠（macOS 14+）。
-        // .floating 确保面板始终位于其他应用普通窗口之上，同时
-        // .nonactivatingPanel 保证不抢占 App 焦点。
-        window.level = .floating
+        // 打开瞬间用 .floating 保证面板出现在浏览器之上；之后的层级由
+        // windowDidResignKey / windowDidBecomeKey 按焦点跟随升降，用户切到别的
+        // 应用时面板可被覆盖（见 DownloadDraftWindowCoordinator.windowLevel）。
+        // 自己发起的钥匙串访问弹出系统授权框时属于例外：面板留在 .floating，
+        // 并在系统把焦点交还给浏览器之后抬回前面。
+        // .nonactivatingPanel 仍保证不抢占 App 焦点。
+        window.level = DownloadDraftWindowCoordinator.windowLevel(
+            isKeyWindow: true, phase: .none
+        )
         // NSPanel 默认 hidesOnDeactivate=true：若 App 曾被短暂激活后用户切回
         // 浏览器，面板会被自动隐藏。确认窗必须保持可见直到用户操作。
         window.hidesOnDeactivate = false
         // macOS 26+ 玻璃材质默认底是灰的：确认窗用主题表面积色（浅色=白）。
         window.backgroundColor = AppTheme.windowSurfaceNSColor
         let key = ObjectIdentifier(window)
+        startObservingCredentialAccess()
         coordinator.prepareForWindowOpen(
             windowID: key,
-            frontmostApp: NSWorkspace.shared.frontmostApplication
+            frontmostApp: NSWorkspace.shared.frontmostApplication,
+            credentialAccessInFlight: KeychainAccessSignal.shared.isInFlight
         )
         // The confirmation form grows with media option cards and the
         // advanced-options disclosure; a hard floor keeps the hosting view
@@ -117,6 +133,86 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
         // 模式）也能浮在最上层；makeKeyAndOrderFront 让它直接接收键盘输入。
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 焦点跟随的层级策略：用户点了别的应用/窗口 → 降回 .normal，于是其他
+    /// 应用可以覆盖它；用户点回面板 → 恢复 .floating，填表期间不被遮挡。
+    /// 例外是自己发起的钥匙串访问弹出系统授权框：那一刻失去焦点的不是用户，
+    /// 所以面板留在 .floating，等系统把焦点交还之后再抬回前面。
+    /// NSWindow delegate callbacks arrive on the main thread.
+    func windowDidResignKey(_ notification: Notification) {
+        guard let window = trackedWindow(from: notification.object) else { return }
+        let phase = coordinator.recordResignKey(
+            windowID: ObjectIdentifier(window),
+            credentialAccessInFlight: KeychainAccessSignal.shared.isInFlight
+        )
+        refreshLevel(of: window)
+        if phase != .none {
+            AppLogger.shared.info(
+                .ui,
+                "confirmation panel lost key to a system dialog: phase=\(phase) "
+                    + "level=\(window.level.rawValue)")
+        }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = trackedWindow(from: notification.object) else { return }
+        coordinator.recordBecomeKey(windowID: ObjectIdentifier(window))
+        refreshLevel(of: window)
+    }
+
+    private func trackedWindow(from object: Any?) -> NSWindow? {
+        guard let window = object as? NSWindow,
+            windows.contains(where: { $0 === window })
+        else { return nil }
+        return window
+    }
+
+    private func refreshLevel(of window: NSWindow) {
+        window.level = DownloadDraftWindowCoordinator.windowLevel(
+            isKeyWindow: window.isKeyWindow,
+            phase: coordinator.phase(of: ObjectIdentifier(window))
+        )
+    }
+
+    private func startObservingCredentialAccess() {
+        guard !observesCredentialAccess else { return }
+        observesCredentialAccess = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(credentialAccessDidFinish),
+            name: .macIDMCredentialAccessFinished,
+            object: nil
+        )
+    }
+
+    /// The dialog is gone. macOS now hands focus back to the application that
+    /// had it before, and a panel raised during that hand-back loses key status
+    /// again a few milliseconds later, which the focus-follow policy reads as
+    /// the user switching away. Wait for the hand-back, then raise once.
+    @objc private func credentialAccessDidFinish() {
+        let held = coordinator.beginSettlingAfterSystemDialog()
+        guard !held.isEmpty, !settleScheduled else { return }
+        settleScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemDialogSettleDelay) { [weak self] in
+            self?.raisePanelsAfterSystemDialog()
+        }
+    }
+
+    private func raisePanelsAfterSystemDialog() {
+        settleScheduled = false
+        for windowID in coordinator.endSettlingAfterSystemDialog() {
+            guard let window = windows.first(where: { ObjectIdentifier($0) == windowID }) else {
+                continue
+            }
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+            refreshLevel(of: window)
+            AppLogger.shared.info(
+                .ui,
+                "confirmation panel raised after the focus hand-back: isKey=\(window.isKeyWindow) "
+                    + "level=\(window.level.rawValue)")
+        }
     }
 
     /// Mirrors the sheet flow's dismiss cleanup: whatever the outcome (submit

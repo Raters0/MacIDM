@@ -164,4 +164,144 @@ final class DownloadDraftWindowCoordinatorTests: XCTestCase {
         let restored2 = coordinator.windowWillClose(windowID: id2)
         XCTAssertNil(restored2)
     }
+
+    func testConfirmationWindowFloatsWhileKeyOrInADialogPhase() {
+        // 打开瞬间与用户正在填写时必须浮在浏览器之上：.accessory +
+        // .nonactivatingPanel 下 .normal 层级不会被可靠前置（macOS 14+）。
+        XCTAssertEqual(
+            DownloadDraftWindowCoordinator.windowLevel(isKeyWindow: true, phase: .none),
+            .floating
+        )
+        // 系统授权框抢占焦点时同样保持浮层：面板此时不是 key window，
+        // 降层会让它在框关闭后沉到浏览器底下。
+        XCTAssertEqual(
+            DownloadDraftWindowCoordinator.windowLevel(isKeyWindow: false, phase: .dialogOpen),
+            .floating
+        )
+        XCTAssertEqual(
+            DownloadDraftWindowCoordinator.windowLevel(isKeyWindow: false, phase: .settling),
+            .floating
+        )
+        // 用户切到其他应用后必须降回普通层级，否则别的应用永远盖不住确认窗。
+        XCTAssertEqual(
+            DownloadDraftWindowCoordinator.windowLevel(isKeyWindow: false, phase: .none),
+            .normal
+        )
+    }
+
+    /// The failing case this covers: a `.nonactivatingPanel` never activates
+    /// MacIDM, so while the login-Keychain approval dialog is up the frontmost
+    /// application still reports the browser. Only our own credential access can
+    /// tell the dialog apart from a user-initiated app switch.
+    func testCredentialAccessHoldsThePanelEvenThoughTheBrowserIsFrontmost() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+
+        let phase = coordinator.recordResignKey(
+            windowID: windowID, credentialAccessInFlight: true)
+
+        XCTAssertEqual(phase, .dialogOpen)
+        XCTAssertEqual(coordinator.phase(of: windowID), .dialogOpen)
+    }
+
+    func testUserSwitchToAnotherApplicationDoesNotHoldThePanel() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+
+        let phase = coordinator.recordResignKey(
+            windowID: windowID, credentialAccessInFlight: false)
+
+        XCTAssertEqual(phase, .none)
+        XCTAssertTrue(coordinator.beginSettlingAfterSystemDialog().isEmpty)
+    }
+
+    /// Measured on a live install: the panel was raised 4 ms before macOS handed
+    /// focus back to the browser, and that hand-back demoted it again. A lost key
+    /// status while waiting must keep the panel floating.
+    func testFocusHandBackWhileSettlingKeepsThePanelFloating() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+        XCTAssertEqual(coordinator.beginSettlingAfterSystemDialog(), [windowID])
+
+        let phase = coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: false)
+
+        XCTAssertEqual(phase, .settling, "the focus hand-back was read as a user app switch")
+        XCTAssertEqual(
+            DownloadDraftWindowCoordinator.windowLevel(isKeyWindow: false, phase: phase),
+            .floating
+        )
+    }
+
+    func testSettlingPanelIsRaisedOnceAndThenFollowsTheNormalPolicy() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+        XCTAssertFalse(coordinator.isAnyWindowSettlingAfterSystemDialog)
+        coordinator.beginSettlingAfterSystemDialog()
+        XCTAssertTrue(coordinator.isAnyWindowSettlingAfterSystemDialog)
+
+        XCTAssertEqual(coordinator.endSettlingAfterSystemDialog(), [windowID])
+
+        XCTAssertEqual(coordinator.phase(of: windowID), .none)
+        XCTAssertTrue(coordinator.endSettlingAfterSystemDialog().isEmpty)
+        // After the raise, a later user switch demotes the panel as usual.
+        XCTAssertEqual(
+            coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: false),
+            .none
+        )
+    }
+
+    func testSecondDialogWhileSettlingExtendsTheSameWait() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+        XCTAssertEqual(coordinator.beginSettlingAfterSystemDialog(), [windowID])
+
+        // Another credential access raises a second dialog; the pending wait
+        // still covers the panel, so nothing is dropped and nothing stacks up.
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+        XCTAssertEqual(coordinator.beginSettlingAfterSystemDialog(), [])
+        XCTAssertTrue(coordinator.isAnyWindowSettlingAfterSystemDialog)
+    }
+
+    func testBecomingKeyClearsTheDialogPhase() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let windowID = ObjectIdentifier(NSObject())
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+
+        coordinator.recordBecomeKey(windowID: windowID)
+
+        XCTAssertEqual(coordinator.phase(of: windowID), .none)
+        XCTAssertTrue(coordinator.beginSettlingAfterSystemDialog().isEmpty)
+    }
+
+    /// A dialog that is already up when the panel opens leaves it non-key, so
+    /// there is no resign-key event to classify. The phase has to be taken at
+    /// open time.
+    func testPanelOpenedDuringACredentialAccessIsHeldFromTheStart() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let chrome = MockRunningApp(processIdentifier: externalPID, bundleIdentifier: "com.google.Chrome")
+        let windowID = ObjectIdentifier(NSObject())
+
+        coordinator.prepareForWindowOpen(
+            windowID: windowID, frontmostApp: chrome, credentialAccessInFlight: true)
+
+        XCTAssertEqual(coordinator.phase(of: windowID), .dialogOpen)
+        XCTAssertEqual(coordinator.beginSettlingAfterSystemDialog(), [windowID])
+    }
+
+    func testClosingAPanelClearsItsDialogPhase() {
+        let coordinator = DownloadDraftWindowCoordinator(currentProcessPID: currentPID)
+        let chrome = MockRunningApp(processIdentifier: externalPID, bundleIdentifier: "com.google.Chrome")
+        let windowID = ObjectIdentifier(NSObject())
+        coordinator.prepareForWindowOpen(windowID: windowID, frontmostApp: chrome)
+        coordinator.recordResignKey(windowID: windowID, credentialAccessInFlight: true)
+        coordinator.beginSettlingAfterSystemDialog()
+
+        XCTAssertNotNil(coordinator.windowWillClose(windowID: windowID))
+
+        XCTAssertEqual(coordinator.phase(of: windowID), .none)
+        XCTAssertTrue(coordinator.endSettlingAfterSystemDialog().isEmpty)
+    }
 }

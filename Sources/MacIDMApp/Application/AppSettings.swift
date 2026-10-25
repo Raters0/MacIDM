@@ -10,6 +10,9 @@ final class AppSettings: ObservableObject {
         static let downloadDirectory = "downloadDirectory"
         static let colorScheme = "colorScheme"
         static let clipboardAutoDetect = "clipboardAutoDetect"
+        static let globalHotKeyEnabled = "globalHotKeyEnabled"
+        static let globalHotKeyCode = "globalHotKeyCode"
+        static let globalHotKeyModifiers = "globalHotKeyModifiers"
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
         static let speedLimitKBps = "speedLimitKBps"
         static let notificationSoundsEnabled = "notificationSoundsEnabled"
@@ -21,6 +24,10 @@ final class AppSettings: ObservableObject {
         static let ytdlpAutoCheckUpdates = "ytdlpAutoCheckUpdates"
         static let redactFilenames = "redactFilenames"
         static let closeWindowHidesToMenuBar = "closeWindowHidesToMenuBar"
+        static let semanticTitleEnabled = "semanticTitleEnabled"
+        static let semanticTitleProvider = "semanticTitleProvider"
+        static let semanticTitleEndpoint = "semanticTitleEndpoint"
+        static let semanticTitleModel = "semanticTitleModel"
         static let mediaInFlightRequests = "mediaInFlightRequests"
         static let proxyEnabled = "proxyEnabled"
         static let proxyKind = "proxyKind"
@@ -67,6 +74,24 @@ final class AppSettings: ObservableObject {
 
     @Published var clipboardAutoDetect: Bool {
         didSet { defaults.set(clipboardAutoDetect, forKey: Key.clipboardAutoDetect) }
+    }
+
+    /// Master switch for every system-wide shortcut; turning it off
+    /// unregisters all of them immediately.
+    @Published var globalHotKeyEnabled: Bool {
+        didSet { defaults.set(globalHotKeyEnabled, forKey: Key.globalHotKeyEnabled) }
+    }
+
+    /// The recorded shortcut for "open New Download", or nil when the user
+    /// cleared the recorder (a cleared shortcut is simply not registered).
+    @Published var globalHotKeyCombo: GlobalHotKeyCombo? {
+        didSet {
+            defaults.set(globalHotKeyCombo.map { Int($0.keyCode) } ?? -1, forKey: Key.globalHotKeyCode)
+            defaults.set(
+                globalHotKeyCombo.map { Int($0.carbonModifiers) } ?? -1,
+                forKey: Key.globalHotKeyModifiers
+            )
+        }
     }
 
     @Published var hasCompletedOnboarding: Bool {
@@ -133,6 +158,29 @@ final class AppSettings: ObservableObject {
     /// engine and the menu-bar control keep running either way.
     @Published var closeWindowHidesToMenuBar: Bool {
         didSet { defaults.set(closeWindowHidesToMenuBar, forKey: Key.closeWindowHidesToMenuBar) }
+    }
+
+    /// 智能命名辅助（technical-spec §8.1 语义判断服务）：默认关闭。开启且配
+    /// 置了 endpoint/KEY 后，确认窗口打开时对扩展上送的候选标题做一次仲裁。
+    @Published var semanticTitleEnabled: Bool {
+        didSet { defaults.set(semanticTitleEnabled, forKey: Key.semanticTitleEnabled) }
+    }
+
+    /// 服务商预设 id（SemanticTitleProviderPreset）；选中后设置页自动填充
+    /// endpoint 与默认模型。KEY 本体在 Keychain（KeychainCredentialStore 的
+    /// semanticTitle 预设），这里只保存非秘密配置。
+    @Published var semanticTitleProvider: String {
+        didSet { defaults.set(semanticTitleProvider, forKey: Key.semanticTitleProvider) }
+    }
+
+    /// 语义判断服务 endpoint；默认空，由服务商预设填充。
+    @Published var semanticTitleEndpoint: String {
+        didSet { defaults.set(semanticTitleEndpoint, forKey: Key.semanticTitleEndpoint) }
+    }
+
+    /// 语义判断服务模型 id；由服务商预设填充，可修改。
+    @Published var semanticTitleModel: String {
+        didSet { defaults.set(semanticTitleModel, forKey: Key.semanticTitleModel) }
     }
 
     /// Maximum concurrent HTTP requests for a single HLS/DASH media task.
@@ -226,6 +274,28 @@ final class AppSettings: ObservableObject {
             defaults.string(forKey: Key.colorScheme).flatMap(AppColorScheme.init(rawValue:))
             ?? .system
         clipboardAutoDetect = defaults.bool(forKey: Key.clipboardAutoDetect)
+        globalHotKeyEnabled =
+            defaults.object(forKey: Key.globalHotKeyEnabled) == nil
+            ? true : defaults.bool(forKey: Key.globalHotKeyEnabled)
+        // keyCode 0 is a real key (A), so "never recorded" must be detected by
+        // the missing object rather than by integer(forKey:) defaulting to 0;
+        // -1 is the explicit "cleared" marker. Unreadable stored values read as
+        // cleared instead of resurrecting a global key the user never chose.
+        if let keyCode = defaults.object(forKey: Key.globalHotKeyCode) as? Int,
+            let modifiers = defaults.object(forKey: Key.globalHotKeyModifiers) as? Int
+        {
+            if keyCode < 0 || modifiers < 0 {
+                globalHotKeyCombo = nil
+            } else {
+                let recorded = GlobalHotKeyCombo(
+                    keyCode: UInt32(keyCode),
+                    carbonModifiers: UInt32(modifiers)
+                )
+                globalHotKeyCombo = recorded.isValid ? recorded : nil
+            }
+        } else {
+            globalHotKeyCombo = .defaultValue
+        }
         hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
         speedLimitKBps = max(0, defaults.integer(forKey: Key.speedLimitKBps))
         notificationSoundsEnabled =
@@ -248,6 +318,12 @@ final class AppSettings: ObservableObject {
         closeWindowHidesToMenuBar =
             defaults.object(forKey: Key.closeWindowHidesToMenuBar) == nil
             ? true : defaults.bool(forKey: Key.closeWindowHidesToMenuBar)
+        semanticTitleEnabled = defaults.bool(forKey: Key.semanticTitleEnabled)
+        semanticTitleProvider =
+            defaults.string(forKey: Key.semanticTitleProvider)
+            ?? SemanticTitleProviderPreset.all[0].id
+        semanticTitleEndpoint = defaults.string(forKey: Key.semanticTitleEndpoint) ?? ""
+        semanticTitleModel = defaults.string(forKey: Key.semanticTitleModel) ?? ""
         let mediaInFlight = defaults.integer(forKey: Key.mediaInFlightRequests)
         mediaInFlightRequests = mediaInFlight == 0 ? 4 : min(16, max(1, mediaInFlight))
         proxyEnabled = defaults.bool(forKey: Key.proxyEnabled)

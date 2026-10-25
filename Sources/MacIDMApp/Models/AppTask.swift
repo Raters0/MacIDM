@@ -66,8 +66,31 @@ enum AppTaskStatus: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// One timestamped speed sample for the rolling speed window (product-spec §4.1).
-/// Legacy `[Double]` histories carry no time, so they are dropped at read time
+/// A defect in the downloaded media that the transfer itself cannot report as
+/// a failure: the bytes arrived, but the product is not what a media file
+/// should be. Kept separate from `errorCode`, which always means the task did
+/// not complete.
+enum AppTaskMediaWarning: String, Codable, CaseIterable, Sendable {
+    /// The published file has a video stream and no audio stream. Reached when
+    /// the source was a single-track (video-only) HLS playlist, so the user is
+    /// never handed a silent file as an unqualified success.
+    case noAudioTrack = "NO_AUDIO_TRACK"
+
+    var title: String {
+        switch self {
+        case .noAudioTrack: String(localized: "无音轨")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .noAudioTrack:
+            String(localized: "产物只有视频轨、没有音频：来源清单本身只含视频流。可回到页面改选带音频的清单重新下载。")
+        }
+    }
+}
+
+/// One timestamped speed sample for the rolling speed window (product-spec §4.1)./// Legacy `[Double]` histories carry no time, so they are dropped at read time
 /// rather than being given fabricated timestamps.
 struct SpeedSample: Hashable, Sendable {
     var timestamp: Date
@@ -276,6 +299,11 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     /// fall back to durable byte accounting until a worker reports again.
     var overallProgressFraction: Double? = nil
     var isArchived: Bool = false
+    /// The user removed this task's record from the history timeline while
+    /// the task still lives in the main list. Display-only: hides the row
+    /// from the 历史记录 timeline without touching 全部下载/进行中/已完成 or
+    /// local files. Survives restarts so a cleared timeline stays cleared.
+    var historyHidden: Bool = false
     /// Transient UI flag: true when a completed task's destination file is
     /// no longer present on disk. Not persisted to SQLite.
     var fileMissing: Bool = false
@@ -315,6 +343,10 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     /// are re-derived from `pageURL` + the archived site session on resume.
     var mediaCID: String? = nil
     var selectedQuality: Int? = nil
+    /// Non-fatal media defect found after an otherwise successful transfer
+    /// (technical-spec §3.3 "无音轨告警"). Reset on every completion, so a retry
+    /// that produces a healthy file clears it.
+    var mediaWarning: AppTaskMediaWarning? = nil
 
     /// Short, stable identifier for support reports and redacted display.
     /// Derived deterministically from the task UUID (first 5 bytes rendered
@@ -399,6 +431,19 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     /// their worker and control plane remain in the CLI process.
     var isCLIManaged: Bool {
         browserSubmissionType == "cli"
+    }
+
+    /// Terminal-state CLI mirror rows may be removed from the App together
+    /// with their authoritative CLI record (technical-spec §3.1.6). The status
+    /// set mirrors `macidm remove`'s own terminal guard; non-terminal rows
+    /// keep their live control plane in the CLI and stay read-only here.
+    var isTerminalCLIRecord: Bool {
+        isCLIManaged && [.completed, .cancelled, .failed, .storageError].contains(status)
+    }
+
+    /// Whether the App may initiate removal of this record at all.
+    var isRemovableFromApp: Bool {
+        !isCLIManaged || isTerminalCLIRecord
     }
 
     var fractionCompleted: Double {
@@ -636,9 +681,10 @@ enum SidebarFilter: Hashable {
             return !task.isArchived && task.status == .completed
         case .history:
             // History is a complete timeline of every download the user
-            // ever added — live, archived, and terminal alike — so adding
-            // a task records it immediately instead of only on deletion.
-            return true
+            // ever added — live, archived, and terminal alike — minus the
+            // entries the user explicitly removed from the timeline. Those
+            // stay in the main-list views; only the timeline row goes away.
+            return !task.historyHidden
         case .today:
             return !task.isArchived && calendar.isDateInToday(task.createdAt)
         case .yesterday:

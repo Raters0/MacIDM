@@ -23,7 +23,7 @@ final class AppLogger: @unchecked Sendable {
     }
 
     enum Category: String, Sendable {
-        case download, engine, bridge, browser, youtube, bilibili, ui, system
+        case download, engine, bridge, browser, youtube, bilibili, naming, ui, system
     }
 
     private let lock = NSLock()

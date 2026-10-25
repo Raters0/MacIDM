@@ -25,20 +25,48 @@ struct KeychainCredentialStore: Sendable {
 
     static let service = "MacIDM Proxy"
 
+    /// 独立的钥匙串 service 命名空间：代理凭据用默认值，语义判断服务的
+    /// API KEY 用 `semanticTitle`（互不覆盖，删除互不影响）。
+    enum PresetService {
+        static let proxy = KeychainCredentialStore()
+        static let semanticTitle = KeychainCredentialStore(
+            serviceName: "MacIDM Semantic Title",
+            itemLabel: String(localized: "MacIDM 语义判断服务 KEY")
+        )
+    }
+
+    private let serviceName: String
+    private let itemLabel: String
+
+    init(serviceName: String = KeychainCredentialStore.service, itemLabel: String = "MacIDM 代理凭据") {
+        self.serviceName = serviceName
+        self.itemLabel = itemLabel
+    }
+
+    /// Mark the window around every access: a freshly built bundle's code
+    /// identity is not in the stored item's login-Keychain ACL yet, so the call
+    /// can raise the system approval dialog, and the confirmation panel has to
+    /// tell that dialog apart from the user switching apps.
+    private func credentialAccess<T>(_ body: () throws -> T) rethrows -> T {
+        KeychainAccessSignal.shared.begin()
+        defer { KeychainAccessSignal.shared.end() }
+        return try body()
+    }
+
     /// Persists (or replaces) the password for `username`.
     func save(username: String, password: String) throws {
         guard !username.isEmpty else { throw KeychainError.unhandled(status: errSecParam) }
         let base: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: serviceName,
             kSecAttrAccount as String: username,
         ]
         var attributes = base
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         attributes[kSecValueData as String] = Data(password.utf8)
-        attributes[kSecAttrLabel as String] = String(localized: "MacIDM 代理凭据")
+        attributes[kSecAttrLabel as String] = itemLabel
 
-        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+        let addStatus = credentialAccess { SecItemAdd(attributes as CFDictionary, nil) }
         switch addStatus {
         case errSecSuccess:
             return
@@ -46,7 +74,9 @@ struct KeychainCredentialStore: Sendable {
             let update: [String: Any] = [
                 kSecValueData as String: Data(password.utf8)
             ]
-            let updateStatus = SecItemUpdate(base as CFDictionary, update as CFDictionary)
+            let updateStatus = credentialAccess {
+                SecItemUpdate(base as CFDictionary, update as CFDictionary)
+            }
             guard updateStatus == errSecSuccess else {
                 throw KeychainError.unhandled(status: updateStatus)
             }
@@ -60,24 +90,26 @@ struct KeychainCredentialStore: Sendable {
         guard !username.isEmpty else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: serviceName,
             kSecAttrAccount as String: username,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        return credentialAccess {
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            guard status == errSecSuccess, let data = result as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
     }
 
     func delete(username: String) {
         guard !username.isEmpty else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: serviceName,
             kSecAttrAccount as String: username,
         ]
-        SecItemDelete(query as CFDictionary)
+        credentialAccess { SecItemDelete(query as CFDictionary) }
     }
 }

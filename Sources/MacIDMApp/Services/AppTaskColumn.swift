@@ -39,6 +39,8 @@ enum AppTaskColumn: Int32, CaseIterable {
     case activeTransferDuration
     case mediaCid
     case selectedQuality
+    case mediaWarning
+    case historyHidden
     var sqlName: String {
         switch self {
         case .id: "id"
@@ -78,6 +80,8 @@ enum AppTaskColumn: Int32, CaseIterable {
         case .activeTransferDuration: "active_transfer_duration"
         case .mediaCid: "media_cid"
         case .selectedQuality: "selected_quality"
+        case .mediaWarning: "media_warning"
+        case .historyHidden: "history_hidden"
         }
     }
     static var selection: String { allCases.map(\.sqlName).joined(separator: ", ") }

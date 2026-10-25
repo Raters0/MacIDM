@@ -1,0 +1,42 @@
+{
+  "name": "tiktok-detail-item",
+  "description": "TikTok ITEM.Struct 详情负载（feed 弹窗 / 详情页注入缓存的输入形状）",
+  "pageURL": "https://www.tiktok.com/@someone/video/7681925651783339286",
+  "ingest": "normalizeItemStruct",
+  "entry": {
+    "id": "7681925651783339286",
+    "desc": " 完整版《犯罪都市》以暴制暴天花板 #犯罪都市 ",
+    "video": {
+      "duration": 77,
+      "playAddr": "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear0/?a=1988",
+      "bitrateInfo": [
+        {
+          "Bitrate": 800000,
+          "GearName": "adapt_540_1",
+          "PlayAddr": {
+            "UrlList": [
+              "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear0/?a=1988",
+              "https://v16-webapp-prime.tiktok.com/video/tos/no1a/mirror/?a=1988"
+            ],
+            "DataSize": "5450948"
+          }
+        },
+        {
+          "Bitrate": 1200000,
+          "GearName": "adapt_lower_720_1",
+          "PlayAddr": {
+            "UrlList": ["https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear1/?a=1988"],
+            "DataSize": 9000000
+          }
+        },
+        { "Bitrate": "bad", "PlayAddr": { "UrlList": ["javascript:alert(1)"] } }
+      ]
+    }
+  },
+  "expectedCandidateCount": 1,
+  "expectedTop": {
+    "url": "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear1/?a=1988",
+    "filenameHint": "完整版《犯罪都市》以暴制暴天花板 #犯罪都市.mp4",
+    "filenameHintSource": "titleDerived"
+  }
+}

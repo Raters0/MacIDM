@@ -66,6 +66,12 @@ struct StatusCell: View {
                     .foregroundStyle(WarningColor())
                     .help("原始文件已从下载目录中删除或移动")
             }
+            if live.status == .completed, let warning = live.mediaWarning {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.caption2)
+                    .foregroundStyle(WarningColor())
+                    .help("\(warning.title)：\(warning.detail)")
+            }
         }
     }
 }

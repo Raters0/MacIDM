@@ -1,0 +1,22 @@
+{
+  "name": "douyin-modal-entry",
+  "description": "抖音 jingxuan 弹窗详情负载（modal_id 关联缓存的输入形状）",
+  "pageURL": "https://www.douyin.com/jingxuan?modal_id=7666722505813527848",
+  "entry": {
+    "awemeId": "7666722505813527848",
+    "desc": " 完整版《犯罪都市》以暴制暴天花板 #犯罪都市 ",
+    "duration": 199.4,
+    "urls": [
+      { "url": "https://v26-web.douyinvod.com/video/tos/a.mp4?signature=a", "size": 504938148 },
+      { "url": "https://v95-web-sz.douyinvod.com/video/tos/b.mp4?signature=b", "size": 123 },
+      { "url": "javascript:alert(1)", "size": 1 },
+      null
+    ]
+  },
+  "expectedCandidateCount": 1,
+  "expectedTop": {
+    "url": "https://v26-web.douyinvod.com/video/tos/a.mp4?signature=a",
+    "filenameHint": "完整版《犯罪都市》以暴制暴天花板 #犯罪都市.mp4",
+    "filenameHintSource": "titleDerived"
+  }
+}

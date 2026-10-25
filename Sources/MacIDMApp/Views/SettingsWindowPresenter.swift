@@ -68,13 +68,14 @@ private struct SettingsWindowRoot: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, downloads, network, browser, appearance, advanced
+    case general, shortcuts, downloads, network, browser, appearance, advanced
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .general: String(localized: "通用")
+        case .shortcuts: String(localized: "快捷键")
         case .downloads: String(localized: "下载")
         case .network: String(localized: "网络")
         case .browser: String(localized: "浏览器与站点")
@@ -86,6 +87,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
+        case .shortcuts: "command"
         case .downloads: "arrow.down.circle"
         case .network: "network"
         case .browser: "globe"

@@ -281,6 +281,14 @@ export class TakeoverController {
       throw error;
     } finally {
       this.active.delete(item.id);
+      // Track the download-UI latch by outcome, not just by settings: a
+      // takeover that succeeded consumed the browser download (keep the UI
+      // hidden); one that failed handed the download back to Chrome (show
+      // the UI again, e.g. when the App is not running). Without this, a
+      // user who quit the App browses with every download completing
+      // silently. Skipped downloads (blob:/POST/blocked) return before the
+      // takeover section and never reach this line.
+      await this.applyDownloadUIVisibility(!taskCreated);
       if (!keepRecoveryMarker) await this.forget(item.id);
     }
   }
@@ -592,11 +600,39 @@ export class TakeoverController {
     try {
       const [item] = await this.downloads.search({ id: downloadId });
       if (item?.state === "in_progress" && item.paused === true) {
+        // Handing the download back to Chrome: the download-UI latch must
+        // show the UI again (also covers recovery paths that resume outside
+        // handleCreated's finally). Idempotent — failure paths re-show via
+        // the finally as well.
+        await this.applyDownloadUIVisibility(true);
         await this.downloads.resume(downloadId);
       }
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /// While takeover is enabled, the browser download UI (bubble/shelf/toolbar
+  /// icon) must already be hidden BEFORE a download is created: Chrome adds
+  /// the toolbar icon and plays its fly-in animation while processing the
+  /// creation in the browser process, so no extension call issued from the
+  /// onCreated handler can ever beat it — and a mid-flight suppression does
+  /// not remove the icon once shown (observed live 2026-10-14). UiOptions is
+  /// a per-profile global switch with only an `enabled` field (no
+  /// per-download form; "downloads.ui" permission). The service worker
+  /// therefore applies this latch at startup and on takeoverEnabled changes.
+  /// Known trade-off: while the latch is held, downloads MacIDM skips
+  /// (blob:/data:, body-carrying POST, blocked sites) complete without any
+  /// browser UI — the silent-skip diagnostics toast is their only feedback.
+  async applyDownloadUIVisibility(visible) {
+    if (typeof this.downloads.setUiOptions !== "function") return;
+    try {
+      await this.downloads.setUiOptions({ enabled: visible === true });
+    } catch {
+      // Best-effort: another extension holding the flag down rejects a
+      // re-enable; an old Chrome without the API degrades to the always
+      // visible behaviour. Neither may fail the takeover flow.
     }
   }
 

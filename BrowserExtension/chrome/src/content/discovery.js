@@ -14,9 +14,16 @@
   function mimeTypeFromURL(value) {
     try {
       const url = new URL(value);
-      return (url.searchParams.get("mime") || url.searchParams.get("type") || "")
-        .trim()
-        .toLowerCase();
+      // mime_type 的下划线值（video_mp4 等）按 video_mp4 → video/mp4 同义
+      // 解释：抖音与 TikTok 的 CDN 都用该参数声明媒体类型。
+      const raw = (
+        url.searchParams.get("mime")
+        || url.searchParams.get("type")
+        || url.searchParams.get("mime_type")
+        || ""
+      ).trim().toLowerCase();
+      const match = raw.match(/^(video|audio|image)_([a-z0-9]+)$/u);
+      return match ? `${match[1]}/${match[2]}` : raw;
     } catch {
       return "";
     }

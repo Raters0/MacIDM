@@ -7,7 +7,11 @@
   global.__macIDMOverlayInstalled = true;
 
   const MAX_ATTACHMENTS = 12;
-  const MIN_ELEMENT_WIDTH = 220;
+  // 160px covers preview-card feeds whose cards are genuinely narrow on
+  // desktop (TikTok explore renders ~180px cards at 1450px viewport width);
+  // the FAB only mounts for element-scoped candidates, so the lower floor
+  // does not widen the noise surface.
+  const MIN_ELEMENT_WIDTH = 160;
   const MIN_ELEMENT_HEIGHT = 120;
   const Z_INDEX = "2147483646";
   // Hover-autoplay card bounds for the persistent-FAB heuristic: a stable
@@ -1974,6 +1978,26 @@
     return parts.join("\n");
   }
 
+  /// 语义判断候选（technical-spec §8.1）：收割器保持零站点知识；站点适配的
+  /// 语义标题（如 TikTok 缓存 desc，titleDerived）注入为 card scope 首位
+  /// 候选，让 App 侧仲裁有正确选项可选。注入后经 normalizeCandidates 统一
+  /// 剪界（2–200 字符、大小写不敏感去重、≤10 条）；桥接校验只放行
+  /// text/scope，source 不出扩展。
+  function titleCandidatesFor(element) {
+    const harvested = globalThis.MacIDMTitleCandidates?.harvest?.({
+      doc: document,
+      element,
+    }) ?? [];
+    const adapterTitle = globalThis.MacIDMMediaElementScope?.tiktokCardTitleFor?.(element);
+    if (!adapterTitle) return harvested;
+    const normalize = globalThis.MacIDMTitleCandidates?.normalizeCandidates;
+    if (typeof normalize !== "function") return harvested;
+    return normalize([
+      { text: adapterTitle, source: "site-adapter", scope: "card" },
+      ...harvested,
+    ]);
+  }
+
   // Returns true when the App accepted the submission. Feedback is a
   // top-center toast (shared/panel-ui.js) — the row only grays out for the
   // duration of the round-trip and keeps no "submitted" style state.
@@ -1998,6 +2022,10 @@
         // URL tail, so a URL-tail name never outranks the title on disk.
         filenameHintSource: globalThis.MacIDMMediaUtils?.filenameHintSourceFor?.(candidate) ?? "urlPath",
         pageTitle: displayTitleFor(element),
+        // 语义判断候选（technical-spec §8.1）：零站点知识收割 + 站点适配
+        // 语义标题注入（titleCandidatesFor），仅在用户显式提交时运行；App
+        // 是否采纳由其设置与置信度决定，扩展不等待结果。
+        titleCandidates: titleCandidatesFor(element),
         pairVideoUrl: variant?.pairAudioUrl
           ? (variant?.pairVideoUrl ?? variant.url)
           : (variant?.pairVideoUrl ?? candidate.pairVideoUrl),
@@ -2060,6 +2088,17 @@
     // resolve its own card module.
     if (attachment?.titleSnapshot && (attachment.persistent || !element.isConnected)) {
       return attachment.titleSnapshot;
+    }
+    // A scoped candidate's cardTitle is the card's own caption evidence
+    // (stamped per card in the content-script snapshot); it beats generic
+    // DOM proximity, which mis-picks unrelated page chrome on some sites.
+    try {
+      const scopedCardTitle = scopedCandidatesForElement(element)
+        .map((candidate) => candidate?.cardTitle)
+        .find(Boolean);
+      if (scopedCardTitle) return String(scopedCardTitle).slice(0, 120);
+    } catch {
+      // Fall through to DOM resolution.
     }
     if (element && globalThis.MacIDMMediaUtils?.resolveContentTitle) {
       try {

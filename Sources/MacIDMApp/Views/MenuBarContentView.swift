@@ -179,12 +179,15 @@ struct MenuBarContentView: View {
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
-            .foregroundStyle(AppTheme.warning)
+            .padding(.horizontal, 10)
             .frame(height: 28)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .pointerCursorOnHover()
+        .buttonStyle(
+            MenuBarPanelButtonStyle(
+                tint: AppTheme.warning, showsIdleBackground: false, restForeground: AppTheme.warning
+            )
+        )
         .help("打开 GitHub 发布页面")
     }
 
@@ -205,10 +208,14 @@ struct MenuBarContentView: View {
             } label: {
                 Label("退出", systemImage: "power")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
             }
-            .buttonStyle(.plain)
-            .pointerCursorOnHover()
+            .buttonStyle(
+                MenuBarPanelButtonStyle(
+                    tint: AppTheme.accent, showsIdleBackground: false, restForeground: .secondary
+                )
+            )
             .help("退出 MacIDM")
             .keyboardShortcut("q")
         }
@@ -302,11 +309,14 @@ private struct MenuBarPanelButtonStyle: ButtonStyle {
     let tint: Color
     var prominent = false
     var showsIdleBackground = true
+    /// Rest foreground for quiet controls such as the footer quit button;
+    /// nil keeps the standard primary label color.
+    var restForeground: Color?
 
     func makeBody(configuration: Configuration) -> some View {
         MenuBarPanelButtonLabel(
             configuration: configuration, tint: tint, prominent: prominent,
-            showsIdleBackground: showsIdleBackground
+            showsIdleBackground: showsIdleBackground, restForeground: restForeground
         )
     }
 }
@@ -316,12 +326,13 @@ private struct MenuBarPanelButtonLabel: View {
     let tint: Color
     let prominent: Bool
     let showsIdleBackground: Bool
+    var restForeground: Color?
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     var body: some View {
         configuration.label
-            .foregroundStyle(prominent ? Color.white : isHovering && isEnabled ? tint : Color.primary)
+            .foregroundStyle(foregroundColor)
             .background(
                 prominent
                     ? tint.opacity(configuration.isPressed ? 0.75 : isHovering ? 0.9 : 1)
@@ -334,5 +345,11 @@ private struct MenuBarPanelButtonLabel: View {
             .contentShape(Rectangle())
             .pointerCursorOnHover(isEnabled: isEnabled)
             .onHover { isHovering = $0 }
+    }
+
+    private var foregroundColor: Color {
+        if prominent { return .white }
+        if isHovering && isEnabled { return tint }
+        return restForeground ?? .primary
     }
 }

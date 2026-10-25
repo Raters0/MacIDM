@@ -334,30 +334,6 @@ extension AppModel {
     /// still unknown, and a zero-byte estimate is equally meaningless for
     /// the confirmation card. Normalize both to nil so an older extension
     /// reporting 0 degrades to "size unknown" instead of a confident "0 KB".
-    static func positiveSize(_ value: Int64?) -> Int64? {
-        guard let value, value > 0 else { return nil }
-        return value
-    }
-
-    /// Reads the hint provenance from a bridge payload. Missing or unknown
-    /// values degrade to `.urlPath` so payloads from older extensions never
-    /// gain title-outranking authority (technical spec §8.1).
-    static func filenameHintSource(from payload: [String: JSONValue]) -> FilenameHintSource {
-        guard let raw = payload["filenameHintSource"]?.stringValue,
-            let source = FilenameHintSource(rawValue: raw),
-            source != .userEdited
-        else { return .urlPath }
-        return source
-    }
-
-    /// Hosts used to cross-check a title's trailing brand segment before
-    /// stripping it: the resource host and, when present, the referer's host
-    /// (the page the user actually submitted from).
-    static func pageTitleHosts(url: URL, requestContext: DownloadRequestContext?) -> [String?] {
-        let refererHost = requestContext?.referer.flatMap { URL(string: $0)?.host }
-        return [url.host, refererHost]
-    }
-
     func requestInteractiveBrowserDownload(
         _ request: MessageRequest,
         clientID: String,
@@ -423,19 +399,20 @@ extension AppModel {
             // takeovers carry the download's real Content-Length as
             // totalBytes. Adopt whichever is present, marking the takeover
             // value as probed so the confirmation window shows it plainly.
-            let streamEstimate = Self.positiveSize(request.payload["estimatedSize"]?.int64Value)
-            let browserTotal = Self.positiveSize(request.payload["totalBytes"]?.int64Value)
+            let streamEstimate = BrowserDownloadNamingPolicy.positiveSize(request.payload["estimatedSize"]?.int64Value)
+            let browserTotal = BrowserDownloadNamingPolicy.positiveSize(request.payload["totalBytes"]?.int64Value)
             let estimatedSize = streamEstimate ?? browserTotal
             draft = DownloadDraft(
                 url: url,
                 filenameHint: request.payload["filenameHint"]?.stringValue,
-                filenameHintSource: Self.filenameHintSource(from: request.payload),
+                filenameHintSource: BrowserDownloadNamingPolicy.filenameHintSource(from: request.payload),
                 sourceKind: sourceKind,
                 requestContext: requestContext,
                 pageTitle: DownloadNaming.semanticPageTitle(
                     request.payload["pageTitle"]?.stringValue,
-                    hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+                    hosts: BrowserDownloadNamingPolicy.pageTitleHosts(url: url, requestContext: requestContext)
                 ),
+                titleCandidates: BrowserDownloadNamingPolicy.titleCandidates(from: request.payload),
                 mimeType: request.payload["mime"]?.stringValue,
                 pairAudioURL: pairAudioURL,
                 pairCID: request.payload["pairCid"]?.stringValue,
@@ -578,7 +555,7 @@ extension AppModel {
         }) {
             throw BrowserTakeoverError.abandoned
         }
-        if let browserSize = Self.positiveSize(request.payload["totalBytes"]?.int64Value),
+        if let browserSize = BrowserDownloadNamingPolicy.positiveSize(request.payload["totalBytes"]?.int64Value),
             let probedSize = info.size,
             browserSize != probedSize
         {
@@ -593,7 +570,7 @@ extension AppModel {
             usableRequestFilename
             ?? DownloadNaming.semanticPageTitle(
                 request.payload["pageTitle"]?.stringValue,
-                hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+                hosts: BrowserDownloadNamingPolicy.pageTitleHosts(url: url, requestContext: requestContext)
             )
             ?? (DownloadNaming.isGenericFilename(info.suggestedFilename) ? nil : info.suggestedFilename)
             ?? initialFilename
@@ -760,7 +737,7 @@ extension AppModel {
         let taskID = UUID()
         let pageTitle = DownloadNaming.semanticPageTitle(
             request.payload["pageTitle"]?.stringValue,
-            hosts: Self.pageTitleHosts(url: url, requestContext: requestContext)
+            hosts: BrowserDownloadNamingPolicy.pageTitleHosts(url: url, requestContext: requestContext)
         )
         var initialFilename =
             pageTitle
@@ -797,7 +774,7 @@ extension AppModel {
             sourceKind == .http && backend != .youtubeExtractor
             ? try await browserProbe(probeRequest)
             : nil
-        if let browserSize = Self.positiveSize(request.payload["totalBytes"]?.int64Value),
+        if let browserSize = BrowserDownloadNamingPolicy.positiveSize(request.payload["totalBytes"]?.int64Value),
             let probedSize = info?.size,
             browserSize != probedSize
         {

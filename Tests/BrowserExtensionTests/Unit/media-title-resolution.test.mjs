@@ -68,11 +68,67 @@ test("stripBrandSuffix removes Bilibili underscore-separated double brand tails"
   assert.equal(u.isGenericOrBrandTitle(u.stripBrandSuffix("某视频_哔哩哔哩_bilibili"), "www.bilibili.com"), false);
 });
 
+// 真机取样（B 站稍后再看）：站点会把泛化媒体词接在品牌名后面
+// （"…-哔哩哔哩视频"），旧规则要求尾段整串相等，于是这个尾巴两端都剥不掉。
+test("stripBrandSuffix removes brand tails followed by a generic media word", () => {
+  const { MacIDMMediaUtils: u } = makeContext({ hostname: "www.bilibili.com", href: "https://www.bilibili.com/list/watchlater" });
+  assert.equal(u.stripBrandSuffix("某视频 - 哔哩哔哩视频"), "某视频");
+  assert.equal(u.stripBrandSuffix("Some title | YouTube 视频"), "Some title");
+  assert.equal(u.stripBrandSuffix("某视频 - 抖音精选"), "某视频");
+  // 尾段必须含品牌词：纯媒体词尾巴是真实标题的一部分。
+  assert.equal(u.stripBrandSuffix("某视频 - 官方视频"), "某视频 - 官方视频");
+  // 品牌词后面跟着内容时不得截断。
+  assert.equal(u.stripBrandSuffix("纪录片 - 哔哩哔哩弹幕网"), "纪录片 - 哔哩哔哩弹幕网");
+});
+
+test("isGenericOrBrandTitle rejects page chrome, not titles that merely contain a chrome word", () => {
+  const { MacIDMMediaUtils: u } = makeContext({ hostname: "www.douyin.com", href: "https://www.douyin.com/jingxuan" });
+  // 子串判定曾把真实内容标题当成页级泛化名（“精选”/“首页”/\bhome\b）。
+  assert.equal(u.isGenericOrBrandTitle("国语精选合集 第3话", "www.douyin.com"), false);
+  assert.equal(u.isGenericOrBrandTitle("Home Alone 4K Remastered", "www.youtube.com"), false);
+  assert.equal(u.isGenericOrBrandTitle("首页公开课：精选片段", "www.douyin.com"), false);
+  // 纯页级 chrome 仍然判为泛化。
+  assert.equal(u.isGenericOrBrandTitle("精选", "www.douyin.com"), true);
+  assert.equal(u.isGenericOrBrandTitle("抖音精选", "www.douyin.com"), true);
+  assert.equal(u.isGenericOrBrandTitle("首页", "www.douyin.com"), true);
+  assert.equal(u.isGenericOrBrandTitle("Home", "www.youtube.com"), true);
+  // 列表页复合标题（真机取样）剥掉品牌尾巴后仍带播放器/列表 chrome，
+  // 必须继续判为泛化，否则 “视频标题 | 频道-稍后再看” 会被当成内容名合成。
+  assert.equal(
+    u.isGenericOrBrandTitle(
+      "霍尔木兹海峡被掉半年，谁在为能源海啮买单？| 中国坐标-raters-稍后再看-哔哩哔哩视频",
+      "www.bilibili.com",
+    ),
+    true,
+  );
+});
+
 test("isGenericOrBrandTitle flags brand/empty titles and Chinese brand names", () => {
   const { MacIDMMediaUtils: u } = makeContext({ hostname: "www.douyin.com", href: "https://www.douyin.com/" });
   assert.equal(u.isGenericOrBrandTitle("", "www.douyin.com"), true);
   assert.equal(u.isGenericOrBrandTitle("抖音精选电脑版 - 抖音旗下优质视频平台", "www.douyin.com"), true);
   assert.equal(u.isGenericOrBrandTitle("【何同学】库克时代", "www.douyin.com"), false);
+
+  // 通用站点：纯 brandtitle 应判定为 true
+  assert.equal(u.isGenericOrBrandTitle("91porn", "91porn.com"), true);
+  assert.equal(u.isGenericOrBrandTitle("91porn - 首页", "91porn.com"), true);
+
+  // 通用站点：title + brand 形式保留真实内容，判定为 false
+  assert.equal(u.isGenericOrBrandTitle("国庆MVP结算 - 91porn", "91porn.com"), false);
+  assert.equal(u.isGenericOrBrandTitle("国庆MVP结算_91porn", "91porn.com"), false);
+  assert.equal(u.isGenericOrBrandTitle("关于91porn的使用教程", "91porn.com"), false);
+});
+
+test("isVisuallyHiddenTitle ignores video fallback content and hidden elements", () => {
+  const { MacIDMMediaUtils: u } = makeContext({ hostname: "www.example.com", href: "https://www.example.com/watch" });
+  const mockBox = () => ({ width: 0, height: 0, top: 0, left: 0 });
+  // hidden 属性
+  assert.equal(u.isVisuallyHiddenTitle({ hidden: true, getBoundingClientRect: mockBox }), true);
+  // closest('[hidden]')
+  assert.equal(u.isVisuallyHiddenTitle({ closest: (sel) => sel.includes("[hidden]"), getBoundingClientRect: mockBox }), true);
+  // video 内部后代
+  assert.equal(u.isVisuallyHiddenTitle({ closest: (sel) => sel === "video", getBoundingClientRect: mockBox }), true);
+  assert.equal(u.isVisuallyHiddenTitle({ tagName: "VIDEO", getBoundingClientRect: mockBox }), true);
 });
 
 test("resolveContentTitle picks the heading inside the anchor's module", () => {

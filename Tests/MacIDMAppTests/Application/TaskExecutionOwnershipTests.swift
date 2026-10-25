@@ -116,7 +116,7 @@ final class TaskExecutionOwnershipTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: artifact.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("partial".utf8).write(to: artifact)
-        model.remove(id, deletingFile: true)
+        model.remove(id, fileRemoval: .deletePermanently)
         XCTAssertTrue(FileManager.default.fileExists(atPath: artifact.path))
         XCTAssertFalse(model.task(with: id)?.isArchived ?? true)
         await runner.stop(0)

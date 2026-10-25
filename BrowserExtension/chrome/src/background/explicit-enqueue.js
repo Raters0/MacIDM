@@ -23,6 +23,7 @@ export class ExplicitEnqueueClient {
     filenameHint,
     filenameHintSource,
     pageTitle,
+    titleCandidates,
     interactive = false,
     operationID = crypto.randomUUID(),
     pairVideoUrl,
@@ -45,6 +46,24 @@ export class ExplicitEnqueueClient {
         ? filenameHintSource
         : "urlPath",
     };
+    // 语义判断候选（technical-spec §8.1）：与桥校验同边界——≤10 条、每条去
+    // 空白后 2–200 字符、仅字符串。这里复核后并入，非法条目直接丢弃。
+    if (Array.isArray(titleCandidates)) {
+      const cleaned = titleCandidates
+        .map((entry) => {
+          const text = String(typeof entry === "string" ? entry : entry?.text ?? "")
+            .replace(/\s+/gu, " ").trim();
+          const scope = entry?.scope === "card" ? "card" : "page";
+          return { text, scope };
+        })
+        .filter((entry) => entry.text.length >= 2 && entry.text.length <= 200)
+        .filter(
+          (entry, index, all) =>
+            all.findIndex((other) => other.text.toLowerCase() === entry.text.toLowerCase()) === index
+        )
+        .slice(0, 10);
+      if (cleaned.length > 0) payload.titleCandidates = cleaned;
+    }
     if (interactive) payload.interactive = true;
     if (typeof mime === "string" && mime.trim()) payload.mime = mime.trim().slice(0, 256);
     if (typeof pageTitle === "string" && pageTitle.trim()) {

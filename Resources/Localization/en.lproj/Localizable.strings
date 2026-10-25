@@ -272,7 +272,23 @@
 "隐藏文件名，仅展示任务ID" = "Hide file names, show Job IDs only";
 "便于截图或反馈问题时脱敏；磁盘上的文件不受影响。" = "Useful for screenshots or issue reports; files on disk are unaffected.";
 "首次使用引导" = "First-run onboarding";
-"全局快捷键 ⌘⇧N 可随时呼出新建下载。" = "The global shortcut ⌘⇧N opens the New Download window anytime.";
+"全局快捷键" = "Global shortcuts";
+"全局快捷键 %@ 可随时呼出新建下载。" = "The global shortcut %@ opens the New Download window anytime.";
+"全局快捷键已关闭。" = "Global shortcuts are off.";
+"快捷键" = "Shortcuts";
+"启用全局快捷键" = "Enable global shortcuts";
+"关闭后所有已录制的组合键立即失效。" = "Turning this off unregisters every recorded combination immediately.";
+"呼出新建下载" = "Open New Download";
+"未设置" = "Not set";
+"未设置组合键，该操作没有全局快捷键。" = "No combination recorded; this action has no global shortcut.";
+"未设置全局快捷键，可在「快捷键」页录制。" = "No global shortcut recorded; record one on the Shortcuts page.";
+"在任意应用中按下组合键即可弹出新建下载窗口；剪贴板里是链接时自动填入。点输入框后按组合键录制，Esc 取消。" = "Press the combination in any app to open the New Download window; a link on the clipboard is filled in automatically. Click the field and press a combination to record it; Esc cancels.";
+"清除" = "Clear";
+"按下组合键…" = "Press a combination…";
+"需要 ⌘、⌥ 或 ⌃ 修饰键" = "Add a ⌘, ⌥ or ⌃ modifier";
+"恢复默认" = "Reset to default";
+"%@ 已被系统或其他应用占用；全局快捷键仍是 %@。" = "%@ is owned by the system or another app; the global shortcut stays %@.";
+"该组合键已被系统或其他应用占用，全局快捷键未生效。" = "That combination is owned by the system or another app, so the global shortcut is off.";
 "重新显示…" = "Show Again…";
 "应用日志" = "App log";
 "下载、引擎与桥接的运行记录。" = "Runtime records of downloads, the engine, and the bridge.";
@@ -372,18 +388,28 @@
 "预估大小，以实际下载为准" = "Estimated size; the actual download may differ";
 "原始格式: MPEG-TS → 输出格式: MP4（FFmpeg 重封装）" = "Source format: MPEG-TS → output format: MP4 (FFmpeg remux)";
 "原始格式: WebM → 输出格式: MP4（FFmpeg 合并）" = "Source format: WebM → output format: MP4 (FFmpeg merge)";
-"媒体信息已由浏览器嗅探提供，无需再次解析，确认保存位置和文件名后即可下载。" = "Media info was provided by browser sniffing; no re-parsing is needed. Confirm the save location and file name to download.";
 "已选择普通文件下载；如果地址实际是网页，下载结果可能是 HTML。" = "A plain file download was selected; if the URL is actually a web page, the result may be HTML.";
-"已识别音视频分片，将在下载时自动合并为 MP4。" = "Audio and video segments detected; they will be merged into MP4 automatically during the download.";
+"已识别音视频，将在下载时自动合并为 MP4。" = "Audio and video detected; they will be merged into MP4 automatically during the download.";
 "已找到多个资源，请选择要下载的画质或格式。" = "Multiple resources found; pick the quality or format to download.";
-"资源已找到，请确认保存位置和文件名。" = "Resource found; confirm the save location and file name.";
-"请先点击“寻找资源”，确认媒体资源后再开始下载。" = "Click “Find Resources” first and confirm the media resource before starting the download.";
+"请先点击“寻找资源”，确认资源后再开始下载。" = "Click “Find Resources” first and confirm the resource before starting the download.";
 "文件名不能为空，且不能包含路径或控制字符。" = "The file name cannot be empty and cannot contain path or control characters.";
 "普通文件" = "Plain file";
 "DASH 音视频" = "DASH audio + video";
 "YouTube 视频" = "YouTube video";
 "YouTube 视频 · %lldp" = "YouTube video · %lldp";
 "yt-dlp 提取" = "yt-dlp extraction";
+
+/* Semantic title service execution status (technical-spec §8.1) */
+"语义判断服务执行中…" = "Semantic title service running…";
+"语义判断服务已执行：已采纳模型返回的标题（置信度 %@）。" = "Semantic title service finished: adopted the model-returned title (confidence %@).";
+"语义判断服务已执行：模型未给出可采纳的标题，已沿用常规命名。" = "Semantic title service finished: the model returned no adoptable title; the regular naming chain was used.";
+"语义判断服务执行失败（%@），已沿用常规命名。" = "Semantic title service failed (%@); the regular naming chain was used.";
+"语义判断服务未执行：%@。" = "Semantic title service not run: %@.";
+"地址已修改，原候选标题已失效" = "the URL changed and the original title candidates are stale";
+"没有可仲裁的候选标题" = "no title candidates to judge";
+"服务未启用" = "the service is disabled";
+"用户已手动命名，仲裁结果未使用" = "the file name was edited manually, so the verdict went unused";
+"未知原因" = "unknown reason";
 
 /* ---- Onboarding ---- */
 "欢迎使用 MacIDM" = "Welcome to MacIDM";
@@ -889,3 +915,7 @@
 "查看新版本" = "View Release";
 
 "打开 GitHub 发布页面" = "Open the GitHub release page";
+
+"自动检查新版本" = "Automatically check for new versions";
+
+"每天最多联网检查一次；关闭后仅手动检查。" = "Checks online at most once a day; when off, only manual checks run.";

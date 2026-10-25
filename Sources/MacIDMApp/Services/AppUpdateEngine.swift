@@ -28,11 +28,29 @@ final class AppUpdateEngine: NSObject, ObservableObject {
 
     private var updater: SPUUpdater?
 
+    /// Whether Sparkle may run its scheduled daily check. Persisted by
+    /// Sparkle (`SUAutomaticallyChecksForUpdates`); before the user answers
+    /// the first-run consent prompt this reads as off. With scheduled checks
+    /// off, the Settings "check now" button is the only check source.
+    var automaticallyChecksForUpdates: Bool {
+        get { updater?.automaticallyChecksForUpdates ?? false }
+        set {
+            updater?.automaticallyChecksForUpdates = newValue
+            // A computed property does not publish on its own, so views reading
+            // it (the Settings row that is disabled while checks are off)
+            // would keep their stale state until something else re-rendered.
+            objectWillChange.send()
+        }
+    }
+
     /// Whether Sparkle may download and install found updates without a
     /// per-update prompt. Sparkle persists the value itself.
     var automaticallyDownloadsUpdates: Bool {
         get { updater?.automaticallyDownloadsUpdates ?? false }
-        set { updater?.automaticallyDownloadsUpdates = newValue }
+        set {
+            updater?.automaticallyDownloadsUpdates = newValue
+            objectWillChange.send()
+        }
     }
 
     /// Starts the Sparkle updater. Call once after the application exists

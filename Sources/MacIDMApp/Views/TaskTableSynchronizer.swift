@@ -78,6 +78,9 @@ final class TaskLiveModel: ObservableObject, Identifiable {
     let id: UUID
     @Published private(set) var status: AppTaskStatus = .queued
     @Published private(set) var fileMissing = false
+    /// Non-fatal media defect recorded at completion (technical-spec §3.3);
+    /// the task is still `.completed`.
+    @Published private(set) var mediaWarning: AppTaskMediaWarning? = nil
     @Published private(set) var fractionCompleted: Double = 0
     @Published private(set) var receivedBytes: Int64 = 0
     @Published private(set) var totalBytes: Int64?
@@ -118,6 +121,7 @@ final class TaskLiveModel: ObservableObject, Identifiable {
         }
         status = task.status
         fileMissing = task.fileMissing
+        mediaWarning = task.mediaWarning
         receivedBytes = task.receivedBytes
         totalBytes = task.totalBytes
         bytesPerSecond = task.bytesPerSecond

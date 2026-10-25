@@ -49,6 +49,13 @@ struct NewDownloadView: View {
     @State private var validationMessage: String?
     @State private var isSubmitting = false
     @State private var filenameWasEdited = false
+    /// 语义判断服务的仲裁结果（technical-spec §8.1）：高置信采纳后驱动建议
+    /// 文件名，提交来源标注为 `.modelJudged`；用户编辑或改地址即作废。
+    @State private var semanticDecision: SemanticTitleDecision?
+    /// 语义判断服务的执行状态提示（technical-spec §8.1）：执行中 / 已执行
+    /// 并采纳 / 已执行但弃权 / 执行失败 / 未执行，常驻确认窗口一行。
+    @State private var semanticStatus: SemanticTitleStatus?
+    @State private var semanticResolutionStarted = false
     // Monotonic token used to discard stale inspect results: every URL edit
     // bumps this, and an in-flight inspect Task only writes its results back
     // if the generation still matches. Without it, editing the address while
@@ -136,7 +143,6 @@ struct NewDownloadView: View {
             _filename = State(initialValue: adopted.filename)
             _resolvedOptions = State(initialValue: [adopted.option])
             _selectedOptionID = State(initialValue: adopted.option.id)
-            _resourceMessage = State(initialValue: adopted.message)
         }
     }
 
@@ -172,6 +178,7 @@ struct NewDownloadView: View {
         .onChange(of: resolvedOptions) { _ in onLayoutChange?() }
         .onChange(of: isAdvancedOptionsExpanded) { _ in onLayoutChange?() }
         .onChange(of: validationMessage) { _ in onLayoutChange?() }
+        .onChange(of: semanticStatus) { _ in onLayoutChange?() }
         .onAppear {
             destinationDirectory = model.settings.downloadDirectory
             maximumParallelRequests = model.settings.maximumParallelRequests
@@ -184,6 +191,11 @@ struct NewDownloadView: View {
             }
         }
         .interactiveDismissDisabled(isSubmitting)
+        .task {
+            // 语义仲裁与资源探测互不阻塞：谁后到谁覆盖建议名（守卫见
+            // hasUserOrSemanticName），确认窗口始终可立即操作。
+            await resolveSemanticTitle()
+        }
     }
 
     // MARK: - Address section
@@ -224,6 +236,12 @@ struct NewDownloadView: View {
                         backend = .native
                         pairAudioURL = nil
                         pairCID = nil
+                        semanticDecision = nil
+                        // 候选标题随草稿作废：状态行改显「未执行」并注明
+                        // 原因，既不静默也不残留过期结论（§8.1 五态提示）。
+                        semanticStatus = .notInvoked(
+                            reason: String(localized: "地址已修改，原候选标题已失效")
+                        )
                         if !filenameWasEdited {
                             filename = "download"
                         }
@@ -364,7 +382,9 @@ struct NewDownloadView: View {
     /// metadata slots that belong to the category. Audio/video show duration
     /// and codec; applications show a platform note; everything else keeps
     /// the second line for its category name. Missing values are omitted
-    /// instead of rendering "unknown" placeholders.
+    /// instead of rendering "unknown" placeholders. Deliberately borderless:
+    /// the section card already draws the outer frame, and a second stroke
+    /// read as a "box in a box" — the content aligns with the button row.
     private func mediaCard(for option: DownloadMediaOption) -> some View {
         let displaySize = option.estimatedSize ?? draftEstimatedSize
         let displayDuration = option.duration ?? draftDuration
@@ -394,7 +414,7 @@ struct NewDownloadView: View {
         } else {
             sizeLabel = String(localized: "大小未知")
         }
-        return HStack(spacing: 14) {
+        return HStack(alignment: .center, spacing: 14) {
             VStack(spacing: 4) {
                 Image(systemName: category.systemImage)
                     .font(.system(size: 28))
@@ -412,7 +432,7 @@ struct NewDownloadView: View {
             )
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(sizeLabel)
                         .font(.headline)
                     Text(option.label)
@@ -436,12 +456,7 @@ struct NewDownloadView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                .stroke(AppTheme.hairline, lineWidth: 1)
-        )
     }
 
     /// The category-specific metadata slots beneath the size. Duration only
@@ -521,7 +536,7 @@ struct NewDownloadView: View {
                         GridRow {
                             fieldLabel("文件名")
                             TextField("文件名", text: filenameBinding)
-                                .textFieldStyle(ClearInputFieldStyle())
+                                .textFieldStyle(.roundedBorder)
                         }
                         GridRow {
                             fieldLabel("最大并行请求数")
@@ -545,7 +560,7 @@ struct NewDownloadView: View {
                         GridRow {
                             fieldLabel("预期 SHA-256")
                             TextField("预期 SHA-256", text: $expectedSHA256, prompt: Text("可选"))
-                                .textFieldStyle(ClearInputFieldStyle())
+                                .textFieldStyle(.roundedBorder)
                         }
                     }
 
@@ -556,21 +571,20 @@ struct NewDownloadView: View {
                             .pointerCursorOnHover()
                     }
 
-                    if let formatConversion = formatConversionDescription {
-                        Text(formatConversion)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
                     Toggle("立即开始下载", isOn: $startImmediately)
                         .font(.callout)
                         .pointerCursorOnHover()
                 }
             }
 
-            // Resource-status message sits below the card instead of the
+            // Semantic-status message sits below the card instead of the
             // fixed footer, so it never competes with the window height and
             // can wrap to multiple lines without clipping the options card.
+            // The semantic-judgment status keeps its own row (never rides on
+            // resourceMessage) so every execution state stays visible.
+            if let semanticStatus {
+                semanticStatusRow(semanticStatus)
+            }
             if let resourceMessage {
                 Label(resourceMessage, systemImage: "checkmark.circle.fill")
                     .font(.callout)
@@ -578,6 +592,61 @@ struct NewDownloadView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// 语义判断服务的执行状态行（technical-spec §8.1）：五态各一行，图标与
+    /// 色调区分执行中 / 采纳 / 弃权 / 失败 / 未执行，均不阻塞确认窗口。
+    @ViewBuilder
+    private func semanticStatusRow(_ status: SemanticTitleStatus) -> some View {
+        switch status {
+        case .running:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("语义判断服务执行中…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        case .adopted(let confidence):
+            semanticStatusLine(
+                String(
+                    localized:
+                        "语义判断服务已执行：已采纳模型返回的标题（置信度 \(Self.percentText(confidence))）。"
+                ),
+                systemImage: "sparkles",
+                color: AppTheme.success
+            )
+        case .abstained:
+            semanticStatusLine(
+                String(localized: "语义判断服务已执行：模型未给出可采纳的标题，已沿用常规命名。"),
+                systemImage: "info.circle",
+                color: .secondary
+            )
+        case .failed(let detail):
+            semanticStatusLine(
+                String(localized: "语义判断服务执行失败（\(detail)），已沿用常规命名。"),
+                systemImage: "exclamationmark.triangle.fill",
+                color: AppTheme.danger
+            )
+        case .notInvoked(let reason):
+            semanticStatusLine(
+                String(localized: "语义判断服务未执行：\(reason)。"),
+                systemImage: "slash.circle",
+                color: .secondary
+            )
+        }
+    }
+
+    private func semanticStatusLine(_ text: String, systemImage: String, color: Color) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.callout)
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private static func percentText(_ confidence: Double) -> String {
+        "\(Int((confidence * 100).rounded()))%"
     }
 
     // MARK: - Footer
@@ -726,28 +795,6 @@ struct NewDownloadView: View {
         )
     }
 
-    /// Explains the format conversion that FFmpeg performs so the user
-    /// understands why an HLS (.ts segments) or DASH (.m4s segments) download
-    /// ends up as .mp4. Returns nil for HTTP direct downloads where no
-    /// container conversion takes place.
-    private var formatConversionDescription: String? {
-        // YouTube product contract (technical-spec §3.4): the UI picks a
-        // quality/codec variant, and yt-dlp + FFmpeg uniformly outputs MP4 in
-        // the end; the source variant's container (e.g. VP9's WebM) is not the
-        // output container.
-        if backend == .youtubeExtractor {
-            return String(localized: "源格式: 依所选清晰度/编码 → 输出格式: MP4（FFmpeg 重封装）")
-        }
-        switch sourceKind {
-        case .hls:
-            return String(localized: "原始格式: MPEG-TS → 输出格式: MP4（FFmpeg 重封装）")
-        case .dash:
-            return String(localized: "原始格式: WebM → 输出格式: MP4（FFmpeg 合并）")
-        case .http:
-            return nil
-        }
-    }
-
     private var fallbackURL: URL? {
         guard let url = URL(string: urlText.trimmingCharacters(in: .whitespacesAndNewlines)),
             let scheme = url.scheme?.lowercased(),
@@ -772,7 +819,6 @@ struct NewDownloadView: View {
     private struct BrowserResolvedAdoption {
         let option: DownloadMediaOption
         let filename: String
-        let message: String
     }
 
     /// Builds the submittable option for a browser-resolved draft without any
@@ -836,8 +882,7 @@ struct NewDownloadView: View {
         )
         return BrowserResolvedAdoption(
             option: option,
-            filename: adoptedFilename,
-            message: String(localized: "资源信息已由浏览器提供，无需再次探测，确认保存位置和文件名后即可下载。")
+            filename: adoptedFilename
         )
     }
 
@@ -873,7 +918,7 @@ struct NewDownloadView: View {
         resolvedOptions = [option]
         selectedOptionID = option.id
         sourceKind = .http
-        if !filenameWasEdited { filename = option.filename }
+        if !hasUserOrSemanticName { filename = option.filename }
         validationMessage = nil
         resourceMessage = String(
             localized: "已选择普通文件下载；如果地址实际是网页，下载结果可能是 HTML。"
@@ -889,6 +934,69 @@ struct NewDownloadView: View {
         if panel.runModal() == .OK, let selected = panel.url {
             destinationDirectory = selected.path
         }
+    }
+
+    /// 语义标题已采纳时与用户编辑同权：变体切换/重探测/地址编辑不得覆盖它
+    /// （technical-spec §8.1；用户编辑仍永远最高优先）。
+    private var hasUserOrSemanticName: Bool {
+        filenameWasEdited || semanticDecision != nil
+    }
+
+    private func resolveSemanticTitle() async {
+        guard !semanticResolutionStarted, semanticDecision == nil else { return }
+        semanticResolutionStarted = true
+        // 未执行同样要给出状态（technical-spec §8.1 五态提示）：无草稿候选、
+        // 服务未启用分别注明原因，不再静默无提示。
+        guard let draft = initialDraft else {
+            semanticStatus = .notInvoked(reason: String(localized: "没有可仲裁的候选标题"))
+            return
+        }
+        guard model.settings.semanticTitleEnabled else {
+            semanticStatus = .notInvoked(reason: String(localized: "服务未启用"))
+            return
+        }
+        guard !draft.titleCandidates.isEmpty else {
+            semanticStatus = .notInvoked(reason: String(localized: "没有可仲裁的候选标题"))
+            return
+        }
+        let context = SemanticTitleContext(
+            cacheKey: draft.url.absoluteString,
+            pageHost: draft.url.host,
+            pageTitle: draft.pageTitle,
+            candidates: draft.titleCandidates
+        )
+        semanticStatus = .running
+        let attempt = await model.semanticTitleService.resolveTitle(context: context)
+        // 仲裁期间用户已手改文件名：结果作废，避免覆盖用户输入。
+        guard !filenameWasEdited else {
+            semanticStatus = .notInvoked(reason: String(localized: "用户已手动命名，仲裁结果未使用"))
+            return
+        }
+        switch attempt.resolution {
+        case .adopted:
+            guard let decision = attempt.decision else {
+                semanticStatus = .abstained
+                return
+            }
+            let outputExtension = Self.outputExtension(
+                for: sourceKind,
+                pathExtension: URL(fileURLWithPath: decision.title).pathExtension
+            )
+            var name = decision.title
+            if URL(fileURLWithPath: name).pathExtension.isEmpty {
+                name = name + "." + outputExtension
+            }
+            filename = InputValidator.safeFilename(name)
+            semanticDecision = decision
+            semanticStatus = .adopted(confidence: decision.confidence)
+        case .abstained:
+            // 模型弃权（none/低置信等）属正常行为：沿用常规命名，状态行说明。
+            semanticStatus = .abstained
+        case .failed:
+            // 服务调用失败（配置/HTTP/网络）：提示一句并可继续手动下载。
+            semanticStatus = .failed(attempt.failure ?? String(localized: "未知原因"))
+        }
+        onLayoutChange?()
     }
 
     private func updateFilenameIfAppropriate(from value: String) {
@@ -912,7 +1020,7 @@ struct NewDownloadView: View {
         guard let selectedOptionID,
             let option = resolvedOptions.first(where: { $0.id == selectedOptionID })
         else { return }
-        if !filenameWasEdited {
+        if !hasUserOrSemanticName {
             filename = option.filename
         }
         sourceKind = option.sourceKind
@@ -955,6 +1063,7 @@ struct NewDownloadView: View {
             resolvedOptions = [option]
             selectedOptionID = option.id
             isInspectingResources = false
+            // 资源提示与语义判断状态行并列显示，互不覆盖（§8.1）。
             resourceMessage = String(localized: "已识别音视频，将在下载时自动合并为 MP4。")
             // HLS 的输入是媒体清单：HEAD 只能拿到清单文本大小（几 KB），不是
             // 媒体尺寸。这条提交扩展已随候选上报解析后的估算大小
@@ -969,12 +1078,16 @@ struct NewDownloadView: View {
 
         // Preserve the draft's original hint so re-inspection (Bilibili
         // playurl resolve, HLS parse) names options consistently with what
-        // the extension's FAB/popup already showed the user. Only a manual
-        // edit outranks it.
-        let filenameHint = filenameWasEdited ? filename : initialDraft?.filenameHint
+        // the extension's FAB/popup already showed the user. A manual edit
+        // or an adopted semantic title outranks it (technical spec §8.1).
+        let filenameHint =
+            hasUserOrSemanticName
+            ? filename : initialDraft?.filenameHint
         let hintSource: FilenameHintSource =
             filenameWasEdited
-            ? .userEdited : (initialDraft?.filenameHintSource ?? .urlPath)
+            ? .userEdited
+            : (semanticDecision != nil
+                ? .modelJudged : (initialDraft?.filenameHintSource ?? .urlPath))
         let title = pageTitle
         let context = requestContext
         let declaredMimeType = mimeType
@@ -1010,13 +1123,14 @@ struct NewDownloadView: View {
                 if let optionContext = options[0].requestContext {
                     requestContext = optionContext
                 }
-                if !filenameWasEdited {
+                if !hasUserOrSemanticName {
                     filename = options[0].filename
                 }
-                resourceMessage =
-                    options.count > 1
-                    ? String(localized: "已找到多个资源，请选择要下载的画质或格式。")
-                    : String(localized: "资源已找到，请确认保存位置和文件名。")
+                // 单资源不再提示「资源已找到」——按钮行已显示「已找到 N 个资源」，
+                // 复述没有信息量；多资源时说明列表是画质/格式变体，需要用户选择。
+                if options.count > 1 {
+                    resourceMessage = String(localized: "已找到多个资源，请选择要下载的画质或格式。")
+                }
             } catch {
                 guard generation == inspectGeneration else { return }
                 validationMessage = error.localizedDescription
@@ -1067,7 +1181,9 @@ struct NewDownloadView: View {
         Task { @MainActor in
             defer { isSubmitting = false }
             do {
-                let finalFilename = filenameWasEdited ? enteredFilename : selectedOption.filename
+                let finalFilename =
+                    filenameWasEdited || semanticDecision != nil
+                    ? enteredFilename : selectedOption.filename
                 let safeName = InputValidator.safeFilename(finalFilename)
                 guard safeName == finalFilename, !finalFilename.isEmpty else {
                     throw NewDownloadValidationError.invalidFilename
@@ -1141,6 +1257,16 @@ struct NewDownloadView: View {
         }
         return DownloadNaming.isRealFileExtension(lowered) ? lowered : "mp4"
     }
+}
+
+/// 确认窗口的语义判断执行状态（technical-spec §8.1）：五态各渲染一行，
+/// 不阻塞确认；`notInvoked` 携带未执行原因。
+private enum SemanticTitleStatus: Equatable {
+    case running
+    case adopted(confidence: Double)
+    case abstained
+    case failed(String)
+    case notInvoked(reason: String)
 }
 
 /// Input style with an explicit outline: the system `.roundedBorder` is too

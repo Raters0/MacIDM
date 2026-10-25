@@ -97,11 +97,13 @@ final class AppTaskStoreTests: XCTestCase {
         task.pageURL = "https://www.bilibili.com/video/BV1xx411c7mD"
         task.mediaCID = "12345678"
         task.selectedQuality = 30080
+        task.mediaWarning = .noAudioTrack
 
         try store.save([task])
         let loaded = try XCTUnwrap(store.load().first)
         XCTAssertEqual(loaded.mediaCID, "12345678")
         XCTAssertEqual(loaded.selectedQuality, 30080)
+        XCTAssertEqual(loaded.mediaWarning, .noAudioTrack)
         XCTAssertEqual(loaded.pageURL, "https://www.bilibili.com/video/BV1xx411c7mD")
         // 签名查询参数仍被脱敏，不随新列一起落盘。
         XCTAssertFalse(loaded.sourceURL.contains("deadline"))
@@ -431,6 +433,97 @@ final class AppTaskStoreTests: XCTestCase {
         migrated.mimeType = "video/mp4"
         try store.save([migrated])
         XCTAssertEqual(try XCTUnwrap(store.load().first).mimeType, "video/mp4")
+    }
+
+    // A v12 database has every column except media_warning; opening the store
+    // must add it and keep existing rows readable.
+    func testV12DatabaseMigratesToMediaWarningColumn() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMV12MigrationTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let taskID = UUID().uuidString.lowercased()
+        let databaseURL = directory.appendingPathComponent("tasks.sqlite3")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let legacySchema = """
+            CREATE TABLE schema_migrations (version INTEGER NOT NULL);
+            INSERT INTO schema_migrations(version) VALUES (12);
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY NOT NULL,
+                source_url TEXT NOT NULL,
+                destination_path TEXT NOT NULL,
+                maximum_parallel_requests INTEGER NOT NULL,
+                expected_sha256 TEXT,
+                source_kind TEXT,
+                browser_client_id TEXT,
+                browser_submission_type TEXT,
+                browser_submission_key TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                status TEXT NOT NULL,
+                received_bytes INTEGER NOT NULL,
+                total_bytes INTEGER,
+                bytes_per_second REAL NOT NULL,
+                speed_history_json TEXT NOT NULL,
+                sha256 TEXT,
+                verification TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                segments_json TEXT NOT NULL,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                average_speed REAL,
+                total_duration REAL,
+                category TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                started_at REAL,
+                media_duration REAL,
+                queue_id TEXT,
+                page_url TEXT,
+                error_recommendation TEXT,
+                error_category TEXT,
+                used_parallel_requests INTEGER,
+                mime_type TEXT,
+                active_transfer_duration REAL NOT NULL DEFAULT 0,
+                media_cid TEXT,
+                selected_quality INTEGER
+            );
+            INSERT INTO tasks (
+                id, source_url, destination_path, maximum_parallel_requests, expected_sha256,
+                source_kind, browser_client_id, browser_submission_type, browser_submission_key, created_at,
+                updated_at, status, received_bytes, total_bytes, bytes_per_second,
+                speed_history_json, sha256, verification, error_code, error_message,
+                segments_json, is_archived, average_speed, total_duration, category,
+                priority, started_at, media_duration, queue_id, page_url,
+                error_recommendation, error_category, used_parallel_requests, mime_type,
+                active_transfer_duration, media_cid, selected_quality
+            ) VALUES (
+                '\(taskID)', 'https://example.com/legacy.zip', '/tmp/legacy.zip', 8,
+                NULL, NULL, NULL, NULL, NULL, 1700000000,
+                1700000001, 'completed', 100, 100, 0,
+                '[]', NULL, NULL, NULL, NULL,
+                '[]', 0, NULL, NULL, NULL,
+                0, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                0, NULL, NULL
+            );
+            """
+        var errorPointer: UnsafeMutablePointer<CChar>?
+        let schemaResult = sqlite3_exec(database, legacySchema, nil, nil, &errorPointer)
+        if let errorPointer { sqlite3_free(errorPointer) }
+        XCTAssertEqual(schemaResult, SQLITE_OK)
+        sqlite3_close(database)
+
+        let store = try AppTaskStore(directory: directory)
+        let loaded = try XCTUnwrap(store.load().first)
+        XCTAssertEqual(loaded.id.uuidString.lowercased(), taskID)
+        XCTAssertNil(loaded.mediaWarning)
+
+        var migrated = loaded
+        migrated.mediaWarning = .noAudioTrack
+        try store.save([migrated])
+        XCTAssertEqual(try XCTUnwrap(store.load().first).mediaWarning, .noAudioTrack)
     }
 
     private func makePersistableTask(destination: String) -> AppTask {

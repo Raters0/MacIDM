@@ -205,6 +205,38 @@
         }
       }
     } catch { /* ignore */ }
+    try {
+      if (/(^|\.)tiktok\.com$/iu.test(new URL(pageURL).hostname)) {
+        const cache = global.MacIDMTikTokDetailCache;
+        if (cache) {
+          // 详情页（explore 点击进入的 browse-video 布局）：适配直链只归属
+          // browse-video 容器内的播放器元素（associatedURLs 以页面 URL 的
+          // /video/<id> 匹配缓存条目）。
+          if (element.closest?.('[data-e2e="browse-video"]')) {
+            for (const url of cache.associatedURLs?.(pageURL) ?? []) urls.add(url);
+          }
+          // 详情 feed（直接打开的详情页是 feed-video 布局，slide DOM 不带
+          // item id）：slide 的 video-desc 文本与缓存条目 desc 前缀一致时
+          // 归属该条目直链——每个 slide 各自命中自己的条目。
+          const slide = element.closest?.('[data-e2e="feed-video"]');
+          if (slide) {
+            const desc = slide.querySelector?.('[data-e2e="video-desc"]');
+            if (desc) {
+              for (const url of cache.urlsForDescText?.(desc.textContent ?? "") ?? []) {
+                urls.add(url);
+              }
+            }
+          }
+          // explore 网格：卡片 DOM 含 itemId 时归属该卡片内元素。
+          const card = element.closest?.('[data-e2e="explore-item"]');
+          if (card) {
+            for (const url of cache.urlsForCardText?.(card.outerHTML ?? "") ?? []) {
+              urls.add(url);
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
     let xPage = false;
     try {
       xPage = ["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"]
@@ -273,6 +305,31 @@
     });
   }
 
+  /// TikTok 元素的卡片语义标题（有界站点关联，titleDerived）：explore 卡片
+  /// 以卡片内 /video/<id> 链接取缓存 desc；feed slide（详情页与 For You）
+  /// 以 slide 的 video-desc 文本前缀匹配缓存 desc。通用 DOM 解析在
+  /// explore 上会误捕页面公告横幅，因此 TikTok 的缓存证据优先。
+  function tiktokCardTitleFor(element) {
+    try {
+      const cache = global.MacIDMTikTokDetailCache;
+      if (!cache || !/(^|\.)tiktok\.com$/iu.test(global.location?.hostname ?? "")) return "";
+      const card = element?.closest?.('[data-e2e="explore-item"]');
+      if (card) {
+        const link = card.querySelector?.('a[href*="/video/"]');
+        const id = link ? (link.getAttribute("href").match(/\/video\/(\d{6,25})/u) || [])[1] : null;
+        return id ? String(cache.get?.(id)?.desc ?? "").trim() : "";
+      }
+      const slide = element?.closest?.('[data-e2e="feed-video"]');
+      if (slide) {
+        const desc = slide.querySelector?.('[data-e2e="video-desc"]');
+        return desc ? String(cache.descForSlideText?.(desc.textContent ?? "") ?? "").trim() : "";
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  }
+
   function recoverableCandidates() {
     const result = [];
     for (const url of liveURLs()) {
@@ -290,5 +347,5 @@
     return result;
   }
 
-  global.MacIDMMediaElementScope = Object.freeze({ filterCandidates, liveURLs, recoverableCandidates, annotateOwnership });
+  global.MacIDMMediaElementScope = Object.freeze({ filterCandidates, liveURLs, recoverableCandidates, annotateOwnership, tiktokCardTitleFor });
 })(globalThis);

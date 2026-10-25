@@ -157,13 +157,23 @@ final class SessionStore: ObservableObject {
         return storeConfirmedHTTPS(domain: domain, cookie: trimmed, userAgent: userAgent)
     }
 
+    /// Mark the window around every credential access: a freshly built bundle's
+    /// code identity is not in the item's login-Keychain ACL yet, so the access
+    /// can raise the system approval dialog, and the confirmation panel has to
+    /// tell that dialog apart from the user switching apps.
+    private func credentialAccess<T>(_ body: () throws -> T) rethrows -> T {
+        KeychainAccessSignal.shared.begin()
+        defer { KeychainAccessSignal.shared.end() }
+        return try body()
+    }
+
     /// Shared body of the two entry points, both of which have proven the https
     /// assertion (from the URL, or from the user's paste) before arriving here.
     private func storeConfirmedHTTPS(
         domain: String, cookie: String, userAgent: String?
     ) -> SessionStoreOutcome {
         do {
-            try secrets.save(cookie, forDomain: domain)
+            try credentialAccess { try secrets.save(cookie, forDomain: domain) }
         } catch {
             AppLogger.shared.error(
                 .download, "site session cookie rejected by secret store: \(domain)")
@@ -202,7 +212,20 @@ final class SessionStore: ObservableObject {
     /// download must continue without a stored session.
     func cookieHeader(for session: StoredSession) -> String? {
         if let pending = pendingCookies[session.domain] { return pending }
-        return secrets.value(forDomain: session.domain)
+        return credentialAccess { secrets.value(forDomain: session.domain) }
+    }
+
+    /// Off-main variant of ``cookieHeader(for:)`` for flows that run while the
+    /// confirmation window is on screen. See ``KeychainAccessSignal/access(_:)``
+    /// for why the read must not hold the main thread: the approval dialog would
+    /// freeze the panel and hide the focus loss behind it.
+    func resolvedCookieHeader(for session: StoredSession) async -> String? {
+        if let pending = pendingCookies[session.domain] { return pending }
+        let secrets = self.secrets
+        let domain = session.domain
+        return await KeychainAccessSignal.shared.access {
+            secrets.value(forDomain: domain)
+        }
     }
 
     /// Marks a domain's session as possibly expired after an
@@ -251,7 +274,7 @@ final class SessionStore: ObservableObject {
     private func forgetSecret(domain: String) {
         pendingCookies.removeValue(forKey: domain)
         domainsNeedingReauthorization.removeAll { $0 == domain }
-        secrets.removeValue(forDomain: domain)
+        credentialAccess { secrets.removeValue(forDomain: domain) }
     }
 
     private func replaceEntry(domain: String, scheme: String, userAgent: String?) {
@@ -285,7 +308,9 @@ final class SessionStore: ObservableObject {
             guard let domain = SessionDomainPolicy.sessionKey(forHost: record.domain) else {
                 // A key that was never safe (a bare public suffix, an IP) must
                 // not survive into the new model, credential included.
-                if record.cookieHeader != nil { secrets.removeValue(forDomain: record.domain) }
+                if record.cookieHeader != nil {
+                    credentialAccess { secrets.removeValue(forDomain: record.domain) }
+                }
                 rewriteFileAfterLoad = true
                 continue
             }
@@ -319,7 +344,7 @@ final class SessionStore: ObservableObject {
     /// cost the user a session they would have to re-paste to get back.
     private func migrateLegacyCookie(_ cookie: String, domain: String) {
         do {
-            try secrets.save(cookie, forDomain: domain)
+            try credentialAccess { try secrets.save(cookie, forDomain: domain) }
         } catch {
             pendingCookies[domain] = cookie
             if !domainsNeedingReauthorization.contains(domain) {
@@ -329,7 +354,7 @@ final class SessionStore: ObservableObject {
                 .download, "site session could not be migrated to the Keychain: \(domain)")
             return
         }
-        guard secrets.value(forDomain: domain) == cookie else {
+        guard credentialAccess({ secrets.value(forDomain: domain) }) == cookie else {
             pendingCookies[domain] = cookie
             if !domainsNeedingReauthorization.contains(domain) {
                 domainsNeedingReauthorization.append(domain)

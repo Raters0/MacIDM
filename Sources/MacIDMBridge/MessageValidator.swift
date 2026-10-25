@@ -75,7 +75,7 @@ public enum MessageValidator {
             "url", "filenameHint", "filenameHintSource", "mediaKind", "mime", "totalBytes",
             "referrer", "requestContext", "tabId", "interactive", "pageTitle", "pairVideoUrl",
             "pairAudioUrl", "pairCid", "pairNote", "duration", "estimatedSize",
-            "browserDownloadId", "userInitiated", "poll",
+            "browserDownloadId", "userInitiated", "poll", "titleCandidates",
         ])
         guard Set(payload.keys).isSubset(of: allowedFields) else {
             throw BridgeError.invalidMessage("download.enqueue contains unsupported fields")
@@ -103,6 +103,7 @@ public enum MessageValidator {
                 throw BridgeError.invalidMessage("poll must be a boolean")
             }
         }
+        try validateTitleCandidates(normalized.removeValue(forKey: "titleCandidates"))
         if let pageTitle = normalized.removeValue(forKey: "pageTitle") {
             guard let value = pageTitle.stringValue else {
                 throw BridgeError.invalidMessage("pageTitle must be a string")
@@ -180,10 +181,11 @@ public enum MessageValidator {
         // rejected; a missing field is treated as "urlPath" by the App.
         if let hintSource = payload["filenameHintSource"] {
             guard let value = hintSource.stringValue,
-                value == "browserResolved" || value == "titleDerived" || value == "urlPath"
+                value == "browserResolved" || value == "titleDerived"
+                    || value == "modelJudged" || value == "urlPath"
             else {
                 throw BridgeError.invalidMessage(
-                    "filenameHintSource must be browserResolved, titleDerived, or urlPath")
+                    "filenameHintSource must be browserResolved, titleDerived, modelJudged, or urlPath")
             }
         }
         if let pageTitle = payload["pageTitle"] {
@@ -335,6 +337,49 @@ public enum MessageValidator {
             value.rangeOfCharacter(from: controls) == nil
         else {
             throw BridgeError.invalidMessage("filenameHint contains a path or control character")
+        }
+    }
+
+    /// Semantic-title arbitration input (technical spec §8.1): candidates
+    /// harvested by the extension. At most 10 `{text, scope}` objects; text
+    /// is 2-200 characters after whitespace trimming — measured in UTF-16
+    /// units to mirror the extension's JS `.length` bound, so a candidate the
+    /// extension may lawfully send never invalidates the whole enqueue here
+    /// (UTF-8 bytes would triple-count CJK titles) — and scope is `card` (the
+    /// anchored card the user hovered) or `page` (page-level context, e.g.
+    /// og/document title). Page-derived content by design; URLs and
+    /// credential material have no business here.
+    private static func validateTitleCandidates(_ value: JSONValue?) throws {
+        guard let value else { return }
+        guard case .array(let items) = value else {
+            throw BridgeError.invalidMessage(
+                "titleCandidates must be an array of {text, scope} objects")
+        }
+        guard items.count <= 10 else {
+            throw BridgeError.invalidMessage("titleCandidates must not exceed 10 entries")
+        }
+        for item in items {
+            guard case .object(let entry) = item else {
+                throw BridgeError.invalidMessage("titleCandidates entries must be objects")
+            }
+            guard Set(entry.keys).isSubset(of: ["text", "scope"]) else {
+                throw BridgeError.invalidMessage(
+                    "titleCandidates entries contain unsupported fields")
+            }
+            guard let text = entry["text"]?.stringValue else {
+                throw BridgeError.invalidMessage("titleCandidates.text must be a string")
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.utf16.count >= 2, trimmed.utf16.count <= 200 else {
+                throw BridgeError.invalidMessage(
+                    "titleCandidates.text must be 2-200 characters")
+            }
+            if let scope = entry["scope"]?.stringValue {
+                guard scope == "card" || scope == "page" else {
+                    throw BridgeError.invalidMessage(
+                        "titleCandidates.scope must be card or page")
+                }
+            }
         }
     }
 

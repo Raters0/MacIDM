@@ -99,6 +99,47 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(httpsSession(store, host: "other.org").flatMap(store.cookieHeader(for:)))
     }
 
+    /// The confirmation-window flow reads the credential while its own window is
+    /// on screen, where a Keychain dialog must not freeze the form.
+    func testResolvedCookieHeaderReadsTheCredentialOffTheMainThread() async throws {
+        let (store, directory, secrets) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.store(domain: "example.com", cookie: "sid=async", userAgent: nil)
+        let session = try XCTUnwrap(httpsSession(store, host: "example.com"))
+
+        let cookie = await store.resolvedCookieHeader(for: session)
+
+        XCTAssertEqual(cookie, "sid=async")
+        XCTAssertEqual(secrets.readCount, 1)
+        XCTAssertEqual(
+            secrets.lastReadWasOnMainThread, false,
+            "credential read stayed on the main thread"
+        )
+    }
+
+    /// A cookie the Keychain does not hold yet must still be served from memory
+    /// through the async path, without a credential read at all.
+    func testResolvedCookieHeaderServesAPendingCookieWithoutReadingTheStore() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeSessionRecords(
+            [(domain: "example.com", cookie: "sid=pending")],
+            updatedAt: Date(),
+            at: directory
+        )
+        let secrets = FakeSessionSecretStore()
+        // The migration at launch is refused, so the value stays pending in
+        // memory rather than reaching the secret store.
+        secrets.saveError = FakeSessionSecretStore.Failure()
+        let store = SessionStore(directory: directory, secrets: secrets)
+        let session = try XCTUnwrap(httpsSession(store, host: "example.com"))
+
+        let cookie = await store.resolvedCookieHeader(for: session)
+
+        XCTAssertEqual(cookie, "sid=pending")
+        XCTAssertNil(secrets.lastReadWasOnMainThread, "pending cookie took a credential read")
+    }
+
     func testLookupStaysOnTheStoredHost() throws {
         // A raw Cookie header has no Domain/Path/Secure attributes, so replaying
         // it to a sibling subdomain could disclose a host-only credential.

@@ -81,6 +81,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         size = int(query.get("size", ["1048576"])[0])
         delay = float(query.get("delay", ["0"])[0])
+        # Path-only slow fixture: /slow/<size> drips 16 KB chunks with a fixed
+        # 15 ms delay. The fault-injection gate uses it because any URL with a
+        # query string is treated as signed by the CLI and its resume is
+        # deliberately refused (NEEDS_REFETCH).
+        slow_match = re.fullmatch(r"/slow/(\d+)", parsed.path)
+        if slow_match:
+            size = int(slow_match.group(1))
+            delay = 0.015
+            query = {}
         body = payload(size)
         etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
         supports_range = parsed.path not in ("/no-range", "/unknown")

@@ -128,6 +128,22 @@ struct AppTaskStore: @unchecked Sendable {
         }
     }
 
+    /// Deletes one row outright. `save()` never touches CLI-managed rows, so
+    /// removing a terminal CLI mirror record (technical-spec §3.1.6) must
+    /// delete the row explicitly or it would reappear on the next launch.
+    func deleteRecord(_ id: UUID) throws {
+        if let ephemeralBackend {
+            ephemeralBackend.remove(id)
+            return
+        }
+        try withDatabase { database in
+            let statement = try prepare("DELETE FROM tasks WHERE id = ?", in: database)
+            defer { sqlite3_finalize(statement) }
+            try bind(id.uuidString.lowercased(), to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(database) }
+        }
+    }
+
     // MARK: - Queues
 
     func loadQueues() throws -> [AppQueue] {
@@ -294,7 +310,7 @@ struct AppTaskStore: @unchecked Sendable {
                 in: database
             )
             let version = try schemaVersion(in: database)
-            if version > 12 { throw AppTaskStoreError.unsupportedSchema(version) }
+            if version > 14 { throw AppTaskStoreError.unsupportedSchema(version) }
             if version == 0 {
                 try execute(
                     """
@@ -335,7 +351,9 @@ struct AppTaskStore: @unchecked Sendable {
                         mime_type TEXT,
                         active_transfer_duration REAL NOT NULL DEFAULT 0,
                         media_cid TEXT,
-                        selected_quality INTEGER
+                        selected_quality INTEGER,
+                        media_warning TEXT,
+                        history_hidden INTEGER NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IF NOT EXISTS tasks_created_at_index
                         ON tasks(created_at DESC);
@@ -363,7 +381,7 @@ struct AppTaskStore: @unchecked Sendable {
                         created_at REAL NOT NULL
                     );
                     DELETE FROM schema_migrations;
-                    INSERT INTO schema_migrations(version) VALUES (12);
+                    INSERT INTO schema_migrations(version) VALUES (14);
                     """,
                     in: database
                 )
@@ -506,6 +524,28 @@ struct AppTaskStore: @unchecked Sendable {
                     """,
                     in: database
                 )
+                migratedVersion = 12
+            }
+            if migratedVersion == 12 {
+                try execute(
+                    """
+                    ALTER TABLE tasks ADD COLUMN media_warning TEXT;
+                    DELETE FROM schema_migrations;
+                    INSERT INTO schema_migrations(version) VALUES (13);
+                    """,
+                    in: database
+                )
+                migratedVersion = 13
+            }
+            if migratedVersion == 13 {
+                try execute(
+                    """
+                    ALTER TABLE tasks ADD COLUMN history_hidden INTEGER NOT NULL DEFAULT 0;
+                    DELETE FROM schema_migrations;
+                    INSERT INTO schema_migrations(version) VALUES (14);
+                    """,
+                    in: database
+                )
             }
         }
     }
@@ -520,6 +560,7 @@ struct AppTaskStore: @unchecked Sendable {
             for index in objects.indices {
                 objects[index]["speedHistory"] = [String]()
                 if objects[index]["isArchived"] == nil { objects[index]["isArchived"] = false }
+                if objects[index]["historyHidden"] == nil { objects[index]["historyHidden"] = false }
                 if objects[index]["activeTransferDuration"] == nil {
                     objects[index]["activeTransferDuration"] = 0
                 }
@@ -680,6 +721,8 @@ struct AppTaskStore: @unchecked Sendable {
             .activeTransferDuration: .real(task.activeTransferDuration),
             .mediaCid: .text(task.mediaCID),
             .selectedQuality: .integer(task.selectedQuality.map { Int64($0) }),
+            .mediaWarning: .text(task.mediaWarning?.rawValue),
+            .historyHidden: .integer(task.historyHidden ? 1 : 0),
         ]
         for column in AppTaskColumn.allCases {
             guard let value = values[column] else { throw AppTaskStoreError.invalidStoredTask("Missing task column") }
@@ -775,6 +818,9 @@ struct AppTaskStore: @unchecked Sendable {
         task.activeTransferDuration = nullableDouble(statement, AppTaskColumn.activeTransferDuration.rawValue) ?? 0
         task.mediaCID = columnText(statement, AppTaskColumn.mediaCid.rawValue)
         task.selectedQuality = nullableInt64(statement, AppTaskColumn.selectedQuality.rawValue).map { Int($0) }
+        task.mediaWarning = columnText(statement, AppTaskColumn.mediaWarning.rawValue)
+            .flatMap(AppTaskMediaWarning.init(rawValue:))
+        task.historyHidden = sqlite3_column_int(statement, AppTaskColumn.historyHidden.rawValue) != 0
         return task
     }
 
@@ -915,6 +961,12 @@ private final class InMemoryTaskStore: @unchecked Sendable {
         lock.lock()
         self.queues = queues
         lock.unlock()
+    }
+
+    func remove(_ id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks.removeAll { $0.id == id }
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @main
@@ -8,7 +9,6 @@ struct MacIDMApplication: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model: AppModel
-    @State private var hotKeyService: GlobalHotKeyService?
     // Deliberately @State, not @AppStorage: the system may write false into
     // the persisted insertion binding, which made subsequent launches start
     // without the menu-bar icon. Launching always inserts the item again.
@@ -171,14 +171,15 @@ struct MacIDMApplication: App {
     }
 
     private func configureGlobalHotKey() {
-        guard hotKeyService == nil, Bundle.main.bundleURL.pathExtension == "app" else { return }
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let service = GlobalHotKeyService {
             // AppDelegate receives the request even when no window (and
             // therefore no SwiftUI observer) is alive.
             NotificationCenter.default.post(name: .macIDMHotKeyRequested, object: nil)
         }
-        service.register()
-        hotKeyService = service
+        // The model owns the registration from here: it is what watches the
+        // enable switch and the recorded combination in settings.
+        model.installGlobalHotKeyRegistrar(service)
     }
 
     private var preferredColorScheme: ColorScheme? {
@@ -229,6 +230,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Sparkle wants the live application environment, which exists by
         // now; the SwiftUI scene's .task below fires before that in some
         // launches.
+        //
+        // The engine is a plain `let` on the model, so its own objectWillChange
+        // never reaches views that observe the model — the Settings update
+        // toggles, the update status text and the menu-bar update badge all
+        // read `model.updateEngine.*` and stayed stale until something else
+        // happened to re-render them. Republish it as the model's change.
+        if let model {
+            model.updateEngine.objectWillChange
+                .sink { [weak model] in model?.objectWillChange.send() }
+                .store(in: &model.cancellables)
+        }
         model?.updateEngine.start()
         // Cold-launch silence: when the user's preference is "close window
         // hides to menu bar", switch to .accessory policy IMMEDIATELY —

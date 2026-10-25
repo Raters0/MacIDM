@@ -111,6 +111,53 @@ final class MessageProtocolTests: XCTestCase {
         XCTAssertNil(decoded.payload["browserDownloadId"])
     }
 
+    func testTitleCandidatesTextBoundMirrorsExtensionCharacterUnits() throws {
+        // The extension bounds candidate text at 200 JS `.length` units
+        // (technical spec §8.1). 200 CJK characters are 200 units but 600
+        // UTF-8 bytes, so the bridge must measure the same units rather than
+        // bytes — a conforming candidate must never reject the whole enqueue.
+        let longCJKTitle = String(repeating: "标题测试", count: 50)
+        let valid = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:title-candidates-1",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://www.tiktok.com/@user/video/7681925651783339286"),
+                "titleCandidates": .array([
+                    .object(["text": .string(longCJKTitle), "scope": .string("card")]),
+                    .object(["text": .string("ab")]),
+                ]),
+            ]
+        )
+        XCTAssertNoThrow(try MessageCodec.decodeRequest(MessageCodec.encode(valid)))
+
+        let tooLong = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:title-candidates-2",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://example.com/media.mp4"),
+                "titleCandidates": .array([
+                    .object(["text": .string(String(repeating: "a", count: 201))])
+                ]),
+            ]
+        )
+        XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(tooLong)))
+
+        let tooShort = MessageRequest(
+            requestId: UUID().uuidString,
+            idempotencyKey: "profile:title-candidates-3",
+            type: "download.enqueue",
+            payload: [
+                "url": .string("https://example.com/media.mp4"),
+                "titleCandidates": .array([
+                    .object(["text": .string("a")])
+                ]),
+            ]
+        )
+        XCTAssertThrowsError(try MessageCodec.decodeRequest(MessageCodec.encode(tooShort)))
+    }
+
     func testExplicitStreamMediaKindsAreValidated() throws {
         let valid = MessageRequest(
             requestId: UUID().uuidString,

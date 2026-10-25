@@ -599,8 +599,20 @@
       // audio candidates found by the initial DOM scan before the overlay
       // ever reads them. Re-inserting on every touch (below) keeps
       // long-lived media at the tail.
-      const first = candidates.keys().next().value;
-      if (first) candidates.delete(first);
+      // Within that order, a stream manifest leaves last: the player fetches a
+      // master playlist exactly once per load and never re-reports it, while
+      // its renditions and segments keep arriving and refresh themselves. The
+      // manifest is also the only evidence of an asset's rendition structure
+      // (chrome-extension-spec §5.8 folding), so dropping it would leave bare
+      // video-only playlists and publish a silent file.
+      let victim = candidates.keys().next().value;
+      for (const [candidateKey, candidateValue] of candidates) {
+        if (!isStreamManifest(candidateValue)) {
+          victim = candidateKey;
+          break;
+        }
+      }
+      if (victim) candidates.delete(victim);
     }
     candidates.set(key, {
       ...candidate,
@@ -608,6 +620,12 @@
     });
     scheduleNotification();
     return true;
+  }
+
+  /// Stream manifests (m3u8/mpd and DASH JSON manifests) describe an asset's
+  /// rendition structure; segment and direct-file evidence does not.
+  function isStreamManifest(candidate) {
+    return ["hls", "dash", "dash-json"].includes(candidate?.format);
   }
 
   function higherConfidence(previous, candidate) {
@@ -658,6 +676,38 @@
     }
   }
 
+  function tiktokFeedCardCandidates() {
+    const cache = globalThis.MacIDMTikTokDetailCache;
+    try {
+      if (!cache?.feedCardCandidates || !cache?.slideCandidates) return [];
+      if (!/(^|\.)tiktok\.com$/iu.test(location.hostname ?? "")) return [];
+      // explore 网格：卡片 outerHTML 含 item_id（截断到前 40 张，与缓存
+      // 的 48 条上限同量级），拼接一次逐条目判定。
+      const cards = document.querySelectorAll?.('[data-e2e="explore-item"]');
+      let text = "";
+      for (const card of [...(cards ?? [])].slice(0, 40)) text += card.outerHTML ?? "";
+      const cardCandidates = text ? cache.feedCardCandidates((itemID) => text.includes(itemID)) : [];
+      // feed slide（详情 feed 与 For You）：slide DOM 不带 item id，按
+      // video-desc 文本前缀命中条目合成候选。
+      const slides = document.querySelectorAll?.('[data-e2e="feed-video"]');
+      const descTexts = [...(slides ?? [])].slice(0, 24)
+        .map((slide) => slide.querySelector?.('[data-e2e="video-desc"]')?.textContent ?? "")
+        .filter(Boolean);
+      const slideCands = descTexts.length ? cache.slideCandidates(descTexts) : [];
+      // 合并去重：同一 URL 只保留一行。
+      const seen = new Set();
+      const merged = [];
+      for (const candidate of [...cardCandidates, ...slideCands]) {
+        if (seen.has(candidate.url)) continue;
+        seen.add(candidate.url);
+        merged.push(candidate);
+      }
+      return merged;
+    } catch {
+      return [];
+    }
+  }
+
   function snapshot() {
     for (const candidate of globalThis.MacIDMMediaElementScope?.recoverableCandidates?.() ?? []) {
       addCandidate(candidate);
@@ -667,11 +717,20 @@
     for (const candidate of globalThis.MacIDMDouyinDetailCache?.associatedCandidates?.(location.href) ?? []) {
       addCandidate(candidate);
     }
+    // TikTok 详情预解析：页面 URL /video/<id> 匹配缓存条目时合成适配直链
+    // 候选（blob+MSE 重封装的字节溯源不可用，见 §5.7 TikTok 适配条款）。
+    for (const candidate of globalThis.MacIDMTikTokDetailCache?.associatedCandidates?.(location.href) ?? []) {
+      addCandidate(candidate);
+    }
     // feed 卡片关联：弹窗关闭后预览字节是预加载的、没有新请求可观察；
     // 对 DOM 中出现其 aweme_id 的卡片合成详情直链候选，让钉住的 FAB
     // （overlay 合成 hover 路径）有可归属的候选。卡片文本扫描仅在详情
     // 缓存非空时进行。
     for (const candidate of douyinFeedCardCandidates()) {
+      addCandidate(candidate);
+    }
+    // TikTok explore 卡片关联：卡片 DOM 出现其 item_id 的条目合成直链候选。
+    for (const candidate of tiktokFeedCardCandidates()) {
       addCandidate(candidate);
     }
     const title = String(confirmedPageTitle ?? "").slice(0, 300);
@@ -740,7 +799,11 @@
             ? (candidateURLs.has(url) ? [{ url }] : [])
             : (globalThis.MacIDMMediaElementScope?.filterCandidates?.(el, coalesced, location.href) ?? []);
           if (!owned.length) continue;
-          const cardTitle = mediaUtils.resolveContentTitle(document, el);
+          // TikTok 的缓存 desc 是卡片语义标题的第一证据（通用 DOM 解析在
+          // explore 上会误捕页面公告横幅，见 §5.8 TikTok 适配条款）。
+          const cardTitle =
+            globalThis.MacIDMMediaElementScope?.tiktokCardTitleFor?.(el)
+            || mediaUtils.resolveContentTitle(document, el);
           if (cardTitle) {
             for (const candidate of owned) cardTitleByURL.set(candidate.url, cardTitle);
             resolvedCount += 1;
@@ -786,8 +849,39 @@
   });
   loadGovernanceSettings();
 
+  /// TikTok 详情页的 SSR 预载：全新加载的详情页不发 item/detail 请求，
+  /// 内容脚本启动时从 __UNIVERSAL_DATA_FOR_REHYDRATION__ 读取
+  /// webapp.video-detail 的 itemStruct 入库（SPA 路由不重写 SSR，feed 数
+  /// 据由 item_list 捕获覆盖，这里只在 host 匹配时尝试一次）。
+  /// For You（tiktok.com/）的初始 feed 同样只在 SSR（webapp.updated-items
+  /// 数组），不发 /api/ 请求——一并入库，slide 归因才有数据源。
+  function captureTikTokSSRDetail() {
+    try {
+      if (!/(^|\.)tiktok\.com$/iu.test(location.hostname ?? "")) return;
+      const cache = globalThis.MacIDMTikTokDetailCache;
+      if (!cache?.normalizeItemStruct || !cache?.store) return;
+      const script = document.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__");
+      if (!script) return;
+      const json = JSON.parse(script.textContent);
+      const scope = json?.__DEFAULT_SCOPE__ ?? {};
+      const itemStruct = scope["webapp.video-detail"]?.itemInfo?.itemStruct;
+      const entry = cache.normalizeItemStruct(itemStruct);
+      if (entry) cache.store(entry);
+      const feedItems = Array.isArray(scope["webapp.updated-items"])
+        ? scope["webapp.updated-items"].slice(0, 24)
+        : [];
+      for (const item of feedItems) {
+        const feedEntry = cache.normalizeItemStruct(item);
+        if (feedEntry) cache.store(feedEntry);
+      }
+    } catch {
+      // SSR 解析失败不影响页面；数据仍可能经 item_list 捕获到达。
+    }
+  }
+
   scanDOMFull();
   scanPerformanceInitial();
+  captureTikTokSSRDetail();
   scheduleNotification(true);
 
   for (const type of ["yt-navigate-finish", "yt-page-data-updated"]) {
@@ -866,6 +960,21 @@
       if (data.type === "macidm.douyin.detail") {
         try {
           globalThis.MacIDMDouyinDetailCache?.store?.(data);
+        } catch {
+          // 缓存失败不影响页面。
+        }
+        scheduleNotification();
+        return;
+      }
+
+      // TikTok feed/详情预加载数据：直链入库后立即发布快照（blob+MSE
+      // 播放的字节溯源不可用，适配直链候选依赖这份预解析数据）。
+      if (data.type === "macidm.tiktok.items") {
+        try {
+          const cache = globalThis.MacIDMTikTokDetailCache;
+          for (const item of Array.isArray(data.items) ? data.items : []) {
+            cache?.store?.(item);
+          }
         } catch {
           // 缓存失败不影响页面。
         }

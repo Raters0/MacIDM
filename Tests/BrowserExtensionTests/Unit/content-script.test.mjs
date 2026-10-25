@@ -15,17 +15,29 @@ const contentScriptSource = await readFile(
   "utf8",
 );
 
+// The candidate store is reached through media-utils normalization, so the
+// harness loads the real shared module instead of stubbing it.
+const mediaUtilsSource = await readFile(
+  new URL("../../../BrowserExtension/chrome/src/shared/media-utils.js", import.meta.url),
+  "utf8",
+);
+
 const PAGE_URL = "https://www.youtube.com/watch?v=abc123";
+const X_PAGE_URL = "https://x.com/eduardomenoni/status/2107552840294244647";
 
 // Minimal chrome/DOM stubs covering every access made while content-script.js
 // loads (MutationObserver, performance fallback, optional storage chaining,
 // and related APIs).
-function createContentScriptVM({ qualities = null, snapshotQualities = null } = {}) {
+function createContentScriptVM({ qualities = null, snapshotQualities = null, pageURL = PAGE_URL } = {}) {
   let messageListener = null;
   const windowMessageListeners = [];
   const postedMessages = [];
   const context = {
-    location: { href: PAGE_URL },
+    location: { href: pageURL },
+    // media-utils normalization parses candidate URLs, so the VM needs the
+    // URL constructor rather than the host realm's only.
+    URL,
+    URLSearchParams,
     document: {
       title: "fixture title",
       querySelector() {
@@ -96,6 +108,7 @@ function createContentScriptVM({ qualities = null, snapshotQualities = null } = 
   };
   context.window = context;
   vm.createContext(context);
+  vm.runInContext(mediaUtilsSource, context);
   vm.runInContext(contentScriptSource, context);
   return {
     context,
@@ -248,11 +261,6 @@ test("iframe 仍应答 scanMedia 快照：仅画质查询按顶层 frame 门控"
 // floating panel stays at zero candidates until refresh if there is no
 // observed DOM-attribute change or media Performance entry. The navigation
 // entry point must therefore be explicit.
-
-const mediaUtilsSource = await readFile(
-  new URL("../../../BrowserExtension/chrome/src/shared/media-utils.js", import.meta.url),
-  "utf8",
-);
 
 // Title ownership depends on the shared module's videoIdFromPageURL; real
 // YouTube pages load both scripts as well.
@@ -1002,4 +1010,65 @@ test("本页视频的画质查询不得误判为终止：仍保留可重试 noPl
     "noPlayerData",
     "同视频页内数据晚到是竞态，必须继续走有界重试而不是提前终止",
   );
+});
+
+// X/Twitter 分离音轨 HLS（chrome-extension-spec §5.8）：播放器一生只请求一次
+// master 清单，之后只有 rendition 与分片持续被重新上报。100 条存储上限下，
+// master 若先被挤出，折叠就失去锚点，裸的纯视频清单会被当成独立候选提交，
+// 产出无声文件却显示完成。
+test("候选存储达到上限时保留流清单，先挤出分片", () => {
+  // 通用 CDN 页面而非 YouTube 适配页：适配页的候选来源与归属规则不同。
+  const { getListener } = createContentScriptVM({ pageURL: X_PAGE_URL });
+  const listener = getListener();
+  const ask = (message) => {
+    let response = null;
+    listener(message, {}, (value) => { response = value; });
+    return response;
+  };
+
+  const master =
+    "https://video.twimg.com/amplify_video/2107552784635527168/pl/mKI_lmz-BYPae0lw.m3u8?tag=29&v=cfc&variant_version=1";
+  ask({
+    type: "macidm.addMediaCandidate",
+    candidate: { url: master, mime: "application/x-mpegURL" },
+  });
+  for (let index = 0; index < 140; index += 1) {
+    ask({
+      type: "macidm.addMediaCandidate",
+      candidate: {
+        url: `https://pbs.twimg.com/media/profile_banner_${index}.jpg`,
+        mime: "image/jpeg",
+        size: 350_000,
+      },
+    });
+  }
+
+  const urls = [...ask({ type: "macidm.getMediaCandidates" }).candidates.map((candidate) => candidate.url)];
+  assert.ok(urls.includes(master), "master 清单不得被持续到达的分片挤出");
+  assert.equal(urls.length, 100, "保留清单不得放宽存储上限");
+});
+
+test("全部候选都是流清单时仍按上限淘汰最旧的一条", () => {
+  const { getListener } = createContentScriptVM({ pageURL: X_PAGE_URL });
+  const listener = getListener();
+  const ask = (message) => {
+    let response = null;
+    listener(message, {}, (value) => { response = value; });
+    return response;
+  };
+
+  for (let index = 0; index < 120; index += 1) {
+    ask({
+      type: "macidm.addMediaCandidate",
+      candidate: {
+        url: `https://video.twimg.com/amplify_video/111/pl/master${index}.m3u8`,
+        mime: "application/x-mpegURL",
+      },
+    });
+  }
+
+  const urls = [...ask({ type: "macidm.getMediaCandidates" }).candidates.map((candidate) => candidate.url)];
+  assert.equal(urls.length, 100, "纯清单页面也受同一上限约束");
+  assert.ok(!urls.includes("https://video.twimg.com/amplify_video/111/pl/master0.m3u8"), "无分片可挤时淘汰最旧清单");
+  assert.ok(urls.includes("https://video.twimg.com/amplify_video/111/pl/master119.m3u8"));
 });

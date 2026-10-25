@@ -21,6 +21,9 @@ struct TaskDetailView: View {
                     if task.fileMissing && task.status == .completed {
                         fileMissingNotice
                     }
+                    if task.status == .completed, let warning = task.mediaWarning {
+                        mediaWarningNotice(warning)
+                    }
                     if let errorMessage = task.errorMessage, showsErrorPanel {
                         errorPanel(errorMessage)
                     }
@@ -176,6 +179,27 @@ struct TaskDetailView: View {
                 .font(.callout)
         } icon: {
             Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(AppTheme.warning)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            AppTheme.warning.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: AppTheme.cardRadius)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius)
+                .stroke(AppTheme.warning.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    /// Completed transfer whose media itself is defective (technical-spec §3.3).
+    private func mediaWarningNotice(_ warning: AppTaskMediaWarning) -> some View {
+        Label {
+            Text(warning.detail)
+                .font(.callout)
+        } icon: {
+            Image(systemName: "speaker.slash.fill")
                 .foregroundStyle(AppTheme.warning)
         }
         .padding(12)

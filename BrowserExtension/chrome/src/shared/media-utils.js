@@ -59,8 +59,16 @@
   function mimeTypeFromURL(value) {
     try {
       const url = new URL(value);
-      const mime = url.searchParams.get("mime") || url.searchParams.get("type") || "";
-      return mime.trim().toLowerCase();
+      // mime_type 的下划线值（video_mp4 等）按 video_mp4 → video/mp4 同义
+      // 解释：抖音与 TikTok 的 CDN 都用该参数声明媒体类型。
+      const raw = (
+        url.searchParams.get("mime")
+        || url.searchParams.get("type")
+        || url.searchParams.get("mime_type")
+        || ""
+      ).trim().toLowerCase();
+      const match = raw.match(/^(video|audio|image)_([a-z0-9]+)$/u);
+      return match ? `${match[1]}/${match[2]}` : raw;
     } catch {
       return "";
     }
@@ -348,9 +356,15 @@
     // segment group — technical spec §8.1 "titleDerived") outranks the page
     // title so multi-card pages keep per-card names; generic synthesized
     // labels ("YouTube 视频.mp4") never outrank a confirmed specific title.
-    const hintStem = hint.replace(/\.[a-z0-9]{1,4}$/iu, "").trim();
-    if (hint && hintStem && filenameHintSourceFor(candidate) === "titleDerived"
-      && !isGenericOrBrandTitle(hintStem, host)) {
+    const hintStemText = hintStem(hint);
+    // One predicate for the panel and for the wire: filenameHintSourceFor
+    // already demotes names built from a placeholder label, so a trusted hint
+    // is a real content name even when that name contains a brand word
+    // ("YouTube Rewind 2018", "国语精选合集", "Home Alone"). A substring test
+    // here used to reject those and made the panel show the branding page
+    // title while the App named the file after the hint.
+    const trustedHint = filenameHintSourceFor(candidate) === "titleDerived";
+    if (hint && hintStemText && trustedHint) {
       return hint;
     }
     if (base && !isGenericOrBrandTitle(base, host)) {
@@ -358,7 +372,10 @@
       if (hint && hint.toLowerCase().startsWith(base.toLowerCase())) {
         return hint;
       }
-      const generic = /^(download|index|master|playlist|media|video|audio|manifest)\b/i.test(hint);
+      // A placeholder label is not a disambiguator either: appending it made a
+      // clean proximity title read "真实标题 · Bilibili 媒体.mp4".
+      const generic = /^(download|index|master|playlist|media|video|audio|manifest)\b/i.test(hint)
+        || isSynthesizedPlaceholderName(hintStemText);
       return generic || candidateCount <= 1 ? base : `${base} · ${hint}`;
     }
     // Generic/brand (or missing) page title: never a prefix. A name
@@ -366,7 +383,7 @@
     // group — technical spec §8.1 "titleDerived") outranks the brand label,
     // so a Bilibili homepage row reads "card title.mp4", not
     // "哔哩哔哩 … · card title.mp4".
-    if (hint && filenameHintSourceFor(candidate) === "titleDerived") return hint;
+    if (hint && trustedHint) return hint;
     // The brand label remains only as the last readable fallback when the
     // candidate carries no identity name — the same order the App uses.
     return base || hint || candidate?.displayName || t("common.mediaResource");
@@ -378,16 +395,68 @@
   /// title on the App side; plain URL-tail names are "urlPath" and never do.
   function filenameHintSourceFor(candidate) {
     if (!candidate || typeof candidate !== "object") return "urlPath";
-    // Synthesis sites may declare the real provenance explicitly (a pair
-    // row that kept its URL-tail name must not claim titleDerived trust).
-    if (candidate.filenameHintSource === "titleDerived" || candidate.filenameHintSource === "urlPath") {
-      return candidate.filenameHintSource;
+    // A server-resolved name (Content-Disposition / the browser's download
+    // item) is authoritative: it is passed through untouched and is never
+    // re-judged by the placeholder net below.
+    if (candidate.filenameHintSource === "browserResolved") return "browserResolved";
+    // Synthesis sites declare the real provenance themselves (a name built
+    // from a placeholder label is stamped "urlPath" where it is created);
+    // anything else is inferred from the row's identity.
+    const declared =
+      candidate.filenameHintSource === "titleDerived" || candidate.filenameHintSource === "urlPath"
+        ? candidate.filenameHintSource
+        : null;
+    const source = declared
+      ?? (candidate.siteAdapter
+        || candidate.pairKind === "m4s-pair"
+        || candidate.pairKind === "stream-segment"
+        ? "titleDerived"
+        : "urlPath");
+    // Safety net for names that reach here still claiming title trust (older
+    // observations, forwarded snapshots): a hint equal to one of the labels a
+    // synthesis site falls back to carries no content identity, so it must not
+    // outrank the real pageTitle in the App's naming chain. Matched by exact
+    // equality against the catalogs, never by substring — a genuine title may
+    // contain a brand word, and translating a label must not silently
+    // re-trust it.
+    const hint = String(candidate.filenameHint ?? "").trim();
+    if (source === "titleDerived" && hint && isSynthesizedPlaceholderName(hintStem(hint))) {
+      return "urlPath";
     }
-    if (candidate.siteAdapter) return "titleDerived";
-    if (candidate.pairKind === "m4s-pair" || candidate.pairKind === "stream-segment") {
-      return "titleDerived";
-    }
-    return "urlPath";
+    return source;
+  }
+
+  /// A filename hint with its trailing extension removed ("视频（123）.mp4" →
+  /// "视频（123）"), so placeholder labels compare independently of the
+  /// container a synthesis site appended.
+  function hintStem(value) {
+    return String(value ?? "").trim().replace(/\.[a-z0-9]{1,4}$/iu, "").trim();
+  }
+
+  /// True when a hint stem is exactly one of the labels synthesized in place
+  /// of a missing title ("Bilibili 媒体", "YouTube 视频", "视频（{cid}）",
+  /// "流媒体", "媒体资源"). Such a name was not derived from any concrete
+  /// title, so it ranks as a URL-tail name (technical spec §8.1).
+  function isSynthesizedPlaceholderName(stem) {
+    const text = String(stem ?? "").trim();
+    if (!text) return false;
+    const labels = [
+      t("common.bilibiliMedia"),
+      t("media.youtubeVideo"),
+      t("common.streamFallbackName"),
+      t("common.mediaResource"),
+    ];
+    if (labels.some((label) => label && label.trim().toLowerCase() === text.toLowerCase())) return true;
+    // "视频（{cid}）" is parameterized: rebuild its shape around the cid slot.
+    // Without i18n the key comes back unsplit and the shape check is skipped.
+    const sentinel = "\u0000cid\u0000";
+    const parts = String(t("m4s.videoFallback", { cid: sentinel }) ?? "").split(sentinel);
+    if (parts.length !== 2) return false;
+    const shape = new RegExp(
+      `^${escapeRegExp(parts[0].trim())}\\d+${escapeRegExp(parts[1].trim())}$`,
+      "u",
+    );
+    return shape.test(text);
   }
   /// Extracts {cid, formatId, kind} from a Bilibili m4s filename. Bilibili
   /// audio-track format_ids start with 302 (30216/30232/30280…); the rest
@@ -441,13 +510,18 @@
       if (group.video.length > 0 && group.audio.length > 0) {
         const video = [...group.video].sort((a, b) => b.formatId - a.formatId)[0].candidate;
         const audio = [...group.audio].sort((a, b) => b.formatId - a.formatId)[0].candidate;
-        const base = sanitizePairFilename(String(pageTitle).trim() || t("m4s.videoFallback", { cid }));
+        const concreteTitle = String(pageTitle).trim();
+        const pairLabel = concreteTitle || t("m4s.videoFallback", { cid });
+        const base = sanitizePairFilename(pairLabel);
         paired.push({
           ...video,
           format: "video",
           fileExtension: "mp4",
-          displayName: (String(pageTitle).trim() || t("m4s.videoFallback", { cid })).slice(0, 80),
+          displayName: pairLabel.slice(0, 80),
           filenameHint: `${base}.mp4`.slice(0, 255),
+          // A pair named by the placeholder label was not synthesized from a
+          // concrete title, so on disk it must not outrank the page/card title.
+          filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
           size: null,
           pairKind: "m4s-pair",
           pairVideoUrl: video.url,
@@ -698,7 +772,8 @@
       if (youTubeVideoIDFromURL(page) !== videoId) continue;
       // Never fall back to the multi-video page title (list-page branding);
       // an unread preview title becomes the generic YouTube media label.
-      const title = String(identity.title ?? "").trim() || t("media.youtubeVideo");
+      const concreteTitle = String(identity.title ?? "").trim();
+      const title = concreteTitle || t("media.youtubeVideo");
       const base = sanitizePairFilename(title);
       seen.add(videoId);
       rows.push({
@@ -711,6 +786,7 @@
         displayURL: redactedURL(page),
         size: null,
         filenameHint: `${base}.mp4`.slice(0, 255),
+        filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
         siteAdapter: "youtube",
         pairNote: t("media.youtubePairNote"),
         collapsed: false,
@@ -744,7 +820,8 @@
     // extractor instead of relying on observed (and guaranteed-to-fail)
     // direct URLs.
     if (isYouTubeWatchPage(pageURL)) {
-      const title = String(pageTitle).trim() || t("media.youtubeVideo");
+      const concreteTitle = String(pageTitle).trim();
+      const title = concreteTitle || t("media.youtubeVideo");
       const base = sanitizePairFilename(title);
       // A hover preview of another video mounted on this page is a different
       // resource: it keeps its own adapter row instead of disappearing behind
@@ -760,6 +837,7 @@
           displayURL: redactedURL(pageURL),
           size: null,
           filenameHint: `${base}.mp4`.slice(0, 255),
+          filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
           siteAdapter: "youtube",
           pairNote: t("media.youtubePairNote"),
           collapsed: false,
@@ -798,7 +876,8 @@
     const manifestKeys = new Set();
 
     if (hasBilibiliAdapter) {
-      const title = String(pageTitle).trim() || t("common.bilibiliMedia");
+      const concreteTitle = String(pageTitle).trim();
+      const title = concreteTitle || t("common.bilibiliMedia");
       const base = sanitizePairFilename(title);
       kept.push({
         url: pageURL,
@@ -810,6 +889,7 @@
         displayURL: redactedURL(pageURL),
         size: null,
         filenameHint: `${base}.mp4`.slice(0, 255),
+        filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
         siteAdapter: "bilibili",
         pairNote: t("common.bilibiliPairNote"),
         collapsed: false,
@@ -836,7 +916,8 @@
       if (bilibiliVideoIDFromURL(page) !== bvid) continue;
       // Never fall back to the multi-video page title (homepage branding);
       // an empty card heading becomes the generic Bilibili media label.
-      const title = String(identity.title ?? "").trim() || t("common.bilibiliMedia");
+      const concreteTitle = String(identity.title ?? "").trim();
+      const title = concreteTitle || t("common.bilibiliMedia");
       const base = sanitizePairFilename(title);
       kept.push({
         url: page,
@@ -848,6 +929,7 @@
         displayURL: redactedURL(page),
         size: null,
         filenameHint: `${base}.mp4`.slice(0, 255),
+        filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
         siteAdapter: "bilibili",
         pairNote: t("common.bilibiliPairNote"),
         collapsed: false,
@@ -1219,13 +1301,16 @@
     const extension = [...(group.extensions ?? new Set([group.extension]))].join("/");
     const primaryExtension = group.extension;
     const count = group.candidates.length;
-    const base = sanitizePairFilename(String(pageTitle).trim() || t("common.streamFallbackName"));
+    const concreteTitle = String(pageTitle).trim();
+    const groupLabel = concreteTitle || t("common.streamFallbackName");
+    const base = sanitizePairFilename(groupLabel);
     return {
       ...first,
       format: first.format === "audio" ? "audio" : "video",
       fileExtension: extension,
-      displayName: t("common.fragmentName", { title: String(pageTitle).trim() || t("common.streamFallbackName"), format: extension.toUpperCase() }).slice(0, 80),
+      displayName: t("common.fragmentName", { title: groupLabel, format: extension.toUpperCase() }).slice(0, 80),
       filenameHint: `${base}.${primaryExtension}`.slice(0, 255),
+      filenameHintSource: concreteTitle ? "titleDerived" : "urlPath",
       displayURL: t("common.fragmentGroupURL", { url: first.displayURL || t("common.mediaResource"), count }).slice(0, 512),
       size: null,
       supported: false,
@@ -1241,14 +1326,26 @@
     try { return new URL(value).hostname.toLowerCase(); } catch { return ""; }
   }
 
-  // Strip a trailing site-brand suffix ("… - 抖音", "… | YouTube") that many
+  // Site brands, and the generic media words a site may append after its brand
+  // in a title tail ("…-哔哩哔哩视频", "… - YouTube 视频", "… - 抖音精选"). Both
+  // lists are mirrored by the App's DownloadNaming and locked by a cross-end
+  // test. A tail must carry at least one brand token, so a real title ending in
+  // a media word ("… - 官方视频") or a brand followed by content
+  // ("… - 哔哩哔哩弹幕网") is left intact instead of truncated.
+  const BRAND_TAIL_TOKENS = "抖音|哔哩哔哩|bilibili|优酷|爱奇艺|腾讯视频|YouTube|youtube";
+  const BRAND_TAIL_MEDIA_WORDS = "视频|媒体|影片|频道|精选|首页|官方|videos?|media|channel|home|official";
+
+  // Strip trailing site-brand suffixes ("… - 抖音", "… | YouTube") that many
   // sites append to document.title / og:title. Bilibili stacks two underscore
   // separated tails ("标题_哔哩哔哩_bilibili") on both document.title and
   // og:title: accept `_` as a separator and match one-or-more consecutive
   // brand tails so the whole suffix drops in one pass — otherwise the
   // unresolved brand token makes isGenericOrBrandTitle flag the specific
   // title as generic and the site adapter falls back to "Bilibili 媒体".
-  const BRAND_SUFFIX_RE = /(?:[-–—|·_]\s*(?:抖音|哔哩哔哩|bilibili|优酷|爱奇艺|腾讯视频|YouTube|youtube)\s*)+$/iu;
+  const BRAND_SUFFIX_RE = new RegExp(
+    `(?:[-–—|·_]\\s*(?:${BRAND_TAIL_TOKENS})(?:\\s*(?:${BRAND_TAIL_MEDIA_WORDS}))*)+\\s*$`,
+    "iu",
+  );
   function stripBrandSuffix(title) {
     return String(title || "").replace(BRAND_SUFFIX_RE, "").trim();
   }
@@ -1288,16 +1385,59 @@
     return stem;
   }
 
-  // True when a title is empty or reads as a generic/brand page name rather
-  // than specific content (used to decide whether a proximity-resolved title
-  // should override it on SPA pages).
-  const GENERIC_TITLE_TOKENS = /(抖音|哔哩哔哩|bilibili|youtube|优酷|爱奇艺|腾讯视频|精选|首页|homepage|\bhome\b)/iu;
+  // True when a title is empty or reads as a page-level brand/chrome name
+  // rather than specific content (used to decide whether a proximity-resolved
+  // title should override it on SPA pages, and whether a page title may enter
+  // name synthesis at all). Three independent tests:
+  // 1. a brand token surviving the tail strip ("哔哩哔哩 (゜-゜)つロ 干杯~");
+  // 2. a residue made only of page-chrome words ("精选", "首页"). Whole-residue
+  //    on purpose: a substring test misjudged real content titles such as
+  //    "国语精选合集 第3话";
+  // 3. player/list chrome anywhere in the residue (TITLE_BOILERPLATE, e.g.
+  //    "稍后再看"). A list page's composite title
+  //    ("视频标题 | 频道-稍后再看-哔哩哔哩视频") names no single media; once its
+  //    brand tail is stripped cleanly, this is what keeps it out of synthesis.
+  const BRAND_TOKEN_RE = new RegExp(BRAND_TAIL_TOKENS, "iu");
+  const PAGE_CHROME_WORDS = new Set(["精选", "首页", "homepage", "home"]);
+  function isOnlyPageChromeWords(text) {
+    const pieces = String(text || "")
+      .split(/[\s|·\-–—_/、,，:：()（）[\]]+/u)
+      .filter(Boolean);
+    return pieces.length > 0 && pieces.every((piece) => PAGE_CHROME_WORDS.has(piece.toLowerCase()));
+  }
   function isGenericOrBrandTitle(title, hostname) {
-    const text = stripBrandSuffix(String(title || "").trim());
+    const raw = String(title || "").trim();
+    if (raw.length < 2) return true;
+
+    const host = String(hostname || "").replace(/^www\./iu, "").toLowerCase();
+    const siteToken = host.split(".")[0] || "";
+
+    // 1. 先进行全套后缀剥离：品牌尾缀、siteToken 尾缀、host 尾缀
+    let text = stripBrandSuffix(raw);
+    if (siteToken) text = stripSiteSuffix(text, siteToken);
+    if (host) text = stripHostSuffix(text, host);
+    text = text.trim();
+
     if (text.length < 2) return true;
-    if (GENERIC_TITLE_TOKENS.test(text)) return true;
-    const siteToken = String(hostname || "").replace(/^www\./iu, "").split(".")[0].toLowerCase();
-    if (siteToken.length >= 3 && text.toLowerCase().includes(siteToken)) return true;
+    if (isOnlyPageChromeWords(text)) return true;
+    if (TITLE_BOILERPLATE.test(text)) return true;
+
+    // 2. 剥离后缀后如果整串就是品牌词或 siteToken（例如 "哔哩哔哩", "91porn"）：
+    if (siteToken.length >= 3 && text.toLowerCase() === siteToken) return true;
+    if (new RegExp(`^(?:${BRAND_TAIL_TOKENS})$`, "iu").test(text)) return true;
+
+    // 3. 剥离后缀后如果仍然含有已知大厂品牌词（例如 "哔哩哔哩 (゜-゜)つロ 干杯~", "抖音精选电脑版 - 抖音旗下优质视频平台"）
+    if (BRAND_TOKEN_RE.test(text)) return true;
+
+    // 4. 对于当前站点的 siteToken：
+    // 如果剥离了 siteToken 之后，剩下的内容没有实质信息（全空、或全是 Chrome/标点），则是纯 brand
+    if (siteToken.length >= 3 && text.toLowerCase().includes(siteToken)) {
+      const residue = text.replace(new RegExp(escapeRegExp(siteToken), "giu"), "")
+        .replace(/[\s|·\-–—_/、,，:：()（）[\]【】~～゜\-+]+/gu, "")
+        .trim();
+      if (residue.length < 2 || isOnlyPageChromeWords(residue)) return true;
+    }
+
     return false;
   }
 
@@ -1370,6 +1510,10 @@
   // "unknown" must degrade to visible, never to hidden.
   function isVisuallyHiddenTitle(el) {
     if (!el || typeof el.getBoundingClientRect !== "function") return false;
+    // HTML5 原生 hidden 属性及其后代，或者显式隐藏类
+    if (el.hidden || Boolean(el.closest?.("[hidden], .vjs-hidden"))) return true;
+    // HTML5 video 元素本身或其内部后代（用于不支持 video 时的 fallback 降级内容，不参与屏幕渲染）
+    if (String(el.tagName || "").toUpperCase() === "VIDEO" || Boolean(el.closest?.("video"))) return true;
     let box = null;
     try {
       box = el.getBoundingClientRect();
@@ -1977,6 +2121,7 @@
     resolvePageTitle,
     resolveContentTitle,
     isGenericOrBrandTitle,
+    isVisuallyHiddenTitle,
     stripBrandSuffix,
     stripHostSuffix,
     shortName,

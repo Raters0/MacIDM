@@ -12,6 +12,21 @@ context.globalThis = context;
 vm.runInContext(source, context);
 const mediaUtils = context.MacIDMMediaUtils;
 
+test("mimeTypeFromURL reads mime/type and underscore mime_type declarations", () => {
+  // TikTok/Douyin CDNs declare the type via ?mime_type=video_mp4 (underscore
+  // form); the value is interpreted as the equivalent slash MIME.
+  assert.equal(
+    mediaUtils.mimeTypeFromURL("https://v16-webapp-prime.tiktok.com/video/tos/no1a/abc/?a=1988&mime_type=video_mp4"),
+    "video/mp4",
+  );
+  assert.equal(mediaUtils.mimeTypeFromURL("https://cdn.example/a?mime_type=audio_mp4"), "audio/mp4");
+  assert.equal(mediaUtils.mimeTypeFromURL("https://cdn.example/a?mime=video/mp4"), "video/mp4");
+  assert.equal(mediaUtils.mimeTypeFromURL("https://cdn.example/a?type=video/webm"), "video/webm");
+  // mime/type take precedence; unknown values pass through unchanged.
+  assert.equal(mediaUtils.mimeTypeFromURL("https://cdn.example/a?mime=video/mp4&mime_type=audio_mp4"), "video/mp4");
+  assert.equal(mediaUtils.mimeTypeFromURL("https://cdn.example/a"), "");
+});
+
 test("media candidates preserve request URLs but redact query strings for display", () => {
   const candidate = mediaUtils.normalizeMediaCandidate(
     { url: "/video/master.m3u8?token=secret", mime: "application/vnd.apple.mpegurl" },

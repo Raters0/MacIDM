@@ -245,7 +245,17 @@ extension AppModel {
                         control: { control.read() }
                     )
                     guard self.isCurrentExecution(id, executionGeneration) else { return }
-                    self.finish(id, result: published, execution: executionGeneration)
+                    // A video-only stream muxes into a playable but silent MP4;
+                    // the transfer succeeded, so it is annotated rather than
+                    // failed (technical-spec §3.3).
+                    self.finish(
+                        id,
+                        result: published.result,
+                        execution: executionGeneration,
+                        mediaWarning: published.probe.flatMap {
+                            $0.hasAudio ? nil : AppTaskMediaWarning.noAudioTrack
+                        }
+                    )
                 } else {
                     self.finish(id, result: result, execution: executionGeneration)
                 }
@@ -599,11 +609,17 @@ extension AppModel {
         return executions[id].generation == generation
     }
 
-    func finish(_ id: UUID, result: DownloadResult, execution generation: Int? = nil) {
+    func finish(
+        _ id: UUID,
+        result: DownloadResult,
+        execution generation: Int? = nil,
+        mediaWarning: AppTaskMediaWarning? = nil
+    ) {
         guard isCurrentExecution(id, generation) else { return }
         autoRenameAttempts[id] = nil
         update(id) {
             $0.status = .completed
+            $0.mediaWarning = mediaWarning
             $0.receivedBytes = result.byteCount
             $0.totalBytes = result.byteCount
             $0.overallProgressFraction = nil
@@ -992,7 +1008,7 @@ extension AppModel {
         // adapter fills the CDN referer/UA fallback for the track requests.
         let restoredContext: DownloadRequestContext?
         if let stored = sessionStore.lookup(url: pageURL),
-            let cookie = sessionStore.cookieHeader(for: stored)
+            let cookie = await sessionStore.resolvedCookieHeader(for: stored)
         {
             restoredContext = DownloadRequestContext(
                 cookie: cookie,

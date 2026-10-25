@@ -85,6 +85,16 @@ test("query-embedded media URLs (analytics beacons) are not candidates", () => {
   );
   // Explicit ?mime= declarations keep working.
   assert.equal(discovery.isMediaCandidate("https://example.com/stream?mime=video/mp4", ""), true);
+  // TikTok/Douyin CDNs declare the type via ?mime_type=video_mp4 (underscore
+  // form); the same explicit-declaration evidence rule applies.
+  assert.equal(
+    discovery.isMediaCandidate(
+      "https://v16-webapp-prime.tiktok.com/video/tos/alisg/tos-alisg-ve-4863-sg/abc/?a=1988&mime_type=video_mp4",
+      "",
+    ),
+    true,
+  );
+  assert.equal(discovery.isMediaCandidate("https://example.com/stream?mime_type=audio_mp4", ""), true);
 });
 
 test("link collection applies the product limit before task creation", () => {
@@ -340,6 +350,13 @@ test("fetch interceptor isMediaLikeURL ignores media extensions embedded in quer
   // declarations stay recognized.
   assert.equal(kit.isMediaLikeURL("https://cdn.example/track.m4s?e=abc"), true);
   assert.equal(kit.isMediaLikeURL("https://cdn.example/stream?type=video/mp4"), true);
+  // TikTok/Douyin CDN mime_type declarations (underscore form) count as
+  // explicit MIME evidence.
+  assert.equal(
+    kit.isMediaLikeURL("https://v16-webapp-prime.tiktok.com/video/tos/alisg/abc/?a=1988&mime_type=video_mp4"),
+    true,
+  );
+  assert.equal(kit.isMediaLikeURL("https://example.com/stream?mime_type=audio_mp4"), true);
 });
 
 test("fetch interceptor JSON deep scan extracts embedded media URLs", () => {
@@ -402,6 +419,80 @@ test("fetch interceptor recognizes DASH JSON manifest structures", () => {
   assert.ok(durl.urls.includes("https://cdn.example/stream.flv?sig=x"));
   const plain = kit.scanJSONForMedia({ title: "no tracks" }, "https://api.example.com");
   assert.equal(plain.dashJsonManifest, false);
+});
+
+// ===== TikTok item 预载解析（webapp itemStruct 形状） =====
+
+const TIKTOK_GEAR_540 = {
+  Bitrate: 800000,
+  GearName: "adapt_540_1",
+  PlayAddr: {
+    UrlList: [
+      "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear0/?a=1988&mime_type=video_mp4",
+      "https://v16-webapp-prime.tiktok.com/video/tos/no1a/mirror/?a=1988&mime_type=video_mp4",
+    ],
+    DataSize: "5450948",
+  },
+};
+const TIKTOK_GEAR_720 = {
+  Bitrate: 1200000,
+  GearName: "adapt_lower_720_1",
+  PlayAddr: {
+    UrlList: ["https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear1/?a=1988&mime_type=video_mp4"],
+    DataSize: 9000000,
+  },
+};
+const TIKTOK_ITEM = {
+  id: "7681925651783339286",
+  desc: " Simpeleellä asuva Pentti #suomi ",
+  video: {
+    duration: 77,
+    width: 576,
+    height: 1024,
+    // webapp 形状：playAddr 是直链字符串（与 gear0 同 URL，必须去重）
+    playAddr: "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear0/?a=1988&mime_type=video_mp4",
+    bitrateInfo: [TIKTOK_GEAR_540, TIKTOK_GEAR_720, { Bitrate: "bad", PlayAddr: { UrlList: ["javascript:alert(1)"] } }],
+  },
+};
+
+test("fetch interceptor parses TikTok item_list payloads into bounded entries", () => {
+  const kit = loadFetchInterceptor();
+  const parsed = kit.parseTikTokItemsPayload(
+    JSON.stringify({ itemList: [TIKTOK_ITEM, { id: "12", video: {} }, null] }),
+  );
+  assert.equal(parsed.items.length, 1);
+  const entry = parsed.items[0];
+  assert.equal(entry.itemId, "7681925651783339286");
+  // desc 原样入库（截断在 store），合成候选侧才做清洗。
+  assert.equal(entry.desc, " Simpeleellä asuva Pentti #suomi ");
+  assert.equal(entry.duration, 77);
+  // Bitrate 降序：720 档在前；镜像 URL 与 playAddr 去重；非法档位剔除。
+  assert.deepEqual(Array.from(entry.urls, (item) => item.url), [
+    "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear1/?a=1988&mime_type=video_mp4",
+    "https://v16-webapp-prime.tiktok.com/video/tos/no1a/gear0/?a=1988&mime_type=video_mp4",
+  ]);
+  assert.equal(entry.urls[0].size, 9000000);
+  assert.equal(entry.urls[1].size, 5450948);
+});
+
+test("fetch interceptor parses TikTok item detail payloads and rejects invalid shapes", () => {
+  const kit = loadFetchInterceptor();
+  const parsed = kit.parseTikTokItemsPayload(
+    JSON.stringify({ itemInfo: { itemStruct: TIKTOK_ITEM } }),
+  );
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].itemId, "7681925651783339286");
+  // 详情 + 列表同时出现时按 itemId 去重。
+  const combined = kit.parseTikTokItemsPayload(
+    JSON.stringify({ itemInfo: { itemStruct: TIKTOK_ITEM }, itemList: [TIKTOK_ITEM] }),
+  );
+  assert.equal(combined.items.length, 1);
+  // 形状不符、无直链、非 JSON、空串一律丢弃（fail-closed）。
+  assert.equal(kit.parseTikTokItemsPayload(JSON.stringify({ itemList: [{ id: "123", video: {} }] })), null);
+  assert.equal(kit.parseTikTokItemsPayload(JSON.stringify({ itemList: "nope" })), null);
+  assert.equal(kit.parseTikTokItemsPayload("not json"), null);
+  assert.equal(kit.parseTikTokItemsPayload(""), null);
+  assert.equal(kit.parseTikTokItemsPayload(null), null);
 });
 
 // ===== Normalization and dedup =====

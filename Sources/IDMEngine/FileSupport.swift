@@ -72,6 +72,18 @@ final class RandomAccessSink: @unchecked Sendable {
         }
         return FileIdentity(device: UInt64(info.st_dev), inode: UInt64(info.st_ino))
     }
+
+    /// Current on-disk size. Resume validation compares this against the
+    /// sidecar's totalSize: device and inode survive an external truncation,
+    /// but every committed offset in the sidecar becomes a lie the moment the
+    /// artifact shrinks.
+    func currentSize() throws -> Int64 {
+        var info = stat()
+        guard fstat(fileDescriptor, &info) == 0 else {
+            throw IDMError.storageError(String(cString: strerror(errno)))
+        }
+        return Int64(info.st_size)
+    }
 }
 
 struct FileIdentity: Codable, Hashable, Sendable {

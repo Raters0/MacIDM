@@ -70,6 +70,50 @@ final class HLSAppPipelineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: calls[0].inputURL.path))
     }
 
+    // A video-only source playlist (X/Twitter `/pl/avc1/*` without its audio
+    // rendition) remuxes into a playable but silent MP4. The transfer
+    // succeeded, so the task completes and is annotated instead of silently
+    // passing as clean (technical-spec §3.3 「无音轨告警」).
+    func testVideoOnlyHLSProductCompletesWithNoAudioTrackWarning() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = AppModel(
+            storeDirectory: fixture.directory.appendingPathComponent("state"),
+            settings: fixture.settings,
+            downloadRunner: StubHLSDownloadRunner(),
+            ffmpegRemuxer: TestRemuxer(videoOnly: true)
+        )
+        let response = await model.handleBrowserBridgeRequest(
+            enqueueRequest(filename: "silent.m3u8"), clientID: "chrome:test",
+            secret: Data(repeating: 2, count: 32))
+        let taskID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(response.payload?["taskId"]?.stringValue)))
+        try await waitUntil { model.tasks.first(where: { $0.id == taskID })?.status == .completed }
+
+        let task = try XCTUnwrap(model.tasks.first(where: { $0.id == taskID }))
+        XCTAssertEqual(task.status, .completed)
+        XCTAssertNil(task.errorCode)
+        XCTAssertEqual(task.mediaWarning, .noAudioTrack)
+    }
+
+    func testMuxedHLSProductCompletesWithoutMediaWarning() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = AppModel(
+            storeDirectory: fixture.directory.appendingPathComponent("state"),
+            settings: fixture.settings,
+            downloadRunner: StubHLSDownloadRunner(),
+            ffmpegRemuxer: TestRemuxer()
+        )
+        let response = await model.handleBrowserBridgeRequest(
+            enqueueRequest(filename: "muxed.m3u8"), clientID: "chrome:test",
+            secret: Data(repeating: 2, count: 32))
+        let taskID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(response.payload?["taskId"]?.stringValue)))
+        try await waitUntil { model.tasks.first(where: { $0.id == taskID })?.status == .completed }
+
+        let task = try XCTUnwrap(model.tasks.first(where: { $0.id == taskID }))
+        XCTAssertNil(task.mediaWarning, "带音轨的产物不得被标注无音轨")
+    }
+
     func testAlreadyMergedHLSIsPublishedWithoutAnotherRemux() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -90,6 +134,7 @@ final class HLSAppPipelineTests: XCTestCase {
         let task = try XCTUnwrap(model.tasks.first(where: { $0.id == taskID }))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: task.destinationPath)), Data("raw-ts".utf8))
         XCTAssertFalse(FileManager.default.fileExists(atPath: model.hlsInputURL(for: task).path))
+        XCTAssertNil(task.mediaWarning, "引擎已合并的清单不重新探测，不得凭空告警")
     }
 
     func testHLSKeepsRawInputWhenRemuxFailsForRetry() async throws {
@@ -173,6 +218,33 @@ final class HLSAppPipelineTests: XCTestCase {
         XCTAssertEqual(
             try Data(contentsOf: destination),
             Data("final-mp4".utf8)
+        )
+    }
+
+    // 手动粘贴分离音轨 master（X/Twitter 形状）：解析出的每个画质都必须带上
+    // 自己的 EXT-X-MEDIA 音频 rendition，否则选中的画质清单单独下载就是无声
+    // 文件（technical-spec §3.3）。
+    func testManuallyResolvedMasterKeepsAudioRenditionPerQuality() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = AppModel(
+            storeDirectory: fixture.directory.appendingPathComponent("state"),
+            settings: fixture.settings,
+            mediaInspector: SeparateAudioStubInspector()
+        )
+
+        let options = try await model.resolveDownloadOptions(
+            urlString: "https://video.twimg.com/amplify_video/1/pl/master.m3u8",
+            sourceKind: .hls
+        )
+
+        XCTAssertEqual(options.count, 2)
+        for option in options {
+            XCTAssertNotNil(option.pairAudioURL, "\(option.label) 丢失了音频 rendition")
+        }
+        XCTAssertEqual(
+            options.first?.pairAudioURL?.absoluteString,
+            "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/audio.m3u8"
         )
     }
 
@@ -430,6 +502,38 @@ private struct StubMediaInspector: MediaInspecting {
     }
 }
 
+private struct SeparateAudioStubInspector: MediaInspecting {
+    func inspect(
+        url: URL,
+        requestContext: DownloadRequestContext?,
+        mediaKind: DownloadSourceKind
+    ) async throws -> MediaInspection {
+        MediaInspection(
+            mediaKind: .hls,
+            variants: [
+                MediaVariant(
+                    url: URL(string: "https://video.twimg.com/amplify_video/1/pl/avc1/1080x1080/video.m3u8")!,
+                    label: "1080P · AAC · 3.2 Mbps",
+                    bandwidth: 3_222_206,
+                    width: 1080,
+                    height: 1080,
+                    codecs: "mp4a.40.2,avc1.640028",
+                    pairAudioURL: URL(string: "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/audio.m3u8")!
+                ),
+                MediaVariant(
+                    url: URL(string: "https://video.twimg.com/amplify_video/1/pl/avc1/720x720/video.m3u8")!,
+                    label: "720P · AAC · 981 kbps",
+                    bandwidth: 981_246,
+                    width: 720,
+                    height: 720,
+                    codecs: "mp4a.40.2,avc1.64001F",
+                    pairAudioURL: URL(string: "https://video.twimg.com/amplify_video/1/pl/mp4a/128000/audio.m3u8")!
+                ),
+            ]
+        )
+    }
+}
+
 private actor CountingHLSDownloadRunner: AppDownloadRunning {
     private(set) var calls = 0
 
@@ -444,7 +548,36 @@ private actor CountingHLSDownloadRunner: AppDownloadRunning {
 }
 
 private actor TestRemuxer: FFmpegRemuxing {
+    private let streams: [FFmpegStreamInfo]
     private(set) var calls: [FFmpegRemuxRequest] = []
+
+    /// `videoOnly` reproduces a single-track (video-only) HLS playlist product:
+    /// remux succeeds, and the file has no audio stream.
+    init(videoOnly: Bool = false) {
+        var streams = [
+            FFmpegStreamInfo(
+                index: 0,
+                codecName: "h264",
+                codecType: "video",
+                width: 32,
+                height: 32,
+                duration: 1
+            )
+        ]
+        if !videoOnly {
+            streams.append(
+                FFmpegStreamInfo(
+                    index: 1,
+                    codecName: "aac",
+                    codecType: "audio",
+                    width: nil,
+                    height: nil,
+                    duration: 1
+                )
+            )
+        }
+        self.streams = streams
+    }
 
     func remux(_ request: FFmpegRemuxRequest) async throws -> FFmpegRemuxResult {
         calls.append(request)
@@ -456,16 +589,7 @@ private actor TestRemuxer: FFmpegRemuxing {
             probe: FFmpegProbeResult(
                 formatName: "mov,mp4",
                 duration: 1,
-                streams: [
-                    FFmpegStreamInfo(
-                        index: 0,
-                        codecName: "h264",
-                        codecType: "video",
-                        width: 32,
-                        height: 32,
-                        duration: 1
-                    )
-                ]
+                streams: streams
             )
         )
     }

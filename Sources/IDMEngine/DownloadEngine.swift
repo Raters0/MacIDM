@@ -276,6 +276,13 @@ public actor DownloadEngine {
                 guard try candidate.identity() == loaded.fileIdentity else {
                     throw IDMError.sidecarCorrupt
                 }
+                // Device and inode survive an external truncation or rewrite;
+                // only the actual size proves the committed offsets still map
+                // onto real bytes. On mismatch the recovery path restarts
+                // from zero instead of producing a file with holes.
+                guard try candidate.currentSize() == loaded.totalSize else {
+                    throw IDMError.sidecarCorrupt
+                }
                 payload = loaded
                 sink = candidate
                 resumed = loaded.segments.contains { $0.nextUncommittedOffset > $0.start }

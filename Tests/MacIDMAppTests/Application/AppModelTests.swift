@@ -108,7 +108,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(DownloadNaming.isGenericFilename("release-1.2.3.zip"))
     }
 
-    func testSemanticPageTitleStripsOnlyHostMatchingBrandSuffix() throws {
+    func testSemanticPageTitleStripsHostMatchingAndKnownBrandSuffixes() throws {
         // 品牌尾巴与页面 host 匹配才剥离；真实标题中的分隔符不受影响。
         XCTAssertEqual(
             DownloadNaming.semanticPageTitle(
@@ -139,6 +139,141 @@ final class AppModelTests: XCTestCase {
             "Episode_1"
         )
         XCTAssertNil(DownloadNaming.semanticPageTitle("   ", hosts: ["example.com"]))
+    }
+
+    func testSemanticPageTitleStripsStackedAndCJKBrandSuffixes() throws {
+        // Bilibili 叠加两段尾巴：单轮剥离会留下中文品牌名，落盘名于是与扩展
+        // 显示名（stripBrandSuffix 支持连续多段）背离（技术规范 §8.1）。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频_哔哩哔哩_bilibili", hosts: ["www.bilibili.com"]),
+            "某视频"
+        )
+        // 中文品牌名与 host token 永不相等，必须靠共享品牌词表剥离。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 - 抖音", hosts: ["www.douyin.com"]),
+            "某视频"
+        )
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 | 腾讯视频", hosts: ["v.qq.com"]),
+            "某视频"
+        )
+        // 中点也是扩展认可的分隔符。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频·bilibili", hosts: ["www.bilibili.com"]),
+            "某视频"
+        )
+        // 尾段必须整段相等：仅包含品牌词的真实标题不得被截断。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("纪录片 - 走进哔哩哔哩", hosts: ["www.bilibili.com"]),
+            "纪录片 - 走进哔哩哔哩"
+        )
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("Watch Later - YouTube Picks", hosts: ["www.youtube.com"]),
+            "Watch Later - YouTube Picks"
+        )
+        // 词干长度下限：不把标题剥到只剩一两个字。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("视频_哔哩哔哩", hosts: ["www.bilibili.com"]),
+            "视频_哔哩哔哩"
+        )
+    }
+
+    func testSemanticPageTitleStripsBrandTailFollowedByGenericMediaWord() throws {
+        // 真机取样（B 站稍后再看）：站点把泛化媒体词接在品牌名后面，
+        // 旧规则要求尾段整串相等，这个尾巴两端都剥不掉。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 - 哔哩哔哩视频", hosts: ["www.bilibili.com"]),
+            "某视频"
+        )
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("Some title | YouTube 视频", hosts: ["www.youtube.com"]),
+            "Some title"
+        )
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 - 抖音精选", hosts: ["www.douyin.com"]),
+            "某视频"
+        )
+        // 尾段必须含品牌词：纯媒体词尾巴属于真实标题。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频 - 官方视频", hosts: ["www.bilibili.com"]),
+            "某视频 - 官方视频"
+        )
+        // 品牌词后面跟着内容时不得截断。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("纪录片 - 哔哩哔哩弹幕网", hosts: ["www.bilibili.com"]),
+            "纪录片 - 哔哩哔哩弹幕网"
+        )
+    }
+
+    func testSemanticPageTitleTrimsListPageChromeAndRejectsPageLevelTitles() throws {
+        // 真机取样（B 站稍后再看）：品牌尾巴剥净后残留的列表 chrome 会直接
+        // 成为落盘名（overlay 的跨域 iframe 兜底会把原始 tab 标题送来）。
+        // 修剪优于否决：复合标题的前段仍是真实内容名，而否决会把名字交回
+        // 占位 hint（"Bilibili 媒体.mp4"）。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle(
+                "某视频标题 | 中国坐标-raters-稍后再看-哔哩哔哩视频",
+                hosts: ["www.bilibili.com"]
+            ),
+            "某视频标题 | 中国坐标-raters"
+        )
+
+        // 整页级标题（无内容成分）一律归零，让命名链回落到 hint / URL 尾段。
+        for pageLevelTitle in [
+            "稍后再看", "精选", "首页", "Home", "My Playlist", "抖音精选", "哔哩哔哩", "YouTube",
+        ] {
+            XCTAssertNil(
+                DownloadNaming.semanticPageTitle(pageLevelTitle, hosts: ["www.bilibili.com"]),
+                "\(pageLevelTitle) 是页级名，不得进入命名链"
+            )
+        }
+
+        // App 侧刻意比扩展保守：品牌词子串不得否决页面标题，否则真实标题
+        // 配合占位 hint 会退化成 "media.mp4"。
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("YouTube Rewind 2018", hosts: ["www.youtube.com"]),
+            "YouTube Rewind 2018"
+        )
+        // chrome 标记按整段匹配，不做子串：词形变化与真实标题不受影响。
+        for kept in ["订阅经济", "收藏 | 教程", "如何收藏这部电影", "某视频_哔哩哔哩_bilibili"] {
+            XCTAssertNotNil(DownloadNaming.semanticPageTitle(kept, hosts: ["www.bilibili.com"]), kept)
+        }
+        XCTAssertEqual(
+            DownloadNaming.semanticPageTitle("某视频_哔哩哔哩_bilibili", hosts: ["www.bilibili.com"]),
+            "某视频"
+        )
+    }
+
+    func testSuggestedFilenamePrefersTrimmedPageTitleOverPlaceholderHint() throws {
+        // 列表页典型载荷：hint 是占位标签（urlPath），pageTitle 是复合标题。
+        // 修剪后的标题必须胜出，而不是退回占位名。
+        let trimmed = DownloadNaming.semanticPageTitle(
+            "某视频标题 | 中国坐标-raters-稍后再看-哔哩哔哩视频",
+            hosts: ["www.bilibili.com"]
+        )
+        XCTAssertEqual(
+            DownloadNaming.suggestedFilename(
+                url: URL(string: "https://www.bilibili.com/list/watchlater")!,
+                sourceKind: .dash,
+                filenameHint: "Bilibili 媒体.mp4",
+                pageTitle: trimmed,
+                resourceInfo: nil,
+                hintSource: .urlPath
+            ),
+            "某视频标题 | 中国坐标-raters.mp4"
+        )
+        // 整页级标题被否决后，占位 hint 仍优于 "media" 兜底（保留现有链语义）。
+        XCTAssertEqual(
+            DownloadNaming.suggestedFilename(
+                url: URL(string: "https://www.bilibili.com/list/watchlater")!,
+                sourceKind: .dash,
+                filenameHint: "Bilibili 媒体.mp4",
+                pageTitle: DownloadNaming.semanticPageTitle("稍后再看", hosts: ["www.bilibili.com"]),
+                resourceInfo: nil,
+                hintSource: .urlPath
+            ),
+            "Bilibili 媒体.mp4"
+        )
     }
 
     func testFilenameRecoveredFromContentDispositionQueryParameter() throws {
@@ -1077,6 +1212,168 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.selectedTaskID)
     }
 
+    func testTrashModeRemovalRequestsTrashAndKeepsTheFileOnDisk() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMTrashRemovalTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        let destination = directory.appendingPathComponent("finished.mp4")
+        try model.addDownload(
+            urlString: "https://example.com/finished.mp4",
+            destination: destination,
+            maximumParallelRequests: 8,
+            expectedSHA256: nil,
+            startImmediately: false
+        )
+        let taskID = try XCTUnwrap(model.tasks.first?.id)
+        try Data("content".utf8).write(to: destination)
+        model.update(taskID) { $0.status = .completed }
+
+        let trashed = URLBox()
+        model.trashFile = { trashed.value = $0 }
+        model.remove(taskID, fileRemoval: .moveToTrash)
+
+        // 移到废纸篓走的是 Trash 通道，而不是直接删除；文件本体留在原地
+        //（测试用假 Trash 处理器，不污染真实废纸篓），记录照常归档。
+        XCTAssertEqual(trashed.value, destination)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertTrue(model.tasks.first?.isArchived == true)
+    }
+
+    func testClearHistoryEmptiesTimelineWithoutTouchingMainListOrFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMClearHistoryTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        for name in ["completed.mp4", "failed.mp4", "archived.mp4", "paused.mp4"] {
+            try model.addDownload(
+                urlString: "https://example.com/\(name)",
+                destination: directory.appendingPathComponent(name),
+                maximumParallelRequests: 8,
+                expectedSHA256: nil,
+                startImmediately: false
+            )
+        }
+        let completed = try XCTUnwrap(model.tasks.first { $0.filename == "completed.mp4" })
+        let failed = try XCTUnwrap(model.tasks.first { $0.filename == "failed.mp4" })
+        let archived = try XCTUnwrap(model.tasks.first { $0.filename == "archived.mp4" })
+        let paused = try XCTUnwrap(model.tasks.first { $0.filename == "paused.mp4" })
+        model.update(completed.id) { $0.status = .completed }
+        model.update(failed.id) { $0.status = .failed }
+        try Data("content".utf8).write(to: directory.appendingPathComponent("completed.mp4"))
+        model.remove(archived.id)
+
+        model.clearHistory()
+
+        // 已归档记录被永久移除；仍在主列表的任务（含已完成的终结记录）只是
+        // 从历史时间线隐藏，全部下载里照常保留，本地文件一律不动。
+        XCTAssertEqual(
+            Set(model.tasks.map(\.id)),
+            Set([completed.id, failed.id, paused.id])
+        )
+        XCTAssertTrue(
+            model.tasks.allSatisfy(\.historyHidden),
+            "清空历史后剩余任务应从时间线隐藏"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("completed.mp4").path)
+        )
+        model.sidebarFilter = .all
+        XCTAssertEqual(model.filteredTasks.count, 3)
+        model.sidebarFilter = .history
+        XCTAssertEqual(model.filteredTasks.count, 0)
+    }
+
+    func testRemoveFromHistoryHidesLiveRecordAndKeepsMainListIntact() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMRemoveFromHistoryTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: defaults)
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for name in ["live.mp4", "archived.mp4"] {
+            try model.addDownload(
+                urlString: "https://example.com/\(name)",
+                destination: directory.appendingPathComponent(name),
+                maximumParallelRequests: 8,
+                expectedSHA256: nil,
+                startImmediately: false
+            )
+        }
+        let live = try XCTUnwrap(model.tasks.first { $0.filename == "live.mp4" })
+        let archived = try XCTUnwrap(model.tasks.first { $0.filename == "archived.mp4" })
+        model.update(live.id) { $0.status = .completed }
+        try Data("content".utf8).write(to: directory.appendingPathComponent("live.mp4"))
+        model.remove(archived.id)
+
+        // 历史时间线中删除：活跃任务仅从时间线隐藏，主列表与文件保持；
+        // 已归档记录被永久移除。
+        model.removeFromHistory([live.id, archived.id])
+
+        XCTAssertEqual(model.tasks.map(\.id), [live.id])
+        XCTAssertTrue(model.tasks.first?.historyHidden == true)
+        model.sidebarFilter = .all
+        XCTAssertEqual(model.filteredTasks.map(\.id), [live.id])
+        model.sidebarFilter = .completed
+        XCTAssertEqual(model.filteredTasks.map(\.id), [live.id])
+        model.sidebarFilter = .history
+        XCTAssertEqual(model.filteredTasks.count, 0)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("live.mp4").path)
+        )
+    }
+
+    func testHistoryHiddenSurvivesRestart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMHistoryHiddenPersistTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeDirectory = directory.appendingPathComponent("state")
+        let defaults = makeIsolatedDefaults()
+        let model = AppModel(
+            storeDirectory: storeDirectory,
+            settings: AppSettings(defaults: defaults)
+        )
+        try model.addDownload(
+            urlString: "https://example.com/hidden.mp4",
+            destination: directory.appendingPathComponent("hidden.mp4"),
+            maximumParallelRequests: 8,
+            expectedSHA256: nil,
+            startImmediately: false
+        )
+        let taskID = try XCTUnwrap(model.tasks.first?.id)
+        model.removeFromHistory([taskID])
+        try model.persist()
+
+        let restarted = AppModel(
+            storeDirectory: storeDirectory,
+            settings: AppSettings(defaults: makeIsolatedDefaults())
+        )
+        // 清空的时间线在重启后保持清空，主列表不受影响。
+        XCTAssertEqual(restarted.tasks.first?.historyHidden, true)
+        XCTAssertEqual(restarted.tasks.first?.status, .paused)
+        restarted.sidebarFilter = .history
+        XCTAssertEqual(restarted.filteredTasks.count, 0)
+        restarted.sidebarFilter = .all
+        XCTAssertEqual(restarted.filteredTasks.count, 1)
+    }
+
     func testRemovingRunningTaskStopsItAndArchivesTheRecord() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMRemoveActiveTests-\(UUID().uuidString)")
@@ -1831,6 +2128,11 @@ private struct FixturePageMediaDiscoverer: WebPageMediaDiscovering {
 
 private final class DraftBox: @unchecked Sendable {
     var value: DownloadDraft?
+}
+
+/// Captures the URL handed to the fake trash handler.
+private final class URLBox: @unchecked Sendable {
+    var value: URL?
 }
 
 /// Minimal Bilibili playurl client keyed by request path, so the resume

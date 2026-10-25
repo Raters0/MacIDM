@@ -390,7 +390,11 @@
     if (mediaPattern.test(path)) return true;
     try {
       const params = new URL(str).searchParams;
-      const type = (params.get("mime") || params.get("type") || "").toLowerCase();
+      const raw = (params.get("mime") || params.get("type") || params.get("mime_type") || "").toLowerCase();
+      // mime_type 的下划线值（video_mp4 等）按 video_mp4 → video/mp4 同义
+      // 解释：抖音与 TikTok 的 CDN 都用该参数声明媒体类型。
+      const match = raw.match(/^(video|audio|image)_([a-z0-9]+)$/u);
+      const type = match ? `${match[1]}/${match[2]}` : raw;
       return (
         type.startsWith("video/") ||
         type.startsWith("audio/") ||
@@ -758,7 +762,6 @@
   // cache.js 的解析逻辑与此处保持 verbatim 同步，双方都无法共享模块）。
   const DOUYIN_DETAIL_RE = /aweme\/v1\/web\/aweme\/detail\//i;
   const DOUYIN_DETAIL_MESSAGE = "macidm.douyin.detail";
-
   function parseDouyinDetailPayload(text) {
     if (typeof text !== "string" || text.length === 0 || text.length > 4 * 1024 * 1024) return null;
     let json;
@@ -808,6 +811,106 @@
     response.clone().text().then((text) => {
       const parsed = parseDouyinDetailPayload(text);
       if (parsed) postDouyinDetail(parsed);
+    }).catch(() => {});
+  }
+
+  // ===== TikTok item 预加载捕获 =====
+  // TikTok 的 explore/recommend feed 与 item/detail 响应携带每条视频的
+  // 直链与语义标题；播放器走 blob+MSE 重封装，字节溯源 fail-closed 不可
+  // 用，适配直链是元素浮窗的数据源。解析逻辑与 shared/tiktok-detail-
+  // cache.js 的 normalizeItemStruct 保持 verbatim 同步（MAIN world 无法
+  // 依赖 shared 模块，与抖音 detail 分支同一约束）。
+  const TIKTOK_ITEM_RE = /\/api\/(?:explore\/|recommend\/)?item_list\/|\/api\/item\/detail\//i;
+  const TIKTOK_ITEMS_MESSAGE = "macidm.tiktok.items";
+  const TIKTOK_MAX_ITEMS = 24;
+  const TIKTOK_MAX_URLS = 8;
+
+  function normalizeTikTokItemStruct(item) {
+    try {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id ?? "");
+      if (!/^\d{6,25}$/u.test(id)) return null;
+      const video = item.video;
+      if (!video || typeof video !== "object") return null;
+      const seen = new Set();
+      const urls = [];
+      const push = (addr) => {
+        if (typeof addr === "string") {
+          if (!/^https?:/iu.test(addr) || seen.has(addr)) return;
+          seen.add(addr);
+          urls.push({ url: addr, size: null });
+          return;
+        }
+        const size = Number(addr?.DataSize ?? addr?.data_size);
+        const list = Array.isArray(addr?.UrlList)
+          ? addr.UrlList
+          : (Array.isArray(addr?.url_list) ? addr.url_list : []);
+        const url = list.find((candidate) => /^https?:/iu.test(String(candidate ?? "")));
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        urls.push({ url, size: Number.isSafeInteger(size) && size > 0 ? size : null });
+      };
+      const gears = (Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [])
+        .filter((gear) => gear && typeof gear === "object")
+        .sort((a, b) => (Number(b?.Bitrate) || 0) - (Number(a?.Bitrate) || 0));
+      for (const gear of gears) {
+        push(gear?.PlayAddr);
+        if (urls.length >= TIKTOK_MAX_URLS) break;
+      }
+      if (urls.length < TIKTOK_MAX_URLS) push(video.playAddr ?? video.play_addr);
+      if (urls.length === 0) return null;
+      const duration = Number(video.duration);
+      return {
+        itemId: id,
+        desc: String(item.desc ?? ""),
+        duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+        urls,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /// Pure parse: item_list / item/detail JSON text → bounded entries, or null.
+  function parseTikTokItemsPayload(text) {
+    if (typeof text !== "string" || text.length === 0 || text.length > 4 * 1024 * 1024) return null;
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    const items = [];
+    if (json?.itemInfo?.itemStruct) items.push(json.itemInfo.itemStruct);
+    const list = Array.isArray(json?.itemList) ? json.itemList : [];
+    for (const item of list) {
+      if (items.length >= TIKTOK_MAX_ITEMS) break;
+      items.push(item);
+    }
+    const seen = new Set();
+    const entries = [];
+    for (const item of items) {
+      const entry = normalizeTikTokItemStruct(item);
+      if (!entry || seen.has(entry.itemId)) continue;
+      seen.add(entry.itemId);
+      entries.push(entry);
+    }
+    return entries.length > 0 ? { items: entries } : null;
+  }
+
+  function postTikTokItems(parsed) {
+    const postFn = typeof global.postMessage === "function"
+      ? global.postMessage
+      : (typeof window !== "undefined" && typeof window.postMessage === "function" ? window.postMessage : null);
+    if (!postFn) return;
+    postFn({ type: TIKTOK_ITEMS_MESSAGE, items: parsed.items }, "*");
+  }
+
+  function captureTikTokItems(response) {
+    if (!response || typeof response.clone !== "function") return;
+    response.clone().text().then((text) => {
+      const parsed = parseTikTokItemsPayload(text);
+      if (parsed) postTikTokItems(parsed);
     }).catch(() => {});
   }
 
@@ -976,6 +1079,13 @@
             // Never disturb the original response.
           }
           try {
+            if (requestURL && TIKTOK_ITEM_RE.test(requestURL)) {
+              captureTikTokItems(response);
+            }
+          } catch {
+            // Never disturb the original response.
+          }
+          try {
             if (isYouTubePlayerURL(requestURL || response?.url)) {
               captureYouTubePlayerMetadata(response);
             }
@@ -1031,6 +1141,25 @@
                 if (!text) return;
                 const parsed = parseDouyinDetailPayload(text);
                 if (parsed) postDouyinDetail(parsed);
+              } catch {
+                // Never disturb the page.
+              }
+            });
+          }
+          if (captured && TIKTOK_ITEM_RE.test(captured)) {
+            this.addEventListener("load", () => {
+              try {
+                let text = null;
+                if (!this.responseType || this.responseType === "text") {
+                  text = this.responseText;
+                } else if (this.responseType === "json") {
+                  text = this.response ? JSON.stringify(this.response) : null;
+                } else if (this.responseType === "arraybuffer" && this.response) {
+                  text = new TextDecoder().decode(new Uint8Array(this.response));
+                }
+                if (!text) return;
+                const parsed = parseTikTokItemsPayload(text);
+                if (parsed) postTikTokItems(parsed);
               } catch {
                 // Never disturb the page.
               }
@@ -1094,6 +1223,9 @@
       parseYouTubePlayerMetadata,
       YOUTUBE_PLAYER_MESSAGE,
       YOUTUBE_PLAYER_MAX_BYTES,
+      normalizeTikTokItemStruct,
+      parseTikTokItemsPayload,
+      TIKTOK_ITEMS_MESSAGE,
       getMetrics,
       resetMetrics,
       cancelAllActiveReaders,

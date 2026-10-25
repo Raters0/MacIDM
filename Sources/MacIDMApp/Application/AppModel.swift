@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
     let persistenceCoordinator: AppTaskPersistenceCoordinator
     let notifier = NotificationService()
     let keychainCredentialStore = KeychainCredentialStore()
+    /// 语义判断服务 KEY 的钥匙串存储（独立 service，见 technical-spec §8.1）。
+    let semanticTitleKeychainStore = KeychainCredentialStore.PresetService.semanticTitle
+    let semanticTitleService: SemanticTitleService
     var takeoverLog: TakeoverLog?
     /// Enforces the global speed limit from settings (nil inner = unlimited).
     /// One stable wrapper instance is captured by every started task; the
@@ -223,6 +226,28 @@ final class AppModel: ObservableObject {
     ) {
         self.settings = settings ?? AppSettings()
         self.sessionStore = sessionStore ?? SessionStore()
+        let resolvedSettings = self.settings
+        let semanticKeychain = semanticTitleKeychainStore
+        let semanticKeyAccount = SemanticTitleService.keychainAccount
+        self.semanticTitleService = SemanticTitleService(
+            configProvider: {
+                // The KEY lives in the login Keychain, so this read can raise
+                // the system approval dialog for a freshly built bundle. It runs
+                // off-main and marked: the confirmation window is already on
+                // screen when the semantic title resolves.
+                let apiKey =
+                    await KeychainAccessSignal.shared.access {
+                        semanticKeychain.loadPassword(username: semanticKeyAccount)
+                    } ?? ""
+                guard !apiKey.isEmpty else { return nil }
+                return SemanticTitleConfig(
+                    format: SemanticTitleFormat(providerID: resolvedSettings.semanticTitleProvider),
+                    endpoint: resolvedSettings.semanticTitleEndpoint,
+                    model: resolvedSettings.semanticTitleModel,
+                    apiKey: apiKey
+                )
+            }
+        )
         self.browserProbe =
             browserProbe ?? { request in
                 try await HTTPHandler(
@@ -515,8 +540,15 @@ final class AppModel: ObservableObject {
                 self?.notifier.updateDockBadge(activeCount: count)
             }
             .store(in: &cancellables)
+        // `@Published` publishes in `willSet`, so a subscriber that reads the
+        // settings back still sees the previous value. These side effects all
+        // re-read settings, so they run after the write lands; without the hop
+        // the first change of each of them was applied one step late (setting a
+        // speed limit or enabling a proxy did nothing until something else
+        // triggered the same rebuild).
         self.settings.$speedLimitKBps
             .removeDuplicates()
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.rebuildSharedRateLimiter()
             }
@@ -526,15 +558,37 @@ final class AppModel: ObservableObject {
         // pause/resume cycle.
         self.settings.$simultaneousDownloads
             .removeDuplicates()
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.scheduleQueuedTasks()
             }
             .store(in: &cancellables)
+        // The global shortcut follows its settings: the switch and a newly
+        // recorded combination re-register it immediately. `@Published` publishes
+        // in `willSet`, so the emitted values are passed down instead of read
+        // back from the properties, which still hold the previous value.
+        self.settings.$globalHotKeyEnabled
+            .combineLatest(self.settings.$globalHotKeyCombo)
+            .sink { [weak self] enabled, combo in
+                let recording = self?.isGlobalHotKeyRecording ?? false
+                self?.refreshGlobalHotKeyRegistration(
+                    wanted: enabled && !recording ? combo : nil
+                )
+            }
+            .store(in: &cancellables)
         // Forward settings changes so views observing the model re-render
-        // when preferences like hiddenTableColumns change.
+        // when preferences like hiddenTableColumns change. This one must stay
+        // synchronous: SwiftUI needs the will-change notification.
         self.settings.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        // The proxy policy re-reads several settings fields, so it applies after
+        // the write (see the willSet note above).
+        self.settings.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
                 self?.rebuildProxyPolicy()
             }
             .store(in: &cancellables)
@@ -960,7 +1014,7 @@ final class AppModel: ObservableObject {
         // tracks") while the actual download runs logged in. Delivery stays
         // same-origin (DownloadRequestContext.apply), so a page-host session
         // never leaks to a cross-origin media CDN.
-        let effectiveContext = inspectionRequestContext(for: url, existing: requestContext)
+        let effectiveContext = await inspectionRequestContext(for: url, existing: requestContext)
         if BilibiliPlayurlAdapter.supports(url) {
             let playurlOptions = try await bilibiliAdapter.resolve(
                 pageURL: url,
@@ -1175,15 +1229,17 @@ final class AppModel: ObservableObject {
     /// explicit browser context still wins field by field — and an
     /// unreadable credential falls through to no-session rather than an
     /// empty Cookie header that reads as "logged in".
+    /// The credential read runs off-main (see ``SessionStore/resolvedCookieHeader(for:)``):
+    /// this resolves while the confirmation window is already on screen.
     func inspectionRequestContext(
         for url: URL,
         existing: DownloadRequestContext?
-    ) -> DownloadRequestContext {
+    ) async -> DownloadRequestContext {
         if let existing, let cookie = existing.cookie, !cookie.isEmpty {
             return existing
         }
         guard let stored = sessionStore.lookup(url: url),
-            let cookie = sessionStore.cookieHeader(for: stored),
+            let cookie = await sessionStore.resolvedCookieHeader(for: stored),
             !cookie.isEmpty
         else { return existing ?? DownloadRequestContext() }
         return DownloadRequestContext(
@@ -1257,6 +1313,12 @@ final class AppModel: ObservableObject {
     /// to capture the draft without creating real windows.
     var newDownloadPresenter: ((DownloadDraft?) -> Void)?
 
+    /// Moves a local file to the Finder Trash. Injectable so tests can
+    /// verify the trash wiring without touching the real Trash.
+    var trashFile: (URL) throws -> Void = { url in
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    }
+
     func presentNewDownload(draft: DownloadDraft?) {
         if let presenter = newDownloadPresenter {
             presenter(draft)
@@ -1265,7 +1327,68 @@ final class AppModel: ObservableObject {
         DownloadDraftWindowManager.shared.open(draft: draft, model: self)
     }
 
-    /// ⌘⇧N (Carbon global hotkey, delivered via MenuBarContentView): open a
+    // MARK: - Global hot key
+
+    /// The live registration, installed by the App scene only when running from
+    /// a bundled `.app`. Nothing registers while this is nil, so constructing a
+    /// model in a test never touches Carbon; a test of the wiring below installs
+    /// a fake registrar.
+    private(set) var globalHotKeyRegistrar: (any GlobalHotKeyRegistering)?
+
+    /// Why the shortcut is not live, or nil when it is. The system refuses a
+    /// combination another application already owns, and a silently dead
+    /// shortcut is worse than a visible reason.
+    @Published var globalHotKeyError: String?
+
+    /// Set while the settings recorder is capturing keys. Carbon delivers the
+    /// combination to whoever registered it first, so the live registration has
+    /// to step aside or recording the shortcut in use would do nothing.
+    var isGlobalHotKeyRecording = false {
+        didSet { refreshGlobalHotKeyRegistration(wanted: wantedGlobalHotKeyCombo()) }
+    }
+
+    /// Install the process's single registrar. A recreated main window re-runs
+    /// the App's startup task, so a previous registration is released first
+    /// rather than being owned twice — the second `RegisterEventHotKey` for the
+    /// same combination would be refused and reported as occupied.
+    func installGlobalHotKeyRegistrar(_ registrar: any GlobalHotKeyRegistering) {
+        guard globalHotKeyRegistrar !== registrar else { return }
+        globalHotKeyRegistrar?.apply(combo: nil)
+        globalHotKeyRegistrar = registrar
+        refreshGlobalHotKeyRegistration(wanted: wantedGlobalHotKeyCombo())
+    }
+
+    /// What the settings currently ask for: nil when the master switch is off,
+    /// the recorder was cleared, or a recording is in progress.
+    private func wantedGlobalHotKeyCombo() -> GlobalHotKeyCombo? {
+        guard settings.globalHotKeyEnabled, !isGlobalHotKeyRecording else { return nil }
+        return settings.globalHotKeyCombo
+    }
+
+    /// Push one resolved combination onto the system; nil unregisters. The
+    /// settings subscription resolves it from the values it publishes, because
+    /// `@Published` fires in `willSet` and reading the properties back there
+    /// would still return the previous state.
+    func refreshGlobalHotKeyRegistration(wanted: GlobalHotKeyCombo?) {
+        guard let registrar = globalHotKeyRegistrar else { return }
+        if registrar.apply(combo: wanted) {
+            globalHotKeyError = nil
+            return
+        }
+        // The registrar kept the combination that was working. Name the live key
+        // instead of writing the refused one back: assigning to the recorded
+        // combination from inside its own publication would be overwritten by the
+        // write that just started, and a silent revert reads like a bug.
+        if let refused = wanted, let live = registrar.registeredCombo, refused != live {
+            globalHotKeyError = String(
+                localized: "\(refused.displayString) 已被系统或其他应用占用；全局快捷键仍是 \(live.displayString)。"
+            )
+        } else {
+            globalHotKeyError = String(localized: "该组合键已被系统或其他应用占用，全局快捷键未生效。")
+        }
+    }
+
+    /// The configured global shortcut, wherever the user set it: open a
     /// new-download window, prefilled from the clipboard when it holds a link.
     func handleGlobalHotKey() {
         let value = NSPasteboard.general.string(forType: .string)?
@@ -1442,6 +1565,12 @@ final class AppModel: ObservableObject {
                     hintSource: filenameHintSource
                 ),
                 label: variant.label,
+                // A separate-audio master (X/Twitter) resolves each variant's
+                // EXT-X-MEDIA rendition during inspection. Dropping it here
+                // makes a manually pasted master download a silent file,
+                // because the selected variant alone carries no audio.
+                pairAudioURL: variant.pairAudioURL,
+                pairCID: variant.pairCID,
                 estimatedSize: variant.estimatedSize,
                 duration: variant.duration
             )

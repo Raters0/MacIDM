@@ -9,6 +9,13 @@ struct CookiePasteDomain: Identifiable {
     var id: String { domain }
 }
 
+/// One pending "remove from history" confirmation: the file action decides
+/// the dialog wording and the destructive consequence.
+struct HistoryRemovalRequest {
+    let ids: Set<UUID>
+    let fileAction: AppModel.TaskFileRemoval
+}
+
 struct MainWindowView: View {
     private enum ColumnLayout {
         static let sidebarWidth: CGFloat = 232
@@ -51,8 +58,11 @@ struct MainWindowView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var isConfirmingRemoval = false
     @State private var pendingRemovalIDs: Set<UUID> = []
-    @State private var isConfirmingPermanentRemoval = false
-    @State private var pendingPermanentRemovalIDs: Set<UUID> = []
+    /// 「彻底删除」的二次确认（主列表路径）：文件不可恢复，所以是唯一
+    /// 需要弹窗的常规删除选项。
+    @State private var pendingPermanentFileDeletion: Set<UUID> = []
+    /// 历史记录移除的二次确认：文件处置方式决定标题与按钮文案。
+    @State private var pendingHistoryRemoval: HistoryRemovalRequest?
     @State private var isConfirmingClearHistory = false
     @AppStorage("mainDetailColumnWidthV1") private var storedDetailColumnWidth = Double(
         ColumnLayout.detailIdealWidth
@@ -272,33 +282,75 @@ struct MainWindowView: View {
                 isPresented: $isConfirmingRemoval,
                 titleVisibility: .visible
             ) {
-                Button("删除记录", role: .destructive) {
+                Button("仅删除记录", role: .destructive) {
                     for id in pendingRemovalIDs { model.remove(id) }
                     pendingRemovalIDs.removeAll()
                 }
-                if model.hasRemovableFiles(pendingRemovalIDs) {
-                    Button("删除记录和文件", role: .destructive) {
-                        for id in pendingRemovalIDs { model.remove(id, deletingFile: true) }
-                        pendingRemovalIDs.removeAll()
+                Button("移到废纸篓", role: .destructive) {
+                    for id in pendingRemovalIDs {
+                        model.remove(id, fileRemoval: .moveToTrash)
                     }
+                    pendingRemovalIDs.removeAll()
+                }
+                Button("彻底删除", role: .destructive) {
+                    for id in pendingRemovalIDs {
+                        model.remove(id, fileRemoval: .deletePermanently)
+                    }
+                    pendingRemovalIDs.removeAll()
                 }
                 Button("取消", role: .cancel) {
                     pendingRemovalIDs.removeAll()
                 }
-            } message: {
-                Text(removalDialogMessage)
             }
             .confirmationDialog(
-                "清除全部已删除的归档记录？",
+                "彻底删除 \(pendingPermanentFileDeletion.count) 个文件？",
+                isPresented: Binding(
+                    get: { !pendingPermanentFileDeletion.isEmpty },
+                    set: { if !$0 { pendingPermanentFileDeletion.removeAll() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("彻底删除", role: .destructive) {
+                    for id in pendingPermanentFileDeletion {
+                        model.remove(id, fileRemoval: .deletePermanently)
+                    }
+                    pendingPermanentFileDeletion.removeAll()
+                }
+                Button("取消", role: .cancel) {
+                    pendingPermanentFileDeletion.removeAll()
+                }
+            } message: {
+                Text("文件将被立即删除，不可恢复。")
+            }
+            .confirmationDialog(
+                historyRemovalTitle,
+                isPresented: Binding(
+                    get: { pendingHistoryRemoval != nil },
+                    set: { if !$0 { pendingHistoryRemoval = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(historyRemovalButtonTitle, role: .destructive) {
+                    if let request = pendingHistoryRemoval {
+                        performHistoryRemoval(request)
+                    }
+                    pendingHistoryRemoval = nil
+                }
+                Button("取消", role: .cancel) {
+                    pendingHistoryRemoval = nil
+                }
+            }
+            .confirmationDialog(
+                "清空全部历史记录？",
                 isPresented: $isConfirmingClearHistory,
                 titleVisibility: .visible
             ) {
-                Button("永久清除", role: .destructive) {
+                Button("清空历史记录", role: .destructive) {
                     model.clearHistory()
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("仅清除已删除的归档记录，此操作不可撤销；仍在列表中的任务不受影响。不会删除本地文件。")
+                Text("已删除的记录将被永久移除；仍在列表中的任务仅从历史中隐藏，记录与文件都保留。")
             }
             .onAppear {
                 // Startup layout diagnostics: the sidebar has once rendered
@@ -453,8 +505,8 @@ struct MainWindowView: View {
                 model: model,
                 synchronizer: model.tableSynchronizer,
                 appearance: taskTableAppearance,
-                requestRemoval: { requestRemoval(ids: $0) },
-                requestPermanentRemoval: { requestPermanentRemoval(ids: $0) }
+                requestHistoryRemoval: { requestHistoryRemoval(ids: $0, fileAction: $1) },
+                requestPermanentFileDeletion: { requestPermanentFileDeletion(ids: $0) }
             )
             .equatable()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -498,60 +550,101 @@ struct MainWindowView: View {
             )
             .environmentObject(model)
         }
-        .confirmationDialog(
-            "永久删除选中的 \(pendingPermanentRemovalIDs.count) 条历史记录？",
-            isPresented: $isConfirmingPermanentRemoval,
-            titleVisibility: .visible
-        ) {
-            Button("永久删除", role: .destructive) {
-                for id in pendingPermanentRemovalIDs { model.permanentlyRemove(id) }
-                pendingPermanentRemovalIDs.removeAll()
-            }
-            Button("取消", role: .cancel) {
-                pendingPermanentRemovalIDs.removeAll()
-            }
-        } message: {
-            Text("历史记录将被永久删除，不可恢复。不会删除本地文件。")
-        }
     }
 
     private func requestRemoval(ids: Set<UUID>? = nil) {
         let targetIDs = ids ?? model.selectedTaskIDs
         guard !targetIDs.isEmpty else { return }
         // Running tasks are removable too: confirming stops them first, so a
-        // mixed selection deletes everything in one step.
+        // mixed selection deletes everything in one step. Terminal CLI records
+        // are removable as well — the App deletes the mirror row together with
+        // the authoritative CLI record (technical-spec §3.1.6).
         let targetTasks = model.tasks.filter {
-            targetIDs.contains($0.id) && !$0.isCLIManaged
+            targetIDs.contains($0.id) && $0.isRemovableFromApp
         }
         guard !targetTasks.isEmpty else { return }
-        pendingRemovalIDs = Set(targetTasks.map(\.id))
-        isConfirmingRemoval = true
+        if targetTasks.allSatisfy(\.isArchived) {
+            // 历史视图的归档行：移除即永久，直接走历史确认弹窗。
+            pendingHistoryRemoval = HistoryRemovalRequest(
+                ids: Set(targetTasks.map(\.id)), fileAction: .keepFiles)
+        } else {
+            // 极简三选弹窗：说明文字已砍掉，选项本身就是语义。
+            pendingRemovalIDs = Set(targetTasks.filter { !$0.isArchived }.map(\.id))
+            isConfirmingRemoval = true
+        }
     }
 
-    private func requestPermanentRemoval(ids: Set<UUID>) {
+    /// 历史记录移除（右键菜单路径）。文件处置只作用于已归档记录——活跃
+    /// 任务仅在「仅删除记录」路径下从时间线隐藏，文件不动。
+    private func requestHistoryRemoval(
+        ids: Set<UUID>,
+        fileAction: AppModel.TaskFileRemoval
+    ) {
+        switch fileAction {
+        case .keepFiles:
+            let target = model.tasks.filter { ids.contains($0.id) }
+            guard !target.isEmpty else { return }
+            pendingHistoryRemoval = HistoryRemovalRequest(
+                ids: Set(target.map(\.id)), fileAction: fileAction)
+        case .moveToTrash, .deletePermanently:
+            let target = model.tasks.filter {
+                ids.contains($0.id) && $0.isArchived && !$0.isCLIManaged
+            }
+            guard !target.isEmpty else { return }
+            pendingHistoryRemoval = HistoryRemovalRequest(
+                ids: Set(target.map(\.id)), fileAction: fileAction)
+        }
+    }
+
+    /// 主列表「彻底删除」的二次确认入口。
+    private func requestPermanentFileDeletion(ids: Set<UUID>) {
         let targetTasks = model.tasks.filter {
-            ids.contains($0.id) && $0.isArchived && !$0.isCLIManaged
+            ids.contains($0.id) && !$0.isArchived && $0.isRemovableFromApp
         }
         guard !targetTasks.isEmpty else { return }
-        pendingPermanentRemovalIDs = Set(targetTasks.map(\.id))
-        isConfirmingPermanentRemoval = true
+        pendingPermanentFileDeletion = Set(targetTasks.map(\.id))
     }
 
-    /// Whether the pending removal includes tasks that are still running;
-    /// the confirmation message then explains they will be stopped first.
-    private var pendingRemovalIncludesActive: Bool {
-        model.tasks.contains { pendingRemovalIDs.contains($0.id) && $0.status.isActive }
-    }
-
-    private var removalDialogMessage: String {
-        let archiveText =
-            model.settings.archiveOnDelete
-            ? String(localized: "记录将归入历史，可随时从历史中重新下载。")
-            : String(localized: "记录将被永久删除，不可恢复。")
-        if pendingRemovalIncludesActive {
-            return String(localized: "正在下载的任务会先停止，然后删除。") + archiveText
+    private func performHistoryRemoval(_ request: HistoryRemovalRequest) {
+        switch request.fileAction {
+        case .keepFiles:
+            model.removeFromHistory(request.ids)
+        case .moveToTrash:
+            for id in request.ids {
+                model.permanentlyRemove(id, fileRemoval: .moveToTrash)
+            }
+        case .deletePermanently:
+            for id in request.ids {
+                model.permanentlyRemove(id, fileRemoval: .deletePermanently)
+            }
         }
-        return archiveText
+    }
+
+    /// 历史移除确认弹窗的标题：活跃任务只是从时间线隐藏，措辞必须区分。
+    private var historyRemovalTitle: String {
+        guard let request = pendingHistoryRemoval else { return "" }
+        let count = request.ids.count
+        switch request.fileAction {
+        case .keepFiles:
+            let hasLive = model.tasks.contains {
+                request.ids.contains($0.id) && !$0.isArchived
+            }
+            return hasLive
+                ? "从历史中移除 \(count) 条记录？主列表中的任务不受影响。"
+                : "永久移除 \(count) 条历史记录？文件不会删除。"
+        case .moveToTrash:
+            return "将 \(count) 个文件移到废纸篓并移除历史记录？"
+        case .deletePermanently:
+            return "彻底删除 \(count) 个文件并移除历史记录？不可恢复。"
+        }
+    }
+
+    private var historyRemovalButtonTitle: String {
+        switch pendingHistoryRemoval?.fileAction {
+        case .moveToTrash: "移到废纸篓"
+        case .deletePermanently: "彻底删除"
+        case .keepFiles, nil: "永久移除"
+        }
     }
 
     private func updateReasonText(_ reason: YTDlpManager.UpdateReason) -> String {
@@ -812,7 +905,16 @@ private struct SidebarView: View {
                 filterRow(.all, systemImage: "tray.full", counts: counts)
                 filterRow(.active, systemImage: "arrow.down.circle", counts: counts)
                 filterRow(.completed, systemImage: "checkmark.circle", counts: counts)
+                // One-click entry to wipe the history timeline without
+                // touching local files; the same confirmation as the
+                // 文件 → 清除历史记录… menu command.
                 filterRow(.history, systemImage: "clock.arrow.circlepath", counts: counts)
+                    .contextMenu {
+                        Button("清除历史记录…") {
+                            NotificationCenter.default.post(
+                                name: .macIDMRequestClearHistory, object: nil)
+                        }
+                    }
 
                 sectionHeader("队列")
                 queueRow(nil, title: model.mainQueueTitle, isPaused: false, counts: counts)
@@ -1098,8 +1200,8 @@ private struct TaskTableView: View, Equatable {
     let model: AppModel
     let synchronizer: TaskTableSynchronizer
     let appearance: TaskTableAppearance
-    let requestRemoval: (Set<UUID>) -> Void
-    let requestPermanentRemoval: (Set<UUID>) -> Void
+    let requestHistoryRemoval: (Set<UUID>, AppModel.TaskFileRemoval) -> Void
+    let requestPermanentFileDeletion: (Set<UUID>) -> Void
 
     @State private var sortOrder: [KeyPathComparator<AppTask>] = [
         KeyPathComparator(\AppTask.createdAt, order: .reverse)
@@ -1357,8 +1459,9 @@ private struct TaskTableView: View, Equatable {
             }
         }
         .taskContextMenu(
-            model: model, requestRemoval: requestRemoval,
-            requestPermanentRemoval: requestPermanentRemoval
+            model: model,
+            requestHistoryRemoval: requestHistoryRemoval,
+            requestPermanentFileDeletion: requestPermanentFileDeletion
         )
     }
 }
@@ -1369,8 +1472,8 @@ private struct TaskContextMenuModifier: ViewModifier {
     /// re-apply selection mid-gesture. The menu only reads model state
     /// when it opens.
     let model: AppModel
-    let requestRemoval: (Set<UUID>) -> Void
-    let requestPermanentRemoval: (Set<UUID>) -> Void
+    let requestHistoryRemoval: (Set<UUID>, AppModel.TaskFileRemoval) -> Void
+    let requestPermanentFileDeletion: (Set<UUID>) -> Void
 
     func body(content: Content) -> some View {
         content.contextMenu(forSelectionType: UUID.self) { selection in
@@ -1389,10 +1492,19 @@ private struct TaskContextMenuModifier: ViewModifier {
     private func archivedMenu(_ tasks: [AppTask]) -> some View {
         Button("重新下载") { for task in tasks { model.reDownload(task.id) } }
         Divider()
-        Button("永久删除…", role: .destructive) {
-            requestPermanentRemoval(Set(tasks.map(\.id)))
+        let ids = Set(tasks.filter { !$0.isCLIManaged }.map(\.id))
+        Button("仅删除记录…", role: .destructive) {
+            requestHistoryRemoval(ids, .keepFiles)
         }
-        .disabled(!tasks.contains { !$0.isCLIManaged })
+        .disabled(ids.isEmpty)
+        Button("移到废纸篓…", role: .destructive) {
+            requestHistoryRemoval(ids, .moveToTrash)
+        }
+        .disabled(ids.isEmpty || !model.hasRemovableFiles(ids))
+        Button("彻底删除…", role: .destructive) {
+            requestHistoryRemoval(ids, .deletePermanently)
+        }
+        .disabled(ids.isEmpty || !model.hasRemovableFiles(ids))
     }
 
     @ViewBuilder
@@ -1449,8 +1561,31 @@ private struct TaskContextMenuModifier: ViewModifier {
                 }
             }
         }
-        Button("移除记录…", role: .destructive) { requestRemoval(Set(tasks.map(\.id))) }
-            .disabled(!tasks.contains { !$0.isCLIManaged })
+        // 主列表的三个删除选项：仅「彻底删除」需要二次确认（文件不可恢复）；
+        // 另外两个直接执行，记录按设置保留到历史。
+        let liveIDs = Set(
+            tasks.filter { !$0.isArchived && $0.isRemovableFromApp }.map(\.id)
+        )
+        Divider()
+        Button("仅删除记录", role: .destructive) {
+            for id in liveIDs { model.remove(id) }
+        }
+        .disabled(liveIDs.isEmpty)
+        Button("移到废纸篓", role: .destructive) {
+            for id in liveIDs { model.remove(id, fileRemoval: .moveToTrash) }
+        }
+        .disabled(liveIDs.isEmpty || !model.hasRemovableFiles(liveIDs))
+        Button("彻底删除…", role: .destructive) {
+            requestPermanentFileDeletion(liveIDs)
+        }
+        .disabled(liveIDs.isEmpty || !model.hasRemovableFiles(liveIDs))
+        // 历史时间线里的活跃任务行：可以只把这条记录从时间线中移除，
+        // 主列表与文件不受影响（已归档行走归档菜单）。
+        if model.sidebarFilter == .history {
+            Button("从历史中移除…", role: .destructive) {
+                requestHistoryRemoval(Set(tasks.map(\.id)), .keepFiles)
+            }
+        }
     }
 
     /// Prompts for a new filename via a native AppKit alert and retries the
@@ -1483,13 +1618,15 @@ private struct TaskContextMenuModifier: ViewModifier {
 
 private extension View {
     func taskContextMenu(
-        model: AppModel, requestRemoval: @escaping (Set<UUID>) -> Void,
-        requestPermanentRemoval: @escaping (Set<UUID>) -> Void
+        model: AppModel,
+        requestHistoryRemoval: @escaping (Set<UUID>, AppModel.TaskFileRemoval) -> Void,
+        requestPermanentFileDeletion: @escaping (Set<UUID>) -> Void
     ) -> some View {
         modifier(
             TaskContextMenuModifier(
-                model: model, requestRemoval: requestRemoval,
-                requestPermanentRemoval: requestPermanentRemoval
+                model: model,
+                requestHistoryRemoval: requestHistoryRemoval,
+                requestPermanentFileDeletion: requestPermanentFileDeletion
             )
         )
     }

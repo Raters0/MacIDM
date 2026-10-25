@@ -103,6 +103,116 @@ test("download is paused first and only cancelled after the App task exists", as
   ]);
 });
 
+test("successful takeover keeps the download-UI hidden", async () => {
+  const { calls, controller, item } = harness([
+    {
+      type: "download.readyForTakeover",
+      payload: { taskId: crypto.randomUUID(), takeoverToken: "one-time-token" },
+    },
+    { type: "download.accepted", payload: {} },
+  ]);
+  const uiOptions = [];
+  controller.downloads.setUiOptions = async (options) => {
+    uiOptions.push(options);
+  };
+
+  await controller.handleCreated(item);
+
+  // The takeover consumed the browser download (cancel+erase): the App is
+  // proven reachable, so the UI latch stays suppressed for the next
+  // download. The takeover flow itself never flips the flag mid-flight —
+  // the only call is the outcome tracking in the finally.
+  assert.deepEqual(calls, [
+    "pause",
+    "download.create",
+    "cancel",
+    "download.browserCancelled",
+    "erase",
+  ]);
+  assert.deepEqual(uiOptions, [{ enabled: false }]);
+});
+
+test("app-timeout failure re-shows the browser download UI", async () => {
+  const { calls, controller, item } = harness([
+    new ProtocolError("TAKEOVER_TIMEOUT", "timeout", true),
+  ]);
+  const uiOptions = [];
+  controller.downloads.setUiOptions = async (options) => {
+    uiOptions.push(options);
+  };
+
+  await assert.rejects(controller.handleCreated(item), /timeout/u);
+
+  // The download was handed back to Chrome: the UI must become visible
+  // again (safeResume before resume + the outcome tracking in the finally),
+  // otherwise a user who quit the App browses with silent downloads.
+  assert.deepEqual(uiOptions, [{ enabled: true }, { enabled: true }]);
+  assert.equal(item.paused, false);
+});
+
+test("pause failure re-shows the browser download UI", async () => {
+  const { controller, item } = harness([]);
+  const uiOptions = [];
+  controller.downloads.setUiOptions = async (options) => {
+    uiOptions.push(options);
+  };
+  const pause = controller.downloads.pause;
+  controller.downloads.pause = async () => {
+    throw new Error("pause refused");
+  };
+  void pause;
+
+  // Pause failed → no takeover, the download keeps running in Chrome: the
+  // UI must be visible for it.
+  await controller.handleCreated(item);
+  assert.deepEqual(uiOptions, [{ enabled: true }]);
+});
+
+test("recovery-driven resume also re-shows the download UI", async () => {
+  const { controller, item, storage } = harness([], { paused: true });
+  const uiOptions = [];
+  controller.downloads.setUiOptions = async (options) => {
+    uiOptions.push(options);
+  };
+  await storage.local.set({
+    pendingTakeovers: [
+      { downloadId: 42, idempotencyKey: "test-profile:download-42", phase: "abandonPending" },
+    ],
+  });
+
+  // SW restart replays the marker outside handleCreated: the resume in
+  // recoverAbandoned must re-show the UI on its own.
+  await controller.recoverPending();
+  assert.deepEqual(uiOptions, [{ enabled: true }]);
+  assert.equal(item.paused, false);
+});
+
+test("applyDownloadUIVisibility sends the global UiOptions switch", async () => {
+  const { controller } = harness([]);
+  const uiOptions = [];
+  controller.downloads.setUiOptions = async (options) => {
+    uiOptions.push(options);
+  };
+
+  // Takeover enabled → hide the browser download UI.
+  await controller.applyDownloadUIVisibility(false);
+  // Takeover disabled → restore it.
+  await controller.applyDownloadUIVisibility(true);
+
+  assert.deepEqual(uiOptions, [{ enabled: false }, { enabled: true }]);
+});
+
+test("applyDownloadUIVisibility tolerates a missing API and rejections", async () => {
+  const { controller } = harness([]);
+  // No setUiOptions at all (old Chrome, test fakes): silent no-op.
+  await controller.applyDownloadUIVisibility(false);
+
+  controller.downloads.setUiOptions = async () => {
+    throw new Error("rejected");
+  };
+  await controller.applyDownloadUIVisibility(true);
+});
+
 test("create timeout resumes the paused download and abandons the partial task", async () => {
   const { calls, controller, item } = harness([
     new ProtocolError("TAKEOVER_TIMEOUT", "timeout", true),

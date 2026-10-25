@@ -3,6 +3,16 @@ import Foundation
 import IDMEngine
 
 extension AppModel {
+    /// How a task's local files are disposed of when its record is removed.
+    enum TaskFileRemoval {
+        /// Keep all files on disk.
+        case keepFiles
+        /// Move files to the Finder Trash (recoverable).
+        case moveToTrash
+        /// Delete files immediately (unrecoverable).
+        case deletePermanently
+    }
+
     func pause(_ id: UUID) {
         guard let task = task(with: id), !task.isCLIManaged else { return }
         // Filenames are often derived from video titles: the ordinary log
@@ -247,20 +257,21 @@ extension AppModel {
         }
     }
 
-    func remove(_ id: UUID) {
-        remove(id, deletingFile: false)
-    }
-
-    /// `deletingFile` is honored for completed tasks (the final file is
-    /// removed) and for non-completed tasks that have partial download
+    /// Removes a task record. `fileRemoval` decides what happens to local
+    /// files: honored for completed tasks (the final file is trashed or
+    /// deleted) and for non-completed tasks that have partial download
     /// artifacts (temp files, sidecars, HLS inputs, DASH pair directories).
     /// Removing a task archives it into history rather than permanently
     /// deleting, so the user can re-download later. Active tasks are stopped
     /// first: the engine control is cancelled and the execution task torn
     /// down before the record is archived, so a running download can be
     /// deleted in one step without a manual pause/cancel round trip.
-    func remove(_ id: UUID, deletingFile: Bool) {
-        guard let task = task(with: id), !task.isCLIManaged else { return }
+    func remove(_ id: UUID, fileRemoval: TaskFileRemoval = .keepFiles) {
+        guard let task = task(with: id) else { return }
+        if task.isCLIManaged {
+            removeTerminalCLIRecord(id, fileRemoval: fileRemoval)
+            return
+        }
         if let execution = executions[id].task {
             guard pendingRemovals.insert(id).inserted else { return }
             executions[id].control?.cancel()
@@ -272,7 +283,7 @@ extension AppModel {
                 await execution.value
                 guard let self else { return }
                 self.pendingRemovals.remove(id)
-                self.remove(id, deletingFile: deletingFile)
+                self.remove(id, fileRemoval: fileRemoval)
             }
             return
         }
@@ -283,18 +294,7 @@ extension AppModel {
             }
             cleanUpExecution(id)
         }
-        if deletingFile {
-            if task.status == .completed {
-                try? FileManager.default.removeItem(atPath: task.destinationPath)
-            }
-            // Always clean up partial download artifacts when the user asks
-            // to delete files, regardless of task status. A paused/failed
-            // task may have a partially-written temp file, a sidecar, an
-            // HLS raw input, or a DASH pair directory occupying disk space.
-            for url in Self.partialArtifactURLs(for: task) {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
+        disposeOfTaskFiles(for: task, mode: fileRemoval)
         if selectedTaskID == id {
             selectedTaskID = nil
         }
@@ -328,9 +328,72 @@ extension AppModel {
         tryPersistOrPresentError()
     }
 
-    /// Permanently removes a task from history (irreversible).
-    func permanentlyRemove(_ id: UUID) {
+    /// Removes a terminal-state CLI mirror record (technical-spec §3.1.6):
+    /// the App mirror row goes away together with the authoritative CLI JSON
+    /// record in `<support>/MacIDM/cli`, so the next CLI run cannot mirror it
+    /// back. CLI records have no archived form — removal is permanent. The
+    /// terminal-status guard lives in `AppTask.isTerminalCLIRecord`; anything
+    /// non-terminal keeps its control plane in the CLI and is refused here.
+    private func removeTerminalCLIRecord(_ id: UUID, fileRemoval: TaskFileRemoval) {
+        guard let task = task(with: id), task.isTerminalCLIRecord else { return }
+        disposeOfTaskFiles(for: task, mode: fileRemoval)
+        let cliRecordURL = AppSupportPaths.supportDirectory()
+            .appendingPathComponent("cli", isDirectory: true)
+            .appendingPathComponent("\(id.uuidString.lowercased()).json")
+        try? FileManager.default.removeItem(at: cliRecordURL)
+        try? store.deleteRecord(id)
+        tasks.removeAll { $0.id == id }
+        if selectedTaskID == id {
+            selectedTaskID = nil
+        }
+        selectedTaskIDs.remove(id)
+        tableSynchronizer.applyExternalSelection(selectedTaskIDs)
+        if let selectedID = selectedTaskID, !tasks.contains(where: { $0.id == selectedID }) {
+            selectedTaskID = nil
+        }
+        tableSynchronizer.replaceAllLive(tasks)
+        exportStatus()
+    }
+
+    /// Disposes of a task's local files according to the user's choice: keep
+    /// them, move them to the Finder Trash (recoverable), or delete them
+    /// immediately. Applies to the completed final file and, regardless of
+    /// task status, to partial download artifacts — a paused/failed task may
+    /// have a partially-written temp file, a sidecar, an HLS raw input, or a
+    /// DASH pair directory occupying disk space. Missing files are skipped.
+    private func disposeOfTaskFiles(for task: AppTask, mode: TaskFileRemoval) {
+        guard mode != .keepFiles else { return }
+        var urls = Self.partialArtifactURLs(for: task)
+        if task.status == .completed {
+            urls.append(URL(fileURLWithPath: task.destinationPath))
+        }
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            switch mode {
+            case .keepFiles:
+                continue
+            case .moveToTrash:
+                do {
+                    try trashFile(url)
+                } catch {
+                    // The Trash can be unavailable (e.g. a volume without
+                    // one); keeping the file is safer than silently
+                    // destroying what the user expects to find in the Trash.
+                    // Only the task ID goes to the ordinary log — the file
+                    // name may carry private page content (§3.1.7).
+                    AppLogger.shared.warning(
+                        .download, "failed to trash files of task=\(task.id)")
+                }
+            case .deletePermanently:
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// Permanently removes a task from history (irreversible). `fileRemoval`
+    /// disposes of local files on the way out when the user asked for it.
+    func permanentlyRemove(_ id: UUID, fileRemoval: TaskFileRemoval = .keepFiles) {
         guard let task = task(with: id), task.isArchived else { return }
+        disposeOfTaskFiles(for: task, mode: fileRemoval)
         if selectedTaskID == id {
             selectedTaskID = nil
         }
@@ -358,7 +421,7 @@ extension AppModel {
     func hasRemovableFiles(_ ids: Set<UUID>) -> Bool {
         tasks.contains { id in
             ids.contains(id.id)
-                && !id.isCLIManaged
+                && (!id.isCLIManaged || id.isTerminalCLIRecord)
                 && (id.status == .completed
                     || !Self.partialArtifactURLs(for: id).filter {
                         FileManager.default.fileExists(atPath: $0.path)
@@ -366,10 +429,32 @@ extension AppModel {
         }
     }
 
-    /// Clears all archived tasks (download history) permanently.
+    /// Removes records from the history timeline without touching the main
+    /// list or local files: archived records (which exist only in history)
+    /// are permanently removed; live tasks are merely hidden from the
+    /// timeline and keep working in 全部下载/进行中/已完成.
+    func removeFromHistory(_ ids: Set<UUID>) {
+        for id in ids where tasks.first(where: { $0.id == id })?.isArchived == true {
+            permanentlyRemove(id)
+        }
+        let liveIDs = ids.filter { id in
+            tasks.first(where: { $0.id == id }).map { !$0.isArchived } == true
+        }
+        guard !liveIDs.isEmpty else { return }
+        for id in liveIDs {
+            update(id) { $0.historyHidden = true }
+        }
+        tableSynchronizer.replaceAllLive(tasks)
+        tryPersistOrPresentError(immediate: true)
+        exportStatus()
+    }
+
+    /// Empties the history timeline in one step: archived records are
+    /// permanently removed; every remaining task (still in the main list,
+    /// CLI mirrors included) is only hidden from the timeline. Local files
+    /// are never touched.
     func clearHistory() {
         let archivedIDs = Set(tasks.filter { $0.isArchived && !$0.isCLIManaged }.map(\.id))
-        guard !archivedIDs.isEmpty else { return }
         for id in archivedIDs {
             if let takeover = browserTakeovers.first(where: { $0.taskID == id }) {
                 rememberAbandonedTakeover(
@@ -383,6 +468,9 @@ extension AppModel {
         }
         persistBrowserTakeoversOrPresentError()
         tasks.removeAll { archivedIDs.contains($0.id) }
+        for index in tasks.indices {
+            tasks[index].historyHidden = true
+        }
         selectedTaskIDs.subtract(archivedIDs)
         tableSynchronizer.applyExternalSelection(selectedTaskIDs)
         sourceURLVault.remove(ids: archivedIDs)

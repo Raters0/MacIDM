@@ -33,6 +33,23 @@ final class FakeSessionSecretStore: SessionSecretStore, @unchecked Sendable {
         return storage
     }
 
+    /// Whether each read ran on the main thread. A credential read that blocks
+    /// the main thread freezes the confirmation window behind a system dialog,
+    /// so tests use this to prove the production path moved the read off-main.
+    private var readThreads: [Bool] = []
+
+    var lastReadWasOnMainThread: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return readThreads.last
+    }
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return readThreads.count
+    }
+
     func save(_ value: String, forDomain domain: String) throws {
         if let saveError { throw saveError }
         if failingDomains.contains(domain) { throw Failure() }
@@ -43,6 +60,7 @@ final class FakeSessionSecretStore: SessionSecretStore, @unchecked Sendable {
 
     func value(forDomain domain: String) -> String? {
         lock.lock()
+        readThreads.append(Thread.isMainThread)
         let stored = storage[domain]
         lock.unlock()
         guard let stored else { return nil }

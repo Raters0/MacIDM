@@ -294,7 +294,13 @@ final class SessionMultiplexerTests: XCTestCase {
         taskSession.multiplexer.unregister(taskIdentifier: task1.taskIdentifier)
 
         XCTAssertEqual(taskSession.multiplexer.activeRouteCount, 1)
-        XCTAssertEqual(task1.state, .canceling)
+        // `.canceling` is transient: a task that never delivered bytes can
+        // reach `.completed` before this line runs, which made the assertion
+        // fail intermittently under full-suite load. The subject of this test
+        // is route isolation, so accept either post-cancel state.
+        XCTAssertTrue(
+            task1.state == .canceling || task1.state == .completed,
+            "cancelled task must be canceling or completed, got \(task1.state.rawValue)")
         XCTAssertNotEqual(task2.state, .canceling)
 
         taskSession.multiplexer.unregister(taskIdentifier: task2.taskIdentifier)

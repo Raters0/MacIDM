@@ -260,17 +260,21 @@ const youTubeInspectionCoordinator = new YouTubeInspectionCoordinator({
   },
 });
 
-// Keep Chrome's built-in download bubble/shelf enabled so a takeover
-// failure or a silent skip (blob/data URL, POST-triggered download,
-// blocked site, unreachable host, version mismatch) still leaves the user
-// with visible download progress instead of "nothing happened". A
-// successful takeover pauses → cancels → erases the browser download, so
-// the shelf entry disappears naturally in the happy path.
+// Download-UI visibility latch (takeover-controller.applyDownloadUIVisibility):
+// while takeover is enabled the browser download UI (bubble/shelf/toolbar
+// icon) must be hidden BEFORE a download is created — Chrome adds the toolbar
+// icon and plays its fly-in animation while processing the creation, so no
+// per-download call from onCreated can prevent it. The latch is applied at
+// every SW start from the stored settings and re-applied when the Popup
+// toggles takeover; disabling takeover in the Popup instantly restores the
+// browser UI (the user's exit hatch). Downloads MacIDM skips while the latch
+// is held (blob:/data:, POST-triggered, blocked sites) complete without
+// browser UI; the silent-skip toast is their feedback.
 // Guarded for forward compatibility — setUiOptions may not exist in all
 // Chrome versions.
-if (typeof chrome.downloads.setUiOptions === "function") {
-  chrome.downloads.setUiOptions({ enabled: true }).catch(() => {});
-}
+settingsProvider()
+  .then((settings) => controller.applyDownloadUIVisibility(settings.takeoverEnabled !== true))
+  .catch(() => {});
 
 function refreshContextMenus() {
   chrome.contextMenus.removeAll(() => {
@@ -601,6 +605,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           filenameHint: message.filenameHint,
           filenameHintSource: message.filenameHintSource,
           pageTitle: message.pageTitle,
+          titleCandidates: Array.isArray(message.titleCandidates) ? message.titleCandidates : [],
           interactive: true,
           pairVideoUrl: message.pairVideoUrl,
           pairAudioUrl: message.pairAudioUrl,
@@ -903,6 +908,10 @@ async function popupStatus() {
 async function setTakeover(enabled) {
   const settings = { ...(await settingsProvider()), takeoverEnabled: enabled };
   await chrome.storage.local.set({ [STORAGE_SETTINGS_KEY]: settings });
+  // Re-apply the download-UI latch immediately: enabling takeover hides the
+  // browser download UI for future downloads (the icon only stays away when
+  // the flag is already down at creation time); disabling restores it.
+  await controller.applyDownloadUIVisibility(enabled !== true);
   return { ok: true, takeoverEnabled: enabled };
 }
 

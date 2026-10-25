@@ -49,7 +49,10 @@ ensure_app_is_not_running() {
 ensure_app_is_not_running
 
 source_app="$(bash "$repository_root/scripts/build-debug-app.sh")"
-expected_source_app="$repository_root/.build/debug/MacIDM.app"
+# The build configuration is delegated to build-debug-app.sh via
+# MACIDM_APP_CONFIGURATION; the installed bundle must be the one it made.
+app_configuration="${MACIDM_APP_CONFIGURATION:-debug}"
+expected_source_app="$repository_root/.build/$app_configuration/MacIDM.app"
 if [[ "$source_app" != "$expected_source_app" ]]; then
   echo "[install-debug-app] unexpected build output: $source_app" >&2
   exit 1

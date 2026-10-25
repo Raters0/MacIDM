@@ -86,11 +86,11 @@ info_plist="$contents_directory/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleInfoDictionaryVersion string 6.0" "$info_plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleName string MacIDM" "$info_plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$info_plist"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0.2" "$info_plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0.3" "$info_plist"
   # Sparkle compares its appcast's sparkle:version against the host
   # bundle's CFBundleVersion, so both must carry the same marketing
   # version (the appcast is generated from the same value).
-  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1.0.2" "$info_plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1.0.3" "$info_plist"
   /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 13.0" "$info_plist"
   /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$info_plist"
   /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string NSApplication" "$info_plist"
