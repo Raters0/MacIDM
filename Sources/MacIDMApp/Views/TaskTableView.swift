@@ -147,7 +147,7 @@ struct TaskTableView: View, Equatable {
                         StatusCell(live: synchronizer.liveModel(for: task.id))
                             .modifier(TableCellLayout())
                     }
-                    .width(min: 80, ideal: 95)
+                    .width(min: 80, ideal: 118)
                 }
 
                 if isColumnVisible("speed") {
@@ -212,7 +212,7 @@ struct TaskTableView: View, Equatable {
                     StatusCell(live: synchronizer.liveModel(for: task.id))
                         .modifier(TableCellLayout())
                 }
-                .width(min: 80, ideal: 95)
+                .width(min: 80, ideal: 118)
 
                 TableColumn("速度", value: \.sortSpeed) { task in
                     SpeedCell(
