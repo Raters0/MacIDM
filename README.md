@@ -28,6 +28,7 @@ The walkthrough below shows clicking the floating button on a video / audio reso
 - The App main window provides the task list, categories, and download details, including segment progress and a speed graph.
 - When creating a task you can change the save location, filename, and concurrency; HLS / DASH sources with multiple qualities list them first for selection.
 - Proxy, global and per-task rate limiting, Chinese and English interfaces, CLI, and a local HTTP API are also supported. The CLI can read status, control tasks, and support automation scripts.
+- Built-in automatic updates: check for and install new versions in Settings → Advanced & About; update packages are verified with an EdDSA signature.
 - Filename hiding is supported, to avoid triggering AI Agent sensitive-word checks.
 - Logs are stored by level; when using AI-assisted debugging, this reduces exposure of sensitive information (such as cookies) to third parties.
 
@@ -84,7 +85,11 @@ Go to [Release](https://github.com/Raters0/MacIDM/releases) and download:
 - `MacIDM-*-chrome-extension.zip`: the Chrome extension;
 - `SHA256SUMS.txt`: SHA-256 checksums for the files above — verify after downloading.
 
-Unzip the App archive and put `MacIDM.app` in `~/Applications/`. The Host registration script below uses this location by default; if you put it in `/Applications/`, prefix that script with `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`.
+Requirements: an Apple Silicon (arm64) Mac running macOS 13 or later.
+
+Unzip the App archive and put `MacIDM.app` in `~/Applications/`.
+
+**Blocked on first launch?** The App is ad-hoc signed and not notarized by Apple, so macOS refuses to open it the first time. Go to System Settings → Privacy & Security and click **Open Anyway** at the bottom (since macOS 15, right-click → Open no longer bypasses this), or run `xattr -dr com.apple.quarantine ~/Applications/MacIDM.app` in Terminal and open it again. Later updates can be installed from within the App.
 
 ### 2. Load the Chrome extension
 
@@ -93,23 +98,33 @@ Unzip the App archive and put `MacIDM.app` in `~/Applications/`. The Host regist
 3. Click **Load unpacked** and select the extracted extension directory (the folder containing `manifest.json`);
 4. Once loaded, the MacIDM icon appears in the toolbar.
 
-### 3. Register the Native Messaging Host
+### 3. Connect the extension to the App
 
-The extension reaches the local App through a Native Messaging Host. From the extracted source repository, run:
+The extension reaches the local App through a Native Messaging Host. MacIDM opens a setup guide on first launch: with Google Chrome, click **Register** in the **Register the native host** step, and the guide shows the bridge status at the bottom.
+
+For other Chromium-family browsers such as Edge, Brave or Arc, or when developing from source, run from the source repository:
 
 ```bash
 bash scripts/install-debug-native-host.sh   # register the Host with installed Chromium-family browsers
 bash scripts/check-debug-native-host.sh     # verify Host connectivity
 ```
 
-The script points the Host manifest at the `macidm-host` inside the installed `MacIDM.app`. For custom Chromium profile directories, append paths with `MACIDM_NMH_EXTRA_DIRS`; for dynamically generated local extension IDs, append allowed origins with `MACIDM_NMH_ALLOWED_ORIGINS`.
+The script points the Host manifest at the `macidm-host` inside the installed `MacIDM.app`; if the App is not in `~/Applications/`, prefix the script with `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`. For custom Chromium profile directories, append paths with `MACIDM_NMH_EXTRA_DIRS`; for dynamically generated local extension IDs, append allowed origins with `MACIDM_NMH_ALLOWED_ORIGINS`.
+
+### 4. Your first download
+
+- **A plain URL**: click **Add** in the App, paste an HTTP(S) address, confirm the save location and click **Start Download**; paste several lines at once to create many tasks.
+- **Web media**: open a page with video or audio (play it once if needed), click the floating button next to the media or the MacIDM toolbar icon, expand the resource and click **Download**; the App opens its confirmation window, where you check the name, location and concurrency and click **Start Download**.
+- **All links on a page**: choose **Download all links on this page with MacIDM** in the page's context menu, or click **Download all links on this page** at the bottom of the Popup, then filter, select and submit.
 
 ## Usage guide
 
 - **Confirmation window**: before downloading you can change the filename, destination, maximum parallel requests (1–64), and queue priority, and optionally supply an expected SHA-256 for integrity checking; HLS / DASH sources list quality variants first.
 - **Queues and categories**: filter by status, queue, time, and category in the sidebar; set per-queue concurrency, ordering, and schedule windows.
+- **Task control**: pause, resume or cancel from the task list or details; Settings lets you choose what happens when all downloads finish (shut down, sleep, quit, open the file or show it in Finder).
+- **Download All**: after deduplication, filter with keywords, `*` wildcards or `/regex/` (commas mean any-match), and rename in bulk with templates such as `*pagetitle* *num*`.
 - **Rate limiting and proxy**: Settings offers a global token-bucket speed limit and proxy configuration; proxy passwords are stored only in the system Keychain. Individual tasks get their own cap via the right-click "Limit speed…" action (stacked with the global limit, tighter bound wins, applied live).
-- **Input helpers**: an opt-in "watch the clipboard" setting offers the confirmation window the moment you copy a link in another app (off by default; never fires while MacIDM itself is frontmost); the new-download window accepts a multi-line paste to create many tasks at once.
+- **Input helpers**: an opt-in "watch the clipboard" setting offers the confirmation window the moment you copy a link in another app (off by default; never fires while MacIDM itself is frontmost).
 - **Media finishing**: HLS/DASH and YouTube downloads write the confirmed filename into the file's title metadata (QuickTime and Finder previews show it), and the YouTube quality list includes an audio-only (m4a) option — a single stream, no re-encode.
 - **Logged-in resources**: for ordinary GET resources that need a session, the extension rebuilds request context only after you explicitly authorize cookies for the current site; POST, Authorization headers, complex custom headers, `blob:`, and DRM degrade safely.
 - **Filename privacy**: enable filename redaction in Settings so the list and detail show job identifiers instead of filenames.

@@ -29,6 +29,7 @@ MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，�
 - App 主窗口提供任务列表、分类和下载详情，可查看分段进度与速度曲线。
 - 新建任务时可修改保存位置、文件名与并发数；HLS / DASH 有多个清晰度时会先列出供选择。
 - 还支持代理、全局与单任务限速、中英文界面，以及 CLI 和本地 HTTP API。命令行可用于读取状态、控制任务和自动化脚本。
+- App 内置自动更新：在「设置 → 高级与关于」检查并安装新版本，更新包经 EdDSA 签名校验。
 - 支持文件名隐藏，避免触发 AI Agent 敏感词检测。
 - 支持日志分级存储；使用 AI 辅助调试时，可减少敏感信息（例如 Cookie）暴露给第三方。
 
@@ -85,7 +86,11 @@ flowchart TD
 - `MacIDM-*-chrome-extension.zip`：Chrome 扩展；
 - `SHA256SUMS.txt`：上述文件的 SHA-256 校验值，下载后建议先校验。
 
-解压 App 压缩包，把 `MacIDM.app` 放到 `~/Applications/`。下面的 Host 注册脚本默认使用这个位置；如果放在 `/Applications/`，运行注册脚本时加上 `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`。
+系统要求：Apple Silicon（arm64）Mac，macOS 13 或更高版本。
+
+解压 App 压缩包，把 `MacIDM.app` 放到 `~/Applications/`。
+
+**首次打开被拦截？** App 为临时签名、未经苹果公证，第一次打开时 macOS 会提示无法打开。请到「系统设置 → 隐私与安全性」页面底部点击「仍要打开」（macOS 15 起右键「打开」已无法绕过）；也可以在终端执行 `xattr -dr com.apple.quarantine ~/Applications/MacIDM.app` 后再打开。之后的更新可在 App 内完成。
 
 ### 2. 加载 Chrome 扩展
 
@@ -94,30 +99,33 @@ flowchart TD
 3. 点击"加载已解压的扩展程序"，选择解压后的扩展目录（含 `manifest.json` 的那一层）；
 4. 加载成功后工具栏会出现 MacIDM 图标。
 
-### 3. 注册 Native Messaging Host
+### 3. 连接扩展与 App
 
-扩展需要通过 Native Messaging Host 与本地 App 通信。在解压的源码仓库中运行：
+扩展通过 Native Messaging Host 与本地 App 通信。首次启动 MacIDM 会打开引导页：使用 Google Chrome 时，点击「注册 Native Host」一栏的「一键注册」即可，引导页底部会显示当前的桥接状态。
+
+使用 Edge、Brave、Arc 等其他 Chromium 系浏览器，或从源码开发时，在源码仓库中运行：
 
 ```bash
 bash scripts/install-debug-native-host.sh   # 向已安装的 Chromium 系浏览器注册 Host
 bash scripts/check-debug-native-host.sh     # 检查 Host 连通性
 ```
 
-脚本会把 Host 清单指向已安装的 `MacIDM.app` 内的 `macidm-host`。如果你使用自定义 Chromium 配置目录，可用 `MACIDM_NMH_EXTRA_DIRS` 追加；使用动态生成的本地扩展 ID 时，可用 `MACIDM_NMH_ALLOWED_ORIGINS` 追加允许来源。
+脚本会把 Host 清单指向已安装的 `MacIDM.app` 内的 `macidm-host`；App 不在 `~/Applications/` 时，运行脚本前加上 `MACIDM_DEBUG_INSTALL_DIRECTORY=/Applications`。如果你使用自定义 Chromium 配置目录，可用 `MACIDM_NMH_EXTRA_DIRS` 追加；使用动态生成的本地扩展 ID 时，可用 `MACIDM_NMH_ALLOWED_ORIGINS` 追加允许来源。
 
 ### 4. 完成第一次下载
- 
- - **普通 URL**：在 App 中点击"添加"，粘贴 HTTP(S) 地址并选择保存目录即可；
- - **网页媒体**：打开含音视频的页面（必要时播放一次），点击工具栏 MacIDM 图标或媒体旁的悬浮按钮，在 Popup 中选择候选，然后在 App 确认窗口核对名称、位置与并发数，点击"开始下载"；
-- **整页链接**：右键菜单或 Download All 页面扫描当前页链接，去重后用关键字、`*` 通配符或 `/正则/` 筛选（逗号分隔任意匹配），还可用 `*pagetitle* *num*` 等模板批量重命名，勾选后批量提交；
-- **任务控制**：在任务列表或详情中使用暂停、恢复、取消；右键「限制速度…」可为单个任务限速（与全局限速叠加取更严者，改动即时生效）；在设置中调整全局速度限制、同时下载数、队列、代理与下载完成后的动作（关机/睡眠/退出/打开文件/在访达中显示）。
+
+- **普通 URL**：在 App 中点击「添加」，粘贴 HTTP(S) 地址，确认保存位置后点击「开始下载」；一次粘贴多行链接可批量创建。
+- **网页媒体**：打开含音视频的页面（必要时播放一次），点击媒体旁的悬浮按钮或工具栏的 MacIDM 图标，点开资源后点击「下载」；App 会弹出确认窗口，核对名称、位置与并发数后点击「开始下载」。
+- **整页链接**：在网页右键菜单选择「使用 MacIDM 下载本页全部链接」，或点击 Popup 底部的「下载本页全部链接」，筛选、勾选后批量提交。
 
 ## 操作指南
 
 - **确认窗口**：下载前你可以改文件名、保存目录、最大并行请求数（1–64）、队列优先级，并可选填预期 SHA-256 做完整性校验；对 HLS/DASH 会先列出清晰度变体供选择。
 - **队列与分类**：侧栏按状态、队列、时间和分类筛选；可为不同队列设置并发、排序方式和定时窗口。
-- **限速与代理**：设置中提供全局速度限制（token-bucket）与代理配置，代理密码仅存于系统钥匙串；单个任务可经右键菜单单独限速。
-- **输入辅助**：可开启「持续监测剪贴板」——在其他应用复制下载链接即弹出确认窗口（默认关闭，本应用前台时不触发）；新建下载窗口支持一次粘贴多行链接批量创建。
+- **任务控制**：在任务列表或详情中暂停、恢复、取消；在设置中可选择全部下载完成后的动作（关机、睡眠、退出、打开文件或在访达中显示）。
+- **Download All**：去重后可用关键字、`*` 通配符或 `/正则/` 筛选（逗号分隔表示任一匹配），也可用 `*pagetitle* *num*` 等模板批量重命名。
+- **限速与代理**：设置中提供全局速度限制（token-bucket）与代理配置，代理密码仅存于系统钥匙串；单个任务可在右键菜单「限制速度…」单独限速，与全局限速叠加取更严者，改动即时生效。
+- **输入辅助**：可开启「持续监测剪贴板」——在其他应用复制下载链接即弹出确认窗口（默认关闭，本应用前台时不触发）。
 - **媒体后处理**：HLS/DASH 与 YouTube 下载把确认的文件名写入媒体元数据，QuickTime/访达预览显示该标题；YouTube 画质列表含「仅音频 (m4a)」，单流直下无转码。
 - **登录态资源**：对需要登录的普通 GET 资源，只有在你明确授权当前站点 Cookie 后，扩展才会尝试重建请求上下文；POST、Authorization、复杂自定义头、`blob:` 与 DRM 会安全降级。
 - **文件名隐私**：设置中可开启文件名遮罩，列表与详情会显示任务标识而非文件名。
