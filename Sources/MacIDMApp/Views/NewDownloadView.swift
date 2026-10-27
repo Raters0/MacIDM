@@ -1187,8 +1187,9 @@ struct NewDownloadView: View {
 
     /// Source kind and file name for one batch address. HLS/DASH manifests
     /// must run through the stream pipeline (a plain HTTP download would
-    /// save the playlist text) and publish as MP4.
-    static func batchPlan(for url: URL) -> (sourceKind: DownloadSourceKind, filename: String) {
+    /// save the playlist text) and publish as MP4. Pure, so `nonisolated`:
+    /// the view is main-actor isolated, and tests call this synchronously.
+    nonisolated static func batchPlan(for url: URL) -> (sourceKind: DownloadSourceKind, filename: String) {
         let rawName = url.lastPathComponent
         let safeName = InputValidator.safeFilename(rawName.isEmpty ? nil : rawName)
         switch url.pathExtension.lowercased() {
