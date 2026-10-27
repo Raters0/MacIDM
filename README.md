@@ -7,7 +7,7 @@
 
 MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser media sniffing, segmented downloads, resume, and more. [Internet Download Manager (IDM)](https://www.internetdownloadmanager.com/) still [has no macOS version](https://www.internetdownloadmanager.com/register/new_faq/functions2.html), so this project was created as a Chrome extension plus an App.
 
-<p><img src="README-assets/app-overview-en.gif" alt="Interface preview: MacIDM main window with task list, segment progress and speed graph" width="1000" /></p>
+<p><img src="README-assets/app-overview-en.gif" alt="MacIDM main window: task list, download progress and speed graph" width="1000" /></p>
 
 ## Features
 
@@ -17,13 +17,13 @@ MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser medi
 
 The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and confirming the download in the App's new-task window:
 
-<p><img src="README-assets/page-sniff-en.gif" alt="Interface preview: open the media panel, select a resource and start it from the new download task window" width="900" /></p>
+<p><img src="README-assets/page-sniff-en.gif" alt="Walkthrough: open the media panel, select a resource and start it from the new download task window" width="900" /></p>
 
 2. The toolbar Popup lists all media resources on the current page.
 
-<table><tr><td><img src="README-assets/browser-popup-en.gif" alt="Interface preview: the MacIDM extension Popup finds media and downloads a chosen quality" width="380" /></td></tr></table>
+<table><tr><td><img src="README-assets/browser-popup-en.gif" alt="MacIDM extension Popup: lists the media on the page and downloads one" width="380" /></td></tr></table>
 
-<sub>These animations are interface previews rendered from the front-end pages in <code>Resources/Design/readme-demo</code> with the real UI strings (<code>scripts/render-readme-demos.sh</code>), not screen recordings.</sub>
+<sub>These animations are recorded frame by frame from the running App and extension; the sample page and downloads are local test data, and the pointer is overlaid afterwards.</sub>
 
 ### Task management and other features
 

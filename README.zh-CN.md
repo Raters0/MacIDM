@@ -7,7 +7,7 @@
 
 MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，支持浏览器媒体嗅探、分段下载、断点续传等功能。由于 [Internet Download Manager（IDM）](https://www.internetdownloadmanager.com/) 目前仍 [没有 macOS 版本](https://www.internetdownloadmanager.com/register/new_faq/functions2.html)，因此制作了这款软件，包含一个 Chrome 扩展和一个 App。
 
-<p><img src="README-assets/app-overview.gif" alt="界面示意：MacIDM 主窗口的任务列表、分段进度与速度曲线" width="1000" /></p>
+<p><img src="README-assets/app-overview.gif" alt="MacIDM 主窗口：任务列表、下载进度与速度曲线" width="1000" /></p>
 
 ## 核心功能
 
@@ -17,14 +17,14 @@ MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，�
 
 下面演示点击视频 / 音频资源右上角的悬浮按钮、展开资源、点击下载，并在 App 新建任务窗口确认开始下载的流程：
 
-<p><img src="README-assets/page-sniff.gif" alt="界面示意：点击悬浮按钮、选择资源，在新建下载任务窗口开始下载" width="900" /></p>
+<p><img src="README-assets/page-sniff.gif" alt="操作演示：点击悬浮按钮、选择资源，在新建下载任务窗口开始下载" width="900" /></p>
 
 
 2. 浏览器扩展工具栏 Popup 可以嗅探当前页面的全部媒体资源。
 
-<table><tr><td><img src="README-assets/browser-popup.gif" alt="界面示意：MacIDM 扩展 Popup 发现媒体并选择画质下载" width="380" /></td></tr></table>
+<table><tr><td><img src="README-assets/browser-popup.gif" alt="MacIDM 扩展 Popup：列出本页媒体并下载" width="380" /></td></tr></table>
 
-<sub>以上动图为界面示意，由 <code>Resources/Design/readme-demo</code> 中的前端页面按真实界面文案渲染（<code>scripts/render-readme-demos.sh</code>），并非录屏。</sub>
+<sub>以上动图逐帧录自真实运行的 App 与扩展；示例页面与下载任务来自本地测试数据，鼠标指针为后期叠加。</sub>
 
 ### 任务管理与其他功能
 
