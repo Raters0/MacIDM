@@ -220,6 +220,16 @@ enum DownloadNaming {
         return InputValidator.safeFilename(stem + "." + extensionName)
     }
 
+    /// Swaps (or appends) the extension of an already-finalized suggested
+    /// name. Used by the audio-only YouTube variant, the one sanctioned
+    /// m4a exception to the "YouTube outputs MP4" contract.
+    static func replacingExtension(of filename: String, with replacement: String) -> String {
+        let safe = InputValidator.safeFilename(filename)
+        let current = URL(fileURLWithPath: safe).pathExtension
+        let stem = current.isEmpty ? safe : String(safe.dropLast(current.count + 1))
+        return InputValidator.safeFilename(stem + "." + replacement)
+    }
+
     static func suggestedFilename(
         url: URL,
         sourceKind: DownloadSourceKind,

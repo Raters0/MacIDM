@@ -10,6 +10,8 @@ final class AppSettings: ObservableObject {
         static let downloadDirectory = "downloadDirectory"
         static let colorScheme = "colorScheme"
         static let clipboardAutoDetect = "clipboardAutoDetect"
+        static let clipboardWatch = "clipboardWatch"
+        static let clipboardWatchFilesOnly = "clipboardWatchFilesOnly"
         static let globalHotKeyEnabled = "globalHotKeyEnabled"
         static let globalHotKeyCode = "globalHotKeyCode"
         static let globalHotKeyModifiers = "globalHotKeyModifiers"
@@ -19,7 +21,6 @@ final class AppSettings: ObservableObject {
         static let autoStartDownloads = "autoStartDownloads"
         static let organizeByCategory = "organizeByCategory"
         static let hiddenTableColumns = "hiddenTableColumns"
-        static let archiveOnDelete = "archiveOnDelete"
         static let categoryPaths = "categoryPaths"
         static let ytdlpAutoCheckUpdates = "ytdlpAutoCheckUpdates"
         static let redactFilenames = "redactFilenames"
@@ -76,6 +77,19 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(clipboardAutoDetect, forKey: Key.clipboardAutoDetect) }
     }
 
+    /// Continuously watch the clipboard for copied links (no need to switch
+    /// to this app), off by default. `clipboardAutoDetect` covers the
+    /// "copy in browser, then switch here" flow; this covers "copy anywhere".
+    @Published var clipboardWatch: Bool {
+        didSet { defaults.set(clipboardWatch, forKey: Key.clipboardWatch) }
+    }
+
+    /// The continuous watch only offers file and media links (on by
+    /// default), so copying an ordinary web page link stays silent.
+    @Published var clipboardWatchFilesOnly: Bool {
+        didSet { defaults.set(clipboardWatchFilesOnly, forKey: Key.clipboardWatchFilesOnly) }
+    }
+
     /// Master switch for every system-wide shortcut; turning it off
     /// unregisters all of them immediately.
     @Published var globalHotKeyEnabled: Bool {
@@ -125,12 +139,6 @@ final class AppSettings: ObservableObject {
 
     @Published var hiddenTableColumns: [String] {
         didSet { defaults.set(hiddenTableColumns, forKey: Key.hiddenTableColumns) }
-    }
-
-    /// When true, deleting a task archives it to history; when false,
-    /// deletion is permanent.
-    @Published var archiveOnDelete: Bool {
-        didSet { defaults.set(archiveOnDelete, forKey: Key.archiveOnDelete) }
     }
 
     /// Per-category custom download paths. Keys are `DownloadCategory.rawValue`
@@ -274,6 +282,10 @@ final class AppSettings: ObservableObject {
             defaults.string(forKey: Key.colorScheme).flatMap(AppColorScheme.init(rawValue:))
             ?? .system
         clipboardAutoDetect = defaults.bool(forKey: Key.clipboardAutoDetect)
+        clipboardWatch = defaults.bool(forKey: Key.clipboardWatch)
+        clipboardWatchFilesOnly =
+            defaults.object(forKey: Key.clipboardWatchFilesOnly) == nil
+            ? true : defaults.bool(forKey: Key.clipboardWatchFilesOnly)
         globalHotKeyEnabled =
             defaults.object(forKey: Key.globalHotKeyEnabled) == nil
             ? true : defaults.bool(forKey: Key.globalHotKeyEnabled)
@@ -306,9 +318,6 @@ final class AppSettings: ObservableObject {
             ? true : defaults.bool(forKey: Key.autoStartDownloads)
         organizeByCategory = defaults.bool(forKey: Key.organizeByCategory)
         hiddenTableColumns = defaults.stringArray(forKey: Key.hiddenTableColumns) ?? []
-        archiveOnDelete =
-            defaults.object(forKey: Key.archiveOnDelete) == nil
-            ? true : defaults.bool(forKey: Key.archiveOnDelete)
         categoryPaths =
             defaults.dictionary(forKey: Key.categoryPaths) as? [String: String] ?? [:]
         ytdlpAutoCheckUpdates =

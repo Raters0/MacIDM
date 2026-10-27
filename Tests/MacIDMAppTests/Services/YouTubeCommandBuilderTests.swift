@@ -25,6 +25,13 @@ final class YouTubeCommandBuilderTests: XCTestCase {
         XCTAssertNil(malformed.height)
         XCTAssertNil(malformed.itag)
         XCTAssertFalse(malformed.hasAudio)
+
+        // "只要声音" marker: audio-only, no video selection knobs.
+        let audio = YouTubeCommandBuilder.parseMacIDMFragment("audio=1")
+        XCTAssertTrue(audio.audioOnly)
+        XCTAssertNil(audio.height)
+        XCTAssertNil(audio.itag)
+        XCTAssertFalse(YouTubeCommandBuilder.parseMacIDMFragment("height=720").audioOnly)
     }
 
     func testFormatSelector() {
@@ -47,6 +54,12 @@ final class YouTubeCommandBuilderTests: XCTestCase {
         XCTAssertEqual(
             YouTubeCommandBuilder.formatSelector(itag: nil, hasAudio: false, heightConstraint: "[height<=1080]"),
             "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b"
+        )
+        // Audio-only: best m4a track alone, itag/height never leak in.
+        XCTAssertEqual(
+            YouTubeCommandBuilder.formatSelector(
+                itag: 137, hasAudio: false, heightConstraint: "[height<=1080]", audioOnly: true),
+            "ba[ext=m4a]/ba"
         )
     }
 
@@ -145,5 +158,34 @@ final class YouTubeCommandBuilderTests: XCTestCase {
         // Anonymous: neither an explicit cookie file nor a browser-DB read.
         XCTAssertFalse(arguments.contains("--cookies"))
         XCTAssertFalse(arguments.contains("--cookies-from-browser"))
+    }
+
+    /// yt-dlp runs outside the in-app limiters, so the effective cap must
+    /// reach it as `--limit-rate`; an uncapped request passes none.
+    func testBuildDownloadArgumentsPassesTheEffectiveRateLimit() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        func arguments(limit: Int?) -> [String] {
+            let request = DownloadRequest(
+                url: URL(string: "https://www.youtube.com/watch?v=fixture")!,
+                destination: tempDir.appendingPathComponent("video.mp4"),
+                backend: .youtubeExtractor,
+                externalRateLimitKBps: limit
+            )
+            return YouTubeCommandBuilder.buildDownloadArguments(
+                downloadURL: request.url,
+                formatString: "bv*+ba/b",
+                workingDirectory: tempDir,
+                cookieFile: nil,
+                request: request
+            )
+        }
+
+        let capped = arguments(limit: 512)
+        let index = try XCTUnwrap(capped.firstIndex(of: "--limit-rate"))
+        XCTAssertEqual(capped[index + 1], "512K")
+        XCTAssertFalse(arguments(limit: nil).contains("--limit-rate"))
     }
 }

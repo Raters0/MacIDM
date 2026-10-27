@@ -78,7 +78,8 @@ enum CLIWorker {
                         inputURL: hlsInput,
                         outputURL: finalDestination,
                         outputKind: .mp4,
-                        control: { controlReader.read() }
+                        control: { controlReader.read() },
+                        titleMetadata: FFmpegMetadata.title(forOutput: finalDestination)
                     )
                 )
                 try? FileManager.default.removeItem(at: hlsInput)

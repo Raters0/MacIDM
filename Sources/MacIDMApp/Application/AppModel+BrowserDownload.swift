@@ -652,6 +652,10 @@ extension AppModel {
                 expiresAt: now.addingTimeInterval(24 * 60 * 60)
             )
         }
+        // Persist before acknowledging: once the extension hears "accepted"
+        // it cancels the browser's own download, so a task that was never
+        // written to disk would be lost on both sides by the next launch. On
+        // failure, roll back and throw so the browser keeps its download.
         do {
             try persist()
             try persistBrowserTakeovers()
@@ -661,6 +665,9 @@ extension AppModel {
             transientSourceURLs[taskID] = nil
             transientRequestContexts[taskID] = nil
             takeoverStore.release(path: reservation.path)
+            // The task write may have landed before the takeover write
+            // failed; drop the orphan row so a relaunch cannot start it.
+            try? persist()
             throw error
         }
         if lastUserSelectionChange <= selectionIntent {
@@ -868,6 +875,7 @@ extension AppModel {
                 expiresAt: now.addingTimeInterval(24 * 60 * 60)
             )
         }
+        // Persist before acknowledging (see the takeover path above).
         do {
             try persist()
         } catch {
@@ -1008,13 +1016,16 @@ extension AppModel {
             )
         }
 
-        let removedTask = tasks.first(where: { $0.id == record.taskID })
+        // Snapshot before recording the tombstone so a failed write rolls it
+        // back together with the task and takeover record.
         let previousAbandonedTakeovers = abandonedTakeovers
         rememberAbandonedTakeover(
             clientID: clientID,
             idempotencyKey: originalKey,
             browserDownloadID: browserDownloadID
         )
+        let removedTask = tasks.first(where: { $0.id == record.taskID })
+        discardTaskRateLimiter(record.taskID)
         tasks.removeAll { $0.id == record.taskID }
         browserTakeovers.remove(at: index)
         transientSourceURLs[record.taskID] = nil
@@ -1028,6 +1039,8 @@ extension AppModel {
             if let removedTask { tasks.insert(removedTask, at: 0) }
             browserTakeovers.insert(record, at: min(index, browserTakeovers.count))
             abandonedTakeovers = previousAbandonedTakeovers
+            // Restore the task row too if its delete already landed.
+            try? persist()
             throw error
         }
         takeoverStore.release(path: record.reservationPath)
@@ -1263,4 +1276,75 @@ extension AppModel {
             persistBrowserTakeoversOrPresentError()
         }
     }
+}
+
+extension AppModel {
+    /// Strips credentials and auth-looking query parameters from a page
+    /// URL before storing it on the task. Innocuous identifiers (e.g.
+    /// YouTube's `v=`) are preserved so the stored page URL stays useful
+    /// for display and diagnostics without leaking tokens.
+    static func pageURLForStorage(_ url: URL) -> String? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.user = nil
+        components.password = nil
+        // Fragments only carry internal data (e.g. the `#height=N`
+        // quality-selection marker); they are never part of the real page.
+        components.fragment = nil
+        if let items = components.queryItems, !items.isEmpty {
+            let filtered = items.filter { !looksLikeAuthParameter($0.name) }
+            components.queryItems = filtered.isEmpty ? nil : filtered
+        }
+        return components.string ?? url.absoluteString
+    }
+
+    private static let authParameterSignatures = [
+        "token", "secret", "sign", "auth", "session", "credential",
+        "password", "cookie", "apikey", "api_key", "access", "private",
+        "sid", "key",
+    ]
+
+    static func looksLikeAuthParameter(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return authParameterSignatures.contains { lower.contains($0) }
+    }
+
+    /// Records the durable, non-secret re-resolution identity for a
+    /// site-adapter (Bilibili) DASH-pair task and archives its login cookie,
+    /// so a paused task can be re-resolved to fresh signed track URLs after a
+    /// restart instead of being forced into NEEDS_REFETCH.
+    ///
+    /// The signed track URLs themselves stay transient (never persisted); only
+    /// the page URL (already on the task), the cid, the chosen track's
+    /// format_id, and the page-origin cookie (Keychain via SessionStore) are
+    /// kept. Does nothing for tasks whose page URL is not a supported
+    /// site-adapter page. Cookie archiving honors `rememberSiteSessions`.
+    func recordSiteAdapterResumeContext(
+        task: inout AppTask,
+        downloadURL: URL,
+        pairCID: String?,
+        requestContext: DownloadRequestContext?
+    ) {
+        guard let pageURLString = task.pageURL,
+            let pageURL = URL(string: pageURLString),
+            BilibiliPlayurlAdapter.supports(pageURL)
+        else { return }
+        task.mediaCID = pairCID
+        task.selectedQuality = BilibiliPlayurlAdapter.m4sFormatID(in: downloadURL)
+        // Archive the page-origin login cookie (bilibili.com), not the CDN
+        // host: re-resolution calls the Bilibili API, which needs the page
+        // login state. The value goes to the Keychain; only non-secret
+        // metadata lands in sessions.json.
+        if settings.rememberSiteSessions,
+            let cookie = requestContext?.cookie, !cookie.isEmpty
+        {
+            sessionStore.store(
+                url: pageURL,
+                cookie: cookie,
+                userAgent: requestContext?.userAgent
+            )
+        }
+    }
+
 }

@@ -72,7 +72,13 @@ test("Incremental Discovery: extractPerformanceEntriesCandidates 流式增量消
   const extracted = discovery.extractPerformanceEntriesCandidates(entries);
   assert.equal(extracted.length, 1);
   assert.equal(extracted[0].url, "https://example.com/segment_001.m4s");
-  assert.equal(extracted[0].size, 500000);
+  // Regression (measured: 300-byte transferSize on a 129 KB mp3): a media
+  // resource's first Performance entry measures the browser's partial
+  // header read, never the file total. Publishing it as `size` made the
+  // wrong value final (the size probe skips sized candidates) and noise
+  // suppression then hid the real audio. Entries discover URLs only; the
+  // anonymous probe owns totals.
+  assert.equal(extracted[0].size, undefined);
   assert.equal(extracted[0].confidence, "extension");
 });
 

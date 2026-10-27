@@ -53,7 +53,14 @@ final class SynchronousCheckpointTracker: @unchecked Sendable {
         guard let position = payload.segments.firstIndex(where: { $0.index == parentIndex })
         else { return false }
         let parent = payload.segments[position]
-        guard truncationEnd > parent.nextUncommittedOffset,
+        // `>=` is load-bearing. A parent whose last chunk landed exactly on
+        // truncationEnd has already finished truncated at that offset and
+        // will never fetch the tail: refusing the split on equality (the
+        // old `>`) orphaned `[truncationEnd, end)` — no worker owned it,
+        // the size check still passed, and the preallocated tail shipped as
+        // zeros. Committing at equality hands the tail to the child, the
+        // only remaining owner.
+        guard truncationEnd >= parent.nextUncommittedOffset,
             truncationEnd < parent.endExclusive,
             !payload.segments.contains(where: { $0.index == childIndex })
         else { return false }

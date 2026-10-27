@@ -101,6 +101,9 @@ final class TaskLiveModel: ObservableObject, Identifiable {
     /// `AppTask` snapshot only rebuilds on structural changes.
     @Published private(set) var displayDuration: TimeInterval = 0
     @Published private(set) var wallClockDuration: TimeInterval?
+    /// Per-task speed cap, mirrored so the speed cell's marker appears the
+    /// moment the user sets it from the context menu.
+    @Published private(set) var rateLimitKBps: Int?
 
     init(task: AppTask?) {
         id = task?.id ?? UUID()
@@ -129,6 +132,7 @@ final class TaskLiveModel: ObservableObject, Identifiable {
         totalDuration = task.totalDuration
         displayDuration = task.displayDuration
         wallClockDuration = task.wallClockDuration
+        rateLimitKBps = task.rateLimitKBps
     }
 }
 

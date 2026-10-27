@@ -13,7 +13,22 @@ enum CLIApplication {
 
         case .add(let urlString, let output, let parallel, let hash, let foreground):
             let store = try TaskStore(directory: arguments.stateDirectory)
-            guard let url = URL(string: urlString) else { throw IDMError.invalidURL }
+            // Scheme-less strings still parse as relative URLs; without this
+            // check they slip past the queue and die later as an opaque
+            // network error (or worse, linger as a doomed queued record).
+            guard
+                let url = URL(string: urlString),
+                let scheme = url.scheme?.lowercased(),
+                scheme == "http" || scheme == "https"
+            else { throw IDMError.unsupportedScheme }
+            // The worker only verifies plain HTTP files: HLS/DASH output is
+            // remuxed or merged by FFmpeg, so a source digest can never match.
+            // Refuse instead of silently dropping the requested verification.
+            if hash != nil, CLIWorker.mediaKind(for: url) != .http {
+                throw CLIError.usage(
+                    "--sha256 仅适用于普通文件下载；HLS/DASH 输出经 FFmpeg 重新封装，无法按哈希校验。"
+                )
+            }
             if CLIURLSafety.hasTransientMaterial(url), !foreground {
                 throw CLIError.usage(
                     "带签名参数的 URL 不会写入磁盘；请使用 --foreground，或先去除 URL 查询参数。"

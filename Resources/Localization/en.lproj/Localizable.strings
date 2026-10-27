@@ -81,7 +81,6 @@
 "已暂停" = "Paused";
 "已取消" = "Cancelled";
 "进行中" = "Active";
-"历史记录" = "History";
 "全部下载" = "All Downloads";
 "等待浏览器确认" = "Waiting for browser confirmation";
 "浏览器接管冲突" = "Browser takeover conflict";
@@ -128,7 +127,6 @@
 "导入任务列表…" = "Import Task List…";
 "导出任务列表（JSON）…" = "Export Task List (JSON)…";
 "导出任务列表（CSV）…" = "Export Task List (CSV)…";
-"清除历史记录…" = "Clear History…";
 "永久删除" = "Delete Permanently";
 "永久删除…" = "Delete Permanently…";
 "永久清除" = "Delete Permanently";
@@ -159,11 +157,6 @@
 "当前没有正在下载的任务" = "No tasks are downloading right now";
 "退出 MacIDM" = "Quit MacIDM";
 "删除选中的 %lld 个任务？" = "Remove the %lld selected tasks?";
-"清除全部已删除的归档记录？" = "Clear all removed archive records?";
-"仅清除已删除的归档记录，此操作不可撤销；仍在列表中的任务不受影响。不会删除本地文件。" = "Only removed archive records are cleared; this cannot be undone. Tasks still in the list are unaffected. No local files are deleted.";
-"永久删除选中的 %lld 条历史记录？" = "Permanently delete the %lld selected history records?";
-"历史记录将被永久删除，不可恢复。不会删除本地文件。" = "History records are deleted permanently and cannot be recovered. No local files are deleted.";
-"记录将归入历史，可随时从历史中重新下载。" = "Records move to history; you can re-download from history anytime.";
 "记录将被永久删除，不可恢复。" = "Records are deleted permanently and cannot be recovered.";
 "正在下载的任务会先停止，然后删除。" = "Downloading tasks are stopped first, then removed.";
 "删除队列「%@」？" = "Delete queue \"%@\"?";

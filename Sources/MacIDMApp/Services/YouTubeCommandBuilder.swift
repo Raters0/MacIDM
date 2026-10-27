@@ -8,20 +8,27 @@ import IDMEngine
 /// pure-functional argument assembly, Netscape cookie-file generation with
 /// safety validation, and fragment/format selector parsing.
 enum YouTubeCommandBuilder {
-    /// Parsed result of the variant fragment (`#height=<n>[&itag=<id>[&a=1]]`).
+    /// Parsed result of the variant fragment
+    /// (`#height=<n>[&itag=<id>[&a=1]]`, or `#audio=1` for the audio-only
+    /// option).
     struct FragmentSelection: Equatable, Sendable {
         let height: Int?
         let itag: Int?
         let hasAudio: Bool
+        /// The "只要声音" variant: best audio track only, no video.
+        let audioOnly: Bool
+
+        static let none = FragmentSelection(height: nil, itag: nil, hasAudio: false, audioOnly: false)
     }
 
-    /// Parses `#height=<n>[&itag=<id>[&a=1]]`.
+    /// Parses `#height=<n>[&itag=<id>[&a=1]]` and `#audio=1`.
     /// Unknown keys and invalid values are ignored; only digit-validated
     /// positive integers take effect.
     static func parseMacIDMFragment(_ fragment: String) -> FragmentSelection {
         var height: Int?
         var itag: Int?
         var hasAudio = false
+        var audioOnly = false
         for pair in fragment.split(separator: "&") {
             let kv = pair.split(separator: "=", maxSplits: 1)
             guard kv.count == 2 else { continue }
@@ -38,19 +45,28 @@ enum YouTubeCommandBuilder {
                 }
             case "a" where value == "1":
                 hasAudio = true
+            case "audio" where value == "1":
+                audioOnly = true
             default:
                 break
             }
         }
-        return FragmentSelection(height: height, itag: itag, hasAudio: hasAudio)
+        return FragmentSelection(height: height, itag: itag, hasAudio: hasAudio, audioOnly: audioOnly)
     }
 
     /// Builds the yt-dlp format selector from validated options.
     static func formatSelector(
         itag: Int?,
         hasAudio: Bool,
-        heightConstraint: String
+        heightConstraint: String,
+        audioOnly: Bool = false
     ) -> String {
+        // "只要声音": the best audio track alone, preferred as m4a so no
+        // re-encode or container change is ever needed; itag/height are
+        // video-selection knobs and do not apply.
+        if audioOnly {
+            return "ba[ext=m4a]/ba"
+        }
         if let itag {
             return hasAudio ? "\(itag)" : "\(itag)+ba[ext=m4a]/\(itag)"
         }
@@ -141,6 +157,11 @@ enum YouTubeCommandBuilder {
             "--format", formatString,
             "--merge-output-format", "mp4",
             "--remux-video", "mp4",
+            // Embed title (and the standard metadata set yt-dlp derives from
+            // the video itself) so QuickTime and media libraries show the
+            // video's name instead of container defaults. Uses yt-dlp's own
+            // metadata, never a user string, so no quoting surface exists.
+            "--embed-metadata",
             "--output", workingDirectory.appendingPathComponent("result.%(ext)s").path,
         ]
         if let cookieFile {
@@ -154,6 +175,11 @@ enum YouTubeCommandBuilder {
         }
         if let proxyURL = YTDlpManager.currentProxyURLString() {
             arguments += ["--proxy", proxyURL]
+        }
+        // yt-dlp transfers in its own process, outside the in-app limiters;
+        // pass the effective global/per-task cap as its own rate limit.
+        if let kbps = request.externalRateLimitKBps, kbps > 0 {
+            arguments += ["--limit-rate", "\(kbps)K"]
         }
         arguments += [downloadURL.absoluteString]
         return arguments

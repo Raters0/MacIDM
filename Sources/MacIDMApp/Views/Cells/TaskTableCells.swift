@@ -41,8 +41,19 @@ struct SpeedCell: View {
                     .foregroundStyle(.secondary)
             }
         } else {
-            Text(DisplayFormatting.speed(live.bytesPerSecond))
-                .monospacedDigit()
+            HStack(spacing: 3) {
+                Text(DisplayFormatting.speed(live.bytesPerSecond))
+                    .monospacedDigit()
+                if let limit = live.rateLimitKBps, limit > 0 {
+                    // Per-task cap marker; the exact value lives in the
+                    // tooltip and the row's context menu.
+                    Image(systemName: "gauge.with.dots.needle.33percent")
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                        .help("已限速：\(limit) KB/s")
+                        .accessibilityLabel("已限速 \(limit) KB/s")
+                }
+            }
         }
     }
 }

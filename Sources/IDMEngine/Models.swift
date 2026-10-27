@@ -29,6 +29,9 @@ public struct DownloadRequest: Sendable {
     public let pairAudioURL: URL?
     public let pairCID: String?
     public let backend: DownloadBackend
+    /// Rate cap in KB/s for backends that cannot use `rateLimiter` because
+    /// they transfer in another process (yt-dlp). nil means uncapped.
+    public let externalRateLimitKBps: Int?
 
     public init(
         url: URL,
@@ -41,7 +44,8 @@ public struct DownloadRequest: Sendable {
         rateLimiter: (any DownloadRateLimiting)? = nil,
         pairAudioURL: URL? = nil,
         pairCID: String? = nil,
-        backend: DownloadBackend = .native
+        backend: DownloadBackend = .native,
+        externalRateLimitKBps: Int? = nil
     ) {
         self.url = url
         self.destination = destination
@@ -54,6 +58,7 @@ public struct DownloadRequest: Sendable {
         self.pairAudioURL = pairAudioURL
         self.pairCID = pairCID
         self.backend = backend
+        self.externalRateLimitKBps = externalRateLimitKBps
     }
 }
 

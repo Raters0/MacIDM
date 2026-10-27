@@ -110,6 +110,6 @@ struct KeychainCredentialStore: Sendable {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: username,
         ]
-        credentialAccess { SecItemDelete(query as CFDictionary) }
+        _ = credentialAccess { SecItemDelete(query as CFDictionary) }
     }
 }

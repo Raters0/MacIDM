@@ -16,11 +16,18 @@ extension AppModel {
             hasStartedTasksThisSession
         else { return }
         let hasPendingWork = tasks.contains {
-            !$0.isCLIManaged && !$0.isArchived
+            !$0.isCLIManaged
                 && !$0.status.isTerminal
                 && $0.status != .paused
         }
         guard !hasPendingWork, executions.tasks.isEmpty else { return }
+        // Local, reversible actions (open / reveal) carry no countdown: they
+        // neither interrupt the Mac nor end the session, so a confirmation
+        // window would only flash.
+        if action.countdownSeconds == 0 {
+            executeCompletionAction()
+            return
+        }
         startCompletionCountdown(action)
     }
 
@@ -59,7 +66,7 @@ extension AppModel {
     func rescindCompletionCountdownIfBusy() {
         guard completionCountdownSeconds != nil else { return }
         let hasPendingWork = tasks.contains {
-            !$0.isCLIManaged && !$0.isArchived
+            !$0.isCLIManaged
                 && !$0.status.isTerminal
                 && $0.status != .paused
         }
@@ -94,6 +101,19 @@ extension AppModel {
                 "tell application \"System Events\" to shut down",
                 failureTitle: String(localized: "关机失败")
             )
+        case .openFile, .revealInFinder:
+            // Prefer the task that actually finished last this session;
+            // fall back to the newest completed record.
+            let completed = tasks.filter { $0.status == .completed }
+            guard
+                let recent = completed.first(where: { $0.id == lastCompletedTaskID })
+                    ?? completed.max(by: { $0.updatedAt < $1.updatedAt })
+            else { return }
+            if action == .openFile {
+                openFile(recent.id)
+            } else {
+                revealInFinder(recent.id)
+            }
         }
     }
 

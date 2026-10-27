@@ -27,7 +27,7 @@ The walkthrough below shows clicking the floating button on a video / audio reso
 
 - The App main window provides the task list, categories, and download details, including segment progress and a speed graph.
 - When creating a task you can change the save location, filename, and concurrency; HLS / DASH sources with multiple qualities list them first for selection.
-- Proxy, global rate limiting, Chinese and English interfaces, CLI, and a local HTTP API are also supported. The CLI can read status, control tasks, and support automation scripts.
+- Proxy, global and per-task rate limiting, Chinese and English interfaces, CLI, and a local HTTP API are also supported. The CLI can read status, control tasks, and support automation scripts.
 - Filename hiding is supported, to avoid triggering AI Agent sensitive-word checks.
 - Logs are stored by level; when using AI-assisted debugging, this reduces exposure of sensitive information (such as cookies) to third parties.
 
@@ -108,7 +108,9 @@ The script points the Host manifest at the `macidm-host` inside the installed `M
 
 - **Confirmation window**: before downloading you can change the filename, destination, maximum parallel requests (1–64), and queue priority, and optionally supply an expected SHA-256 for integrity checking; HLS / DASH sources list quality variants first.
 - **Queues and categories**: filter by status, queue, time, and category in the sidebar; set per-queue concurrency, ordering, and schedule windows.
-- **Rate limiting and proxy**: Settings offers a global token-bucket speed limit and proxy configuration; proxy passwords are stored only in the system Keychain.
+- **Rate limiting and proxy**: Settings offers a global token-bucket speed limit and proxy configuration; proxy passwords are stored only in the system Keychain. Individual tasks get their own cap via the right-click "Limit speed…" action (stacked with the global limit, tighter bound wins, applied live).
+- **Input helpers**: an opt-in "watch the clipboard" setting offers the confirmation window the moment you copy a link in another app (off by default; never fires while MacIDM itself is frontmost); the new-download window accepts a multi-line paste to create many tasks at once.
+- **Media finishing**: HLS/DASH and YouTube downloads write the confirmed filename into the file's title metadata (QuickTime and Finder previews show it), and the YouTube quality list includes an audio-only (m4a) option — a single stream, no re-encode.
 - **Logged-in resources**: for ordinary GET resources that need a session, the extension rebuilds request context only after you explicitly authorize cookies for the current site; POST, Authorization headers, complex custom headers, `blob:`, and DRM degrade safely.
 - **Filename privacy**: enable filename redaction in Settings so the list and detail show job identifiers instead of filenames.
 

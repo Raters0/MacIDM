@@ -23,7 +23,6 @@ enum AppTaskColumn: Int32, CaseIterable {
     case errorCode
     case errorMessage
     case segmentsJson
-    case isArchived
     case averageSpeed
     case totalDuration
     case category
@@ -40,7 +39,7 @@ enum AppTaskColumn: Int32, CaseIterable {
     case mediaCid
     case selectedQuality
     case mediaWarning
-    case historyHidden
+    case rateLimitKbps
     var sqlName: String {
         switch self {
         case .id: "id"
@@ -64,7 +63,6 @@ enum AppTaskColumn: Int32, CaseIterable {
         case .errorCode: "error_code"
         case .errorMessage: "error_message"
         case .segmentsJson: "segments_json"
-        case .isArchived: "is_archived"
         case .averageSpeed: "average_speed"
         case .totalDuration: "total_duration"
         case .category: "category"
@@ -81,7 +79,7 @@ enum AppTaskColumn: Int32, CaseIterable {
         case .mediaCid: "media_cid"
         case .selectedQuality: "selected_quality"
         case .mediaWarning: "media_warning"
-        case .historyHidden: "history_hidden"
+        case .rateLimitKbps: "rate_limit_kbps"
         }
     }
     static var selection: String { allCases.map(\.sqlName).joined(separator: ", ") }

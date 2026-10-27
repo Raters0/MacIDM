@@ -25,8 +25,9 @@ import Foundation
 /// 3. On success the engine calls ``commitSplit(parentIndex:childIndex:)``
 ///    and runs the child work item. When the parent has raced past the
 ///    truncation point the tracker refuses the split; the engine then calls
-///    ``abandonSplit(parentIndex:)`` and the parent simply finishes its
-///    original range.
+///    ``abandonSplit(parentIndex:parentCommittedThrough:)`` and the parent
+///    simply finishes its original range. The worker backs off briefly
+///    before asking again so an abandoned proposal cannot become a busy loop.
 ///
 /// ## Thread safety
 ///
@@ -188,8 +189,21 @@ public actor SegmentCoordinator {
     /// Drops a split proposal the engine could not commit (for example the
     /// parent raced past the truncation point). The parent becomes eligible
     /// for future proposals again.
-    public func abandonSplit(parentIndex: Int) {
-        activeSegments[parentIndex]?.splitPending = false
+    ///
+    /// `parentCommittedThrough` is the offset the parent is known to have
+    /// committed past (the refused truncation point). Progress reports are
+    /// throttled, so without it the next proposal would repeat the same stale
+    /// split point and an idle worker would spin proposing and abandoning it.
+    public func abandonSplit(parentIndex: Int, parentCommittedThrough: Int64? = nil) {
+        guard var parent = activeSegments[parentIndex] else { return }
+        parent.splitPending = false
+        if let parentCommittedThrough {
+            parent.bytesDownloaded = max(
+                parent.bytesDownloaded,
+                min(parentCommittedThrough, parent.range.endExclusive) - parent.range.start
+            )
+        }
+        activeSegments[parentIndex] = parent
     }
 
     /// Reports absolute committed progress for a segment so the coordinator

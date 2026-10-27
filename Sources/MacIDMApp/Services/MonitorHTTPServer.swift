@@ -85,7 +85,6 @@ final class MonitorHTTPServer: @unchecked Sendable {
         var speedLimitKBps: Int
         var autoStartDownloads: Bool
         var organizeByCategory: Bool
-        var archiveOnDelete: Bool
         var notificationSoundsEnabled: Bool
         var clipboardAutoDetect: Bool
         var ytdlpAutoCheckUpdates: Bool

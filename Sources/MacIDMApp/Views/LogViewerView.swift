@@ -69,12 +69,17 @@ struct LogViewerView: View {
                 refreshLog()
                 scrollToBottom(proxy: proxy)
             }
-            .onReceive(
-                Timer.publish(every: 2, on: .main, in: .common).autoconnect()
-            ) { _ in
-                refreshLog()
-                if autoFollow {
-                    scrollToBottom(proxy: proxy)
+            .task {
+                // One refresh loop tied to view lifetime. A Timer publisher
+                // created inside body is discarded and reconnected on every
+                // render, and refreshLog itself re-renders the view.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { break }
+                    refreshLog()
+                    if autoFollow {
+                        scrollToBottom(proxy: proxy)
+                    }
                 }
             }
             .alert("清除日志", isPresented: $showingClearConfirmation) {

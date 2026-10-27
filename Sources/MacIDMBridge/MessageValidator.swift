@@ -179,13 +179,18 @@ public enum MessageValidator {
         // Naming trust model (technical spec §8.1): the hint's provenance
         // decides whether it may outrank the page title. Unknown values are
         // rejected; a missing field is treated as "urlPath" by the App.
+        // "userEdited" is accepted for explicitly user-authored names (the
+        // Download All rename template): labeling those "titleDerived" would
+        // let the semantic-title arbitration override what the user typed.
         if let hintSource = payload["filenameHintSource"] {
             guard let value = hintSource.stringValue,
                 value == "browserResolved" || value == "titleDerived"
                     || value == "modelJudged" || value == "urlPath"
+                    || value == "userEdited"
             else {
                 throw BridgeError.invalidMessage(
-                    "filenameHintSource must be browserResolved, titleDerived, modelJudged, or urlPath")
+                    "filenameHintSource must be browserResolved, titleDerived, modelJudged, urlPath, or userEdited"
+                )
             }
         }
         if let pageTitle = payload["pageTitle"] {

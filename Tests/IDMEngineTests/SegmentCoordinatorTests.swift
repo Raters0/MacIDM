@@ -62,6 +62,35 @@ final class SegmentCoordinatorTests: XCTestCase {
         XCTAssertGreaterThan(child.segmentIndex, 1, "synthetic index must not collide")
     }
 
+    func testRefusedSplitAdvancesParentSoTheSameProposalIsNotRepeated() async throws {
+        // Regression for an intermittent engine hang: progress reports are
+        // throttled, so after the tracker refused a stale split the
+        // coordinator kept proposing the identical split point and the idle
+        // worker spun proposing and abandoning it.
+        let size: Int64 = 4 * 1024 * 1024
+        let coordinator = SegmentCoordinator(workItems: [makeItem(0, start: 0, size: size)])
+
+        guard case .work = await coordinator.nextDecision() else {
+            return XCTFail("expected work item")
+        }
+        await coordinator.reportProgress(segmentIndex: 0, bytesDownloaded: 0)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        guard case .split(_, let staleEnd, _) = await coordinator.nextDecision() else {
+            return XCTFail("expected first split proposal")
+        }
+        await coordinator.abandonSplit(parentIndex: 0, parentCommittedThrough: staleEnd)
+
+        switch await coordinator.nextDecision() {
+        case .split(_, let nextEnd, _):
+            XCTAssertGreaterThan(nextEnd, staleEnd, "the refused split point must not be proposed again")
+        case .done:
+            break
+        case .work:
+            XCTFail("nothing is queued")
+        }
+    }
+
     func testSplitPendingBlocksDuplicateProposalsUntilCommitted() async throws {
         let size: Int64 = 4 * 1024 * 1024
         let coordinator = SegmentCoordinator(workItems: [makeItem(0, start: 0, size: size)])

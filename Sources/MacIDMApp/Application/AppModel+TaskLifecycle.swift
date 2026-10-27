@@ -261,11 +261,12 @@ extension AppModel {
     /// files: honored for completed tasks (the final file is trashed or
     /// deleted) and for non-completed tasks that have partial download
     /// artifacts (temp files, sidecars, HLS inputs, DASH pair directories).
-    /// Removing a task archives it into history rather than permanently
-    /// deleting, so the user can re-download later. Active tasks are stopped
-    /// first: the engine control is cancelled and the execution task torn
-    /// down before the record is archived, so a running download can be
-    /// deleted in one step without a manual pause/cancel round trip.
+    /// The record is removed from the single task list; completed tasks stay
+    /// in the list until the user removes them, so the list itself is the
+    /// history. Active tasks are stopped first: the engine control is
+    /// cancelled and the execution task torn down before the record is
+    /// removed, so a running download can be deleted in one step without a
+    /// manual pause/cancel round trip.
     func remove(_ id: UUID, fileRemoval: TaskFileRemoval = .keepFiles) {
         guard let task = task(with: id) else { return }
         if task.isCLIManaged {
@@ -308,11 +309,8 @@ extension AppModel {
             browserTakeovers.removeAll { $0.taskID == id }
             persistBrowserTakeoversOrPresentError()
         }
-        if settings.archiveOnDelete {
-            update(id) { $0.isArchived = true }
-        } else {
-            tasks.removeAll { $0.id == id }
-        }
+        discardTaskRateLimiter(id)
+        tasks.removeAll { $0.id == id }
         // The task no longer owns its destination; drop the unredacted URL
         // so signed links do not linger in the vault until TTL expiry.
         sourceURLVault.remove(ids: [id])
@@ -331,8 +329,9 @@ extension AppModel {
     /// Removes a terminal-state CLI mirror record (technical-spec §3.1.6):
     /// the App mirror row goes away together with the authoritative CLI JSON
     /// record in `<support>/MacIDM/cli`, so the next CLI run cannot mirror it
-    /// back. CLI records have no archived form — removal is permanent. The
-    /// terminal-status guard lives in `AppTask.isTerminalCLIRecord`; anything
+    /// back. CLI records are removed permanently, matching the single-list
+    /// model used for App tasks. The terminal-status guard lives in
+    /// `AppTask.isTerminalCLIRecord`; anything
     /// non-terminal keeps its control plane in the CLI and is refused here.
     private func removeTerminalCLIRecord(_ id: UUID, fileRemoval: TaskFileRemoval) {
         guard let task = task(with: id), task.isTerminalCLIRecord else { return }
@@ -342,6 +341,7 @@ extension AppModel {
             .appendingPathComponent("\(id.uuidString.lowercased()).json")
         try? FileManager.default.removeItem(at: cliRecordURL)
         try? store.deleteRecord(id)
+        discardTaskRateLimiter(id)
         tasks.removeAll { $0.id == id }
         if selectedTaskID == id {
             selectedTaskID = nil
@@ -389,32 +389,6 @@ extension AppModel {
         }
     }
 
-    /// Permanently removes a task from history (irreversible). `fileRemoval`
-    /// disposes of local files on the way out when the user asked for it.
-    func permanentlyRemove(_ id: UUID, fileRemoval: TaskFileRemoval = .keepFiles) {
-        guard let task = task(with: id), task.isArchived else { return }
-        disposeOfTaskFiles(for: task, mode: fileRemoval)
-        if selectedTaskID == id {
-            selectedTaskID = nil
-        }
-        if let takeover = browserTakeovers.first(where: { $0.taskID == id }) {
-            rememberAbandonedTakeover(
-                clientID: takeover.authenticatedClientID,
-                idempotencyKey: takeover.idempotencyKey,
-                browserDownloadID: takeover.browserDownloadID
-            )
-            takeoverStore.release(path: takeover.reservationPath)
-            browserTakeovers.removeAll { $0.taskID == id }
-            persistBrowserTakeoversOrPresentError()
-        }
-        tasks.removeAll { $0.id == id }
-        selectedTaskIDs.remove(id)
-        tableSynchronizer.applyExternalSelection(selectedTaskIDs)
-        sourceURLVault.remove(ids: [id])
-        tableSynchronizer.replaceAllLive(tasks)
-        tryPersistOrPresentError()
-    }
-
     /// Whether removing any of these tasks could also delete a local file or
     /// partial download artifacts, which decides if the confirmation dialog
     /// offers that choice.
@@ -429,63 +403,11 @@ extension AppModel {
         }
     }
 
-    /// Removes records from the history timeline without touching the main
-    /// list or local files: archived records (which exist only in history)
-    /// are permanently removed; live tasks are merely hidden from the
-    /// timeline and keep working in 全部下载/进行中/已完成.
-    func removeFromHistory(_ ids: Set<UUID>) {
-        for id in ids where tasks.first(where: { $0.id == id })?.isArchived == true {
-            permanentlyRemove(id)
-        }
-        let liveIDs = ids.filter { id in
-            tasks.first(where: { $0.id == id }).map { !$0.isArchived } == true
-        }
-        guard !liveIDs.isEmpty else { return }
-        for id in liveIDs {
-            update(id) { $0.historyHidden = true }
-        }
-        tableSynchronizer.replaceAllLive(tasks)
-        tryPersistOrPresentError(immediate: true)
-        exportStatus()
-    }
-
-    /// Empties the history timeline in one step: archived records are
-    /// permanently removed; every remaining task (still in the main list,
-    /// CLI mirrors included) is only hidden from the timeline. Local files
-    /// are never touched.
-    func clearHistory() {
-        let archivedIDs = Set(tasks.filter { $0.isArchived && !$0.isCLIManaged }.map(\.id))
-        for id in archivedIDs {
-            if let takeover = browserTakeovers.first(where: { $0.taskID == id }) {
-                rememberAbandonedTakeover(
-                    clientID: takeover.authenticatedClientID,
-                    idempotencyKey: takeover.idempotencyKey,
-                    browserDownloadID: takeover.browserDownloadID
-                )
-                takeoverStore.release(path: takeover.reservationPath)
-                browserTakeovers.removeAll { $0.taskID == id }
-            }
-        }
-        persistBrowserTakeoversOrPresentError()
-        tasks.removeAll { archivedIDs.contains($0.id) }
-        for index in tasks.indices {
-            tasks[index].historyHidden = true
-        }
-        selectedTaskIDs.subtract(archivedIDs)
-        tableSynchronizer.applyExternalSelection(selectedTaskIDs)
-        sourceURLVault.remove(ids: archivedIDs)
-        if let selectedID = selectedTaskID, archivedIDs.contains(selectedID) {
-            selectedTaskID = nil
-        }
-        tableSynchronizer.replaceAllLive(tasks)
-        tryPersistOrPresentError(immediate: true)
-    }
-
-    /// Re-downloads a task from history by creating a new task with the
-    /// same source URL and destination directory.
+    /// Re-downloads a completed task by creating a new task with the same
+    /// source URL and destination directory.
     func reDownload(_ id: UUID) {
-        guard let archived = task(with: id), archived.isArchived, !archived.isCLIManaged else { return }
-        guard !requiresBrowserRefetch(archived) else {
+        guard let task = task(with: id), task.status == .completed, !task.isCLIManaged else { return }
+        guard !requiresBrowserRefetch(task) else {
             presentedError = PresentedError(
                 title: String(localized: "需要重新提交原始链接"),
                 message: String(
@@ -494,7 +416,7 @@ extension AppModel {
             )
             return
         }
-        guard !Self.isTransientDASHPair(archived) else {
+        guard !Self.isTransientDASHPair(task) else {
             presentedError = PresentedError(
                 title: String(localized: "需要重新选择音视频轨道"),
                 message: String(
@@ -504,15 +426,15 @@ extension AppModel {
             return
         }
         let directory = URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
-        let destination = directory.appendingPathComponent(archived.filename)
+        let destination = directory.appendingPathComponent(task.filename)
         do {
             try addDownload(
-                urlString: archived.sourceURL,
+                urlString: task.sourceURL,
                 destination: destination,
                 maximumParallelRequests: settings.maximumParallelRequests,
-                expectedSHA256: archived.expectedSHA256,
+                expectedSHA256: task.expectedSHA256,
                 startImmediately: settings.autoStartDownloads,
-                sourceKind: archived.sourceKind ?? .http,
+                sourceKind: task.sourceKind ?? .http,
                 automaticRename: true
             )
         } catch {

@@ -38,7 +38,15 @@ export class ExplicitEnqueueClient {
     // Naming trust model (technical spec §8.1): only a caller-supplied hint
     // keeps its declared provenance; a hint this module derives from the URL
     // tail is always "urlPath", and unknown values degrade to "urlPath".
-    const allowedHintSources = new Set(["browserResolved", "titleDerived", "urlPath"]);
+    // "userEdited" covers explicitly user-authored names (the Download All
+    // rename template); downgrading those to a title-derived hint would let
+    // the semantic-title arbitration override what the user typed.
+    const allowedHintSources = new Set([
+      "browserResolved",
+      "titleDerived",
+      "urlPath",
+      "userEdited",
+    ]);
     const payload = {
       url,
       filenameHint: filenameHint || filenameFromDownload(item),

@@ -60,7 +60,7 @@ struct MacIDMApplication: App {
             MainWindowView()
                 .environmentObject(model)
                 .tint(AppTheme.accent)
-                .preferredColorScheme(preferredColorScheme)
+                .preferredColorScheme(model.settings.colorScheme.preferredColorScheme)
                 // 232 sidebar + 540 task list + 320 detail column, plus
                 // separators. This prevents the three detail actions from
                 // being compressed below their single-line minimum.
@@ -120,10 +120,6 @@ struct MacIDMApplication: App {
                 Button("导出任务列表（CSV）…") {
                     model.exportTasks(format: .csv)
                 }
-                Divider()
-                Button("清除历史记录…") {
-                    NotificationCenter.default.post(name: .macIDMRequestClearHistory, object: nil)
-                }
             }
 
             CommandMenu(String(localized: "任务")) {
@@ -164,6 +160,7 @@ struct MacIDMApplication: App {
             MenuBarContentView()
                 .environmentObject(model)
                 .tint(AppTheme.accent)
+                .appThemedWindow(model.settings)
         } label: {
             MenuBarIconLabel()
         }
@@ -182,13 +179,6 @@ struct MacIDMApplication: App {
         model.installGlobalHotKeyRegistrar(service)
     }
 
-    private var preferredColorScheme: ColorScheme? {
-        switch model.settings.colorScheme {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
-    }
 }
 
 /// Window-close behavior: with "close window keeps menu bar only" enabled, closing the

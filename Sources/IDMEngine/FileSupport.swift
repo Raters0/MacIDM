@@ -13,13 +13,14 @@ final class RandomAccessSink: @unchecked Sendable {
         let flags = O_RDWR | (create ? (O_CREAT | O_EXCL) : 0) | O_NOFOLLOW
         fileDescriptor = open(url.path, flags, S_IRUSR | S_IWUSR)
         guard fileDescriptor >= 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         self.totalSize = totalSize
         if create, let totalSize, ftruncate(fileDescriptor, totalSize) != 0 {
-            let message = String(cString: strerror(errno))
+            let failure = errno
+            let message = String(cString: strerror(failure))
             close(fileDescriptor)
-            throw IDMError.storageError(message)
+            throw IDMError.storageError(message, failure)
         }
     }
 
@@ -42,7 +43,7 @@ final class RandomAccessSink: @unchecked Sendable {
                 )
                 if result < 0 {
                     if errno == EINTR { continue }
-                    throw IDMError.storageError(String(cString: strerror(errno)))
+                    throw IDMError.storageError(String(cString: strerror(errno)), errno)
                 }
                 if result == 0 { throw IDMError.storageError("pwrite returned zero") }
                 written += result
@@ -52,7 +53,7 @@ final class RandomAccessSink: @unchecked Sendable {
 
     func synchronize() throws {
         guard fsync(fileDescriptor) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
     }
 
@@ -61,14 +62,14 @@ final class RandomAccessSink: @unchecked Sendable {
             throw IDMError.responseTooLong
         }
         guard ftruncate(fileDescriptor, off_t(size)) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
     }
 
     func identity() throws -> FileIdentity {
         var info = stat()
         guard fstat(fileDescriptor, &info) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         return FileIdentity(device: UInt64(info.st_dev), inode: UInt64(info.st_ino))
     }
@@ -80,7 +81,7 @@ final class RandomAccessSink: @unchecked Sendable {
     func currentSize() throws -> Int64 {
         var info = stat()
         guard fstat(fileDescriptor, &info) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         return Int64(info.st_size)
     }
@@ -92,6 +93,10 @@ struct FileIdentity: Codable, Hashable, Sendable {
 }
 
 enum FileSupport {
+    /// Message of the creation-time capacity pre-check. Shared with
+    /// `DownloadRetryPolicy.isOutOfSpace` so the App can recognize it.
+    static let insufficientCapacityMessage = "目标卷可用空间不足"
+
     /// ftruncate on APFS may create a sparse file without reserving all
     /// physical blocks. Check the destination volume before creating a known
     /// sized temporary so an avoidable ENOSPC arrives before a task appears
@@ -112,7 +117,7 @@ enum FileSupport {
             values.volumeAvailableCapacityForImportantUsage
             ?? values.volumeAvailableCapacity.map(Int64.init)
         if let available, available < bytes {
-            throw IDMError.storageError("目标卷可用空间不足")
+            throw IDMError.storageError(Self.insufficientCapacityMessage)
         }
     }
 
@@ -159,7 +164,7 @@ enum FileSupport {
     ) throws {
         guard renameatx_np(AT_FDCWD, from.path, AT_FDCWD, to.path, UInt32(RENAME_EXCL)) == 0 else {
             if errno == EEXIST { throw IDMError.filenameConflict(to.path) }
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         if synchronizeParentDirectory {
             syncDirectory(to.deletingLastPathComponent())
@@ -174,7 +179,7 @@ enum FileSupport {
             S_IRUSR | S_IWUSR
         )
         guard descriptor >= 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
 
         var isOpen = true
@@ -191,22 +196,22 @@ enum FileSupport {
                 let result = Darwin.write(descriptor, base.advanced(by: offset), buffer.count - offset)
                 if result < 0 {
                     if errno == EINTR { continue }
-                    throw IDMError.storageError(String(cString: strerror(errno)))
+                    throw IDMError.storageError(String(cString: strerror(errno)), errno)
                 }
                 if result == 0 { throw IDMError.storageError("write returned zero") }
                 offset += result
             }
         }
         guard fsync(descriptor) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         guard close(descriptor) == 0 else {
             isOpen = false
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         isOpen = false
         guard rename(temporary.path, url.path) == 0 else {
-            throw IDMError.storageError(String(cString: strerror(errno)))
+            throw IDMError.storageError(String(cString: strerror(errno)), errno)
         }
         isPublished = true
         syncDirectory(url.deletingLastPathComponent())

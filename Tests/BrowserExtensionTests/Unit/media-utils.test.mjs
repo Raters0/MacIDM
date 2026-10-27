@@ -904,3 +904,31 @@ test("coalescing folds HLS renditions by host and directory prefix only", () => 
   );
   assert.equal(merged.length, 2, "不同 host 的清单不折叠");
 });
+
+test("candidateSection buckets mirror the display-order categories", () => {
+  // Popup sections must never disagree with the sort order: real media
+  // (adapters, streams, video/audio, player placeholders) → media,
+  // decorative images → images, everything else → other.
+  assert.equal(mediaUtils.candidateSection({ siteAdapter: "bilibili" }), "media");
+  assert.equal(mediaUtils.candidateSection({ format: "hls" }), "media");
+  assert.equal(mediaUtils.candidateSection({ format: "video", mime: "" }), "media");
+  assert.equal(mediaUtils.candidateSection({ format: "", mime: "audio/mpeg" }), "media");
+  assert.equal(mediaUtils.candidateSection({ url: "mse:player" }), "media");
+  assert.equal(mediaUtils.candidateSection({ url: "https://x.test/a.png", format: "image" }), "images");
+  assert.equal(mediaUtils.candidateSection({ url: "https://x.test/a.bin", format: "" }), "other");
+});
+
+test("candidateSection treats container formats and declared extensions as media", () => {
+  // Fixtures and older payloads may carry a container format ("mp4") or a
+  // fileExtension instead of the canonical semantic format ("video"); a
+  // direct video link must never fall into the "other" annex bucket.
+  assert.equal(mediaUtils.candidateSection({ format: "mp4", url: "https://x.test/a.mp4" }), "media");
+  assert.equal(
+    mediaUtils.candidateSection({ url: "https://x.test/a", fileExtension: "mp4" }),
+    "media",
+  );
+  assert.equal(
+    mediaUtils.candidateSection({ url: "https://x.test/a", fileExtension: "avif" }),
+    "images",
+  );
+});

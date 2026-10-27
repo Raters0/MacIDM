@@ -74,7 +74,7 @@ TOKEN=$(cat "$HOME/Library/Application Support/MacIDM/agent-token")
 curl -X POST http://127.0.0.1:7831/settings -H "X-MacIDM-Token: $TOKEN" -H "Content-Type: application/json" -d '{"speedLimitKBps":2048,"simultaneousDownloads":5}'
 ```
 
-Supported keys are `downloadDirectory`, `maximumParallelRequests`, `simultaneousDownloads`, `speedLimitKBps`, `autoStartDownloads`, `organizeByCategory`, `archiveOnDelete`, `notificationSoundsEnabled`, `clipboardAutoDetect`, and `ytdlpAutoCheckUpdates`. Unknown keys are ignored.
+Supported keys are `downloadDirectory`, `maximumParallelRequests`, `simultaneousDownloads`, `speedLimitKBps`, `autoStartDownloads`, `organizeByCategory`, `notificationSoundsEnabled`, `clipboardAutoDetect`, and `ytdlpAutoCheckUpdates`. Unknown keys are ignored.
 
 ```bash
 TOKEN=$(cat "$HOME/Library/Application Support/MacIDM/agent-token")

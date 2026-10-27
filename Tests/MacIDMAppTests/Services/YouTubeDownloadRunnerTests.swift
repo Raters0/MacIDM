@@ -544,20 +544,20 @@ final class YouTubeDownloadRunnerTests: XCTestCase {
         // so page strings can never reach the yt-dlp selector.
         XCTAssertEqual(
             YouTubeDownloadRunner.parseMacIDMFragment("height=1080&itag=248"),
-            YouTubeDownloadRunner.FragmentSelection(height: 1080, itag: 248, hasAudio: false))
+            YouTubeDownloadRunner.FragmentSelection(height: 1080, itag: 248, hasAudio: false, audioOnly: false))
         XCTAssertEqual(
             YouTubeDownloadRunner.parseMacIDMFragment("height=360&itag=18&a=1"),
-            YouTubeDownloadRunner.FragmentSelection(height: 360, itag: 18, hasAudio: true))
+            YouTubeDownloadRunner.FragmentSelection(height: 360, itag: 18, hasAudio: true, audioOnly: false))
         XCTAssertEqual(
             YouTubeDownloadRunner.parseMacIDMFragment("t=90"),
-            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false))
+            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false, audioOnly: false))
         // Non-numeric / oversized / non-positive values are rejected.
         XCTAssertEqual(
             YouTubeDownloadRunner.parseMacIDMFragment("height=-1&itag=abc&a=0"),
-            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false))
+            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false, audioOnly: false))
         XCTAssertEqual(
             YouTubeDownloadRunner.parseMacIDMFragment("itag=123456"),
-            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false))
+            YouTubeDownloadRunner.FragmentSelection(height: nil, itag: nil, hasAudio: false, audioOnly: false))
     }
 
     func testFormatSelectorDistinguishesSameHeightCodecs() {

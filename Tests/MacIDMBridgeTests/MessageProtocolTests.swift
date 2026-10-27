@@ -57,7 +57,10 @@ final class MessageProtocolTests: XCTestCase {
     }
 
     func testFilenameHintSourceAcceptsTrustModelValues() throws {
-        for source in ["browserResolved", "titleDerived", "urlPath"] {
+        // "userEdited" carries explicitly user-authored names (the Download
+        // All rename template); mislabeling them titleDerived would let the
+        // semantic-title arbitration override what the user typed.
+        for source in ["browserResolved", "titleDerived", "urlPath", "modelJudged", "userEdited"] {
             let request = MessageRequest(
                 requestId: UUID().uuidString,
                 idempotencyKey: "profile:download-42",

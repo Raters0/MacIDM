@@ -144,19 +144,42 @@
     return size < settings.minimumMediaBytes;
   }
 
+  /// Indexed stream-segment filenames (`seg-0001.ts`, `0.m4s`,
+  /// `chunk_12.ts`): the stem ends in a digit run. Numbered segments always
+  /// look like this; user-facing direct links essentially never do.
+  function isIndexedSegmentName(candidate) {
+    try {
+      const filename = decodeURIComponent(
+        new URL(candidate.url).pathname.split("/").pop() ?? "",
+      );
+      const stem = filename.replace(/\.[a-z0-9]{1,8}$/iu, "");
+      return /\d+$/u.test(stem);
+    } catch {
+      return false;
+    }
+  }
+
   /// Noise segments: `init`/`bootstrap` initialization segments, or tiny
   /// segments (m4s/ts/mp2t/mp4) once a same-origin manifest has appeared.
   /// Same-host manifest evidence is required; without it (cross-origin or
-  /// same-origin alike) everything is kept.
+  /// same-origin alike) everything is kept. When the size is unknown
+  /// (measured: chunked segment responses the size probe cannot measure),
+  /// m4s/ts/mp2t fall back to manifest attribution plus an indexed segment
+  /// filename; mp4 stays size-gated because it is a common direct-download
+  /// format and only a measured small size proves a segment.
   function isNoiseSegment(candidate, settings, manifestHosts) {
     if (isM4STrackCandidate(candidate)) return false;
     const host = hostOf(candidate?.url);
     if (!host || !manifestHosts.has(host)) return false;
     if (isInitOrBootstrapName(candidate)) return true;
+    const extension = segmentExtensionOf(candidate);
+    if (!["m4s", "ts", "mp2t", "mp4"].includes(extension)) return false;
     const size = candidate.size;
-    if (!Number.isSafeInteger(size) || size < 0) return false;
-    if (size > settings.segmentMaximumBytes) return false;
-    return ["m4s", "ts", "mp2t", "mp4"].includes(segmentExtensionOf(candidate));
+    const sizeKnown = Number.isSafeInteger(size) && size >= 0;
+    if (sizeKnown) {
+      return size <= settings.segmentMaximumBytes;
+    }
+    return extension !== "mp4" && isIndexedSegmentName(candidate);
   }
 
   function bump(summary, key) {

@@ -2,7 +2,7 @@ import Foundation
 import MacIDMBridge
 
 private enum HostConfiguration {
-    static let version = "1.0.3"
+    static let version = "1.0.4"
     static let expectedExtensionID = "obaipbnfoifafgcpekkfkapjifjgbjag"
     static let expectedOrigin = "chrome-extension://\(expectedExtensionID)/"
     static let clientInstanceID = "chrome:\(expectedExtensionID)"

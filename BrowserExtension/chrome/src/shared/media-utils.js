@@ -1274,18 +1274,6 @@
     }
   }
 
-  function isYouTubeGoogleVideoCandidate(candidate) {
-    if (!candidate) return false;
-    try {
-      const url = new URL(candidate.url);
-      const host = url.hostname.toLowerCase().replace(/^www\./u, "");
-      return host === "googlevideo.com"
-        || (host.endsWith(".googlevideo.com") && url.pathname.includes("/videoplayback"));
-    } catch {
-      return false;
-    }
-  }
-
   function addSegmentGroup(groups, candidate) {
     const extension = mediaExtension(candidate?.url, candidate?.mime, candidate?.format) || "unknown";
     const host = hostOf(candidate?.url) || "media";
@@ -2026,6 +2014,38 @@
     return 4;
   }
 
+  /// Popup section bucket, mirroring `displayPriority`'s categories so the
+  /// grouping can never disagree with the ordering: real media (adapters,
+  /// streams, video/audio, player placeholders, known media extensions),
+  /// decorative images, and everything else. Collapsed fragments are
+  /// handled separately.
+  function candidateSection(candidate) {
+    const format = candidate?.format;
+    const mime = String(candidate?.mime ?? "").toLowerCase();
+    const url = String(candidate?.url ?? "");
+    // Candidates may declare either a canonical semantic format ("video")
+    // or a container extension ("mp4"); both mean media here.
+    const declared = String(candidate?.fileExtension ?? format ?? "")
+      .toLowerCase()
+      .split("/")[0];
+    if (format === "image" || mime.startsWith("image/") || imageExtensions.has(declared)) {
+      return "images";
+    }
+    if (
+      candidate?.siteAdapter
+      || candidate?.pairKind === "m4s-pair"
+      || format === "hls" || format === "dash" || format === "dash-json"
+      || format === "video" || mime.startsWith("video/")
+      || format === "audio" || mime.startsWith("audio/")
+      || url.startsWith("blob:") || url.startsWith("mse:")
+      || knownExtensions.has(declared)
+      || knownExtensions.has(mediaExtension(url, mime, format))
+    ) {
+      return "media";
+    }
+    return "other";
+  }
+
   /// Panel display sort: first by media-type priority (site-adapter primary
   /// candidates on top, video/audio before, images last), then by discovery
   /// confidence descending within the same priority, using a stable sort
@@ -2144,6 +2164,7 @@
     estimateYouTubeMergedSize,
     confidenceRank,
     displayPriority,
+    candidateSection,
     sortCandidatesForDisplay,
     filterCandidatesForElementScope,
     formatBytes,

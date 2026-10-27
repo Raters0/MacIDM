@@ -585,7 +585,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message?.type === "downloadAll.submit") {
-    submitDownloadAll(message.scanID, message.urls)
+    submitDownloadAll(message.scanID, message.urls, message.renames)
       .then(sendResponse)
       .catch(async (error) => {
         await recordSafeError(error);
@@ -714,25 +714,33 @@ chrome.webRequest.onBeforeRequest.addListener(
     // suppressed takeover of that later GET download (the hanime1.me case).
     if (isBodyCarryingMethod(details.method)) {
       if (typeof details.url === "string" && isHttpURL(details.url)) {
+        // Delete before set so a repeated URL moves to the end: the map then
+        // stays ordered by timestamp and pruning can stop at the first fresh
+        // entry instead of scanning every entry on every POST.
+        nonGetRequestURLs.delete(details.url);
         nonGetRequestURLs.set(details.url, Date.now());
         // Prune inline: previously only the takeover path pruned, so
         // POST-heavy pages (login flows, telemetry) grew this map without
         // bound for the whole SW lifetime.
-        const now = Date.now();
-        for (const [url, ts] of nonGetRequestURLs) {
-          if (now - ts > NON_GET_URL_TTL_MS) nonGetRequestURLs.delete(url);
-        }
+        pruneNonGetURLs();
       }
     }
   },
   { urls: ["http://*/*", "https://*/*"] },
 );
 
-function pruneAndReturnNonGetURLs() {
+// Entries are kept in timestamp order (see onBeforeRequest), so expired
+// entries are all at the front.
+function pruneNonGetURLs() {
   const now = Date.now();
   for (const [url, ts] of nonGetRequestURLs) {
-    if (now - ts > NON_GET_URL_TTL_MS) nonGetRequestURLs.delete(url);
+    if (now - ts <= NON_GET_URL_TTL_MS) break;
+    nonGetRequestURLs.delete(url);
   }
+}
+
+function pruneAndReturnNonGetURLs() {
+  pruneNonGetURLs();
   return nonGetRequestURLs;
 }
 
@@ -997,7 +1005,7 @@ async function startDownloadAll(tabId) {
   return { count: scan.links.length };
 }
 
-async function submitDownloadAll(scanID, requestedURLs) {
+async function submitDownloadAll(scanID, requestedURLs, rawRenames) {
   if (downloadAllSubmissions.has(scanID)) {
     return { ok: false, message: t("serviceWorker.scanSubmitting") };
   }
@@ -1014,21 +1022,37 @@ async function submitDownloadAll(scanID, requestedURLs) {
           .filter(Boolean)
           .slice(0, MAX_DOWNLOAD_ALL_LINKS)
       : [];
+    // User-authored names from the selection page's rename template. Only
+    // strings for known scan URLs count; anything else is ignored so a
+    // malformed page payload cannot inject names.
+    const renames =
+      rawRenames && typeof rawRenames === "object" && !Array.isArray(rawRenames)
+        ? new Map(
+            Object.entries(rawRenames)
+              .filter(([url, name]) => allowed.has(url) && typeof name === "string" && name.trim())
+              .map(([url, name]) => [url, name.trim().slice(0, 255)]),
+          )
+        : new Map();
     let accepted = 0;
     for (const [index, link] of links.entries()) {
       try {
         const anchorText = typeof link.text === "string" ? link.text.trim() : "";
+        const rename = renames.get(link.url);
         await explicitEnqueue.enqueue({
           url: link.url,
           referrer: scan.pageUrl,
           // The anchor label is the most useful filename signal for
           // Download-All. Fall back to the page title only when the link has
           // no usable text; the URL-derived name remains the final fallback.
+          // A rename-template name outranks all of them: the user typed the
+          // template, so it is "userEdited" in the naming trust model and
+          // the semantic-title arbitration must not override it.
           pageTitle: anchorText || scan.title,
-          filenameHint: filenameFromDownload({ url: link.url, filename: anchorText }),
-          // An anchor-text hint is a semantic name; a URL-tail hint is not
-          // (technical spec §8.1 naming trust model).
-          filenameHintSource: anchorText ? "titleDerived" : "urlPath",
+          filenameHint: rename
+            ?? filenameFromDownload({ url: link.url, filename: anchorText }),
+          filenameHintSource: rename
+            ? "userEdited"
+            : (anchorText ? "titleDerived" : "urlPath"),
           operationID: `${scanID}-${index}`,
         });
         accepted += 1;

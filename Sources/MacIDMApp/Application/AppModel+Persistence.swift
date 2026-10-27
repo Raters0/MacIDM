@@ -47,6 +47,7 @@ extension AppModel {
         guard task.status != previous else { return }
         switch task.status {
         case .completed:
+            lastCompletedTaskID = task.id
             notifier.notifyTaskFinished(
                 filename: task.filename,
                 succeeded: true,
@@ -129,9 +130,19 @@ extension AppModel {
             ? snapshot.filter { $0.status.isActive }
             : snapshot
         let completion: @Sendable (String?) -> Void = { [weak self] message in
-            guard let message else { return }
             Task { @MainActor in
-                self?.presentedError = PresentedError(
+                guard let self else { return }
+                // Progress saves repeat every few seconds, so a persistent
+                // failure (e.g. a full disk) used to reopen the same dialog on
+                // every tick. Report each distinct failure once; a successful
+                // save re-arms reporting.
+                guard let message else {
+                    self.lastReportedPersistenceError = nil
+                    return
+                }
+                guard message != self.lastReportedPersistenceError else { return }
+                self.lastReportedPersistenceError = message
+                self.presentedError = PresentedError(
                     title: String(localized: "无法保存任务状态"),
                     message: message
                 )

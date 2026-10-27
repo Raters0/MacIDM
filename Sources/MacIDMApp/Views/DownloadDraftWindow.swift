@@ -76,7 +76,7 @@ final class DownloadDraftWindowManager: NSObject, NSWindowDelegate, @unchecked S
         }
         var relayout: (() -> Void)?
         view.onLayoutChange = { relayout?() }
-        let hosting = NSHostingView(rootView: view.environmentObject(model))
+        let hosting = NSHostingView(rootView: view.environmentObject(model).appThemedWindow(model.settings))
         window.contentView = hosting
 
         // Fit the window's height to the form's natural height so every

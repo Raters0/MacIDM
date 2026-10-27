@@ -1,4 +1,5 @@
 import { t, i18n, hydrateDocument } from "../shared/i18n-access.js";
+import { matchesFilterQuery, renderRenames } from "../shared/download-all-tools.js";
 
 const PAGE_SIZE = 200;
 const keepAlivePort = chrome.runtime.connect({ name: "download-all-selection" });
@@ -6,6 +7,8 @@ const scanID = new URL(location.href).searchParams.get("scan");
 const pageTitle = document.querySelector("#page-title");
 const linksContainer = document.querySelector("#links");
 const filterInput = document.querySelector("#filter");
+const renameInput = document.querySelector("#rename");
+const renamePreview = document.querySelector("#rename-preview");
 const selectAll = document.querySelector("#select-all");
 const submit = document.querySelector("#submit");
 const notice = document.querySelector("#notice");
@@ -17,6 +20,7 @@ const pageNumber = document.querySelector("#page-number");
 let links = [];
 let filtered = [];
 let page = 0;
+let pageTitleText = "";
 const selected = new Set();
 
 initialize();
@@ -52,9 +56,12 @@ async function initialize() {
   }
   links = result.links;
   links.forEach((item) => selected.add(item.url));
-  pageTitle.textContent = result.title || redactedURL(result.pageUrl);
+  pageTitleText = result.title || redactedURL(result.pageUrl);
+  pageTitle.textContent = pageTitleText;
   applyFilter();
 }
+
+renameInput.addEventListener("input", updateRenamePreview);
 
 filterInput.addEventListener("input", () => {
   page = 0;
@@ -81,11 +88,16 @@ next.addEventListener("click", () => {
 
 submit.addEventListener("click", async () => {
   submit.disabled = true;
-  const urls = links.filter((item) => selected.has(item.url)).map((item) => item.url);
+  const urls = selectedLinks().map((item) => item.url);
+  // A rename template turns every selected link into a user-authored name
+  // (naming trust: userEdited). Links that render to nothing usable keep
+  // the normal naming path.
+  const renames = renameInput.value.trim() ? currentRenames().names : undefined;
   const result = await chrome.runtime.sendMessage({
     type: "downloadAll.submit",
     scanID,
     urls,
+    ...(renames && { renames }),
   });
   notice.textContent = result?.ok
     ? t("downloadAll.submitted", { count: result.accepted })
@@ -94,9 +106,13 @@ submit.addEventListener("click", async () => {
 });
 
 function applyFilter() {
-  const query = filterInput.value.trim().toLowerCase();
-  filtered = query
-    ? links.filter((item) => `${item.text} ${redactedURL(item.url)}`.toLowerCase().includes(query))
+  const query = filterInput.value;
+  // Terms are comma-OR over substring / glob / regex — see
+  // shared/download-all-tools.js; an invalid regex term degrades to a
+  // substring instead of blanking the list.
+  filtered = query.trim()
+    ? links.filter((item) =>
+        matchesFilterQuery(`${item.text} ${redactedURL(item.url)}`.toLowerCase(), query))
     : links;
   render();
 }
@@ -157,6 +173,33 @@ function render() {
 
 function updateSummary() {
   summary.textContent = t("downloadAll.summary", { total: filtered.length, selected: selected.size });
+  updateRenamePreview();
+}
+
+function selectedLinks() {
+  return links.filter((item) => selected.has(item.url));
+}
+
+function currentRenames() {
+  return renderRenames(renameInput.value, selectedLinks(), { pageTitle: pageTitleText });
+}
+
+// Live preview of the first rendered name, plus a hint when several files
+// would end up with the same name (the App would then append " (1)" etc.).
+function updateRenamePreview() {
+  if (!renameInput.value.trim()) {
+    renamePreview.textContent = "";
+    return;
+  }
+  const { names, duplicates } = currentRenames();
+  const first = Object.values(names)[0];
+  if (!first) {
+    renamePreview.textContent = t("downloadAll.renamePreviewEmpty");
+    return;
+  }
+  const parts = [t("downloadAll.renamePreview", { name: first })];
+  if (duplicates > 0) parts.push(t("downloadAll.renameDuplicates", { count: duplicates }));
+  renamePreview.textContent = parts.join(" ");
 }
 
 // The "format" slot of the four-slot convention: inferred from the URL

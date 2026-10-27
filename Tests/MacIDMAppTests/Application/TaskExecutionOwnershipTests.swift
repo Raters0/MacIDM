@@ -118,9 +118,9 @@ final class TaskExecutionOwnershipTests: XCTestCase {
         try Data("partial".utf8).write(to: artifact)
         model.remove(id, fileRemoval: .deletePermanently)
         XCTAssertTrue(FileManager.default.fileExists(atPath: artifact.path))
-        XCTAssertFalse(model.task(with: id)?.isArchived ?? true)
+        XCTAssertNotNil(model.task(with: id))
         await runner.stop(0)
-        try await waitUntil { model.task(with: id)?.isArchived == true }
+        try await waitUntil { model.task(with: id) == nil }
         XCTAssertFalse(FileManager.default.fileExists(atPath: artifact.path))
         XCTAssertNil(model.executions[id].task)
     }

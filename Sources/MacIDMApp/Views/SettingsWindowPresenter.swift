@@ -54,16 +54,7 @@ private struct SettingsWindowRoot: View {
         SettingsView(model: model)
             .environmentObject(model)
             .tint(AppTheme.accent)
-            .preferredColorScheme(colorScheme)
-            .background(WindowAppearanceConfigurator(colorScheme: settings.colorScheme))
-    }
-
-    private var colorScheme: ColorScheme? {
-        switch settings.colorScheme {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
+            .appThemedWindow(settings)
     }
 }
 

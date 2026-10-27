@@ -31,7 +31,7 @@ final class CompletionActionCountdownWindowManager: NSObject, NSWindowDelegate,
             defer: false
         )
         window.backgroundColor = AppTheme.windowSurfaceNSColor
-        window.contentView = NSHostingView(rootView: view.environmentObject(model))
+        window.contentView = NSHostingView(rootView: view.environmentObject(model).appThemedWindow(model.settings))
         window.title = String(localized: "所有下载已完成")
         window.isReleasedWhenClosed = false
         window.level = .floating

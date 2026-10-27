@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import MacIDMApp
 
 /// Model-level capacity probe backing the "1000+ 任务" performance gate

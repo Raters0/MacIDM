@@ -82,7 +82,7 @@ enum ErrorPresentation {
                 title: String(localized: "服务器错误"),
                 message: httpSuggestion(for: status)
             )
-        case .storageError(let detail):
+        case .storageError(let detail, _):
             return Friendly(
                 title: String(localized: "磁盘写入失败"),
                 message: String(localized: "检查磁盘空间和目录权限后重试。（\(detail)）")

@@ -1905,13 +1905,7 @@
   }
 
   function estimatedSizeForVariant(variant) {
-    if (!variant) return null;
-    const directSize = Number.isSafeInteger(variant.estimatedSize) && variant.estimatedSize >= 0
-      ? variant.estimatedSize
-      : null;
-    const estimateFn = globalThis.MacIDMMediaUtils?.estimateVariantSize;
-    const estimatedSize = directSize ?? (estimateFn ? estimateFn(variant) : null);
-    return Number.isSafeInteger(estimatedSize) && estimatedSize >= 0 ? estimatedSize : null;
+    return globalThis.MacIDMMediaPresentation.estimatedSizeForVariant(variant);
   }
 
   function overlayVariantBaseLabel(variant) {

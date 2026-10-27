@@ -310,7 +310,7 @@ struct AppTaskStore: @unchecked Sendable {
                 in: database
             )
             let version = try schemaVersion(in: database)
-            if version > 14 { throw AppTaskStoreError.unsupportedSchema(version) }
+            if version > 16 { throw AppTaskStoreError.unsupportedSchema(version) }
             if version == 0 {
                 try execute(
                     """
@@ -336,7 +336,6 @@ struct AppTaskStore: @unchecked Sendable {
                         error_code TEXT,
                         error_message TEXT,
                         segments_json TEXT NOT NULL,
-                        is_archived INTEGER NOT NULL DEFAULT 0,
                         average_speed REAL,
                         total_duration REAL,
                         category TEXT,
@@ -353,7 +352,7 @@ struct AppTaskStore: @unchecked Sendable {
                         media_cid TEXT,
                         selected_quality INTEGER,
                         media_warning TEXT,
-                        history_hidden INTEGER NOT NULL DEFAULT 0
+                        rate_limit_kbps INTEGER
                     );
                     CREATE INDEX IF NOT EXISTS tasks_created_at_index
                         ON tasks(created_at DESC);
@@ -381,7 +380,7 @@ struct AppTaskStore: @unchecked Sendable {
                         created_at REAL NOT NULL
                     );
                     DELETE FROM schema_migrations;
-                    INSERT INTO schema_migrations(version) VALUES (14);
+                    INSERT INTO schema_migrations(version) VALUES (16);
                     """,
                     in: database
                 )
@@ -546,6 +545,33 @@ struct AppTaskStore: @unchecked Sendable {
                     """,
                     in: database
                 )
+                migratedVersion = 14
+            }
+            if migratedVersion == 14 {
+                try execute(
+                    """
+                    ALTER TABLE tasks ADD COLUMN rate_limit_kbps INTEGER;
+                    DELETE FROM schema_migrations;
+                    INSERT INTO schema_migrations(version) VALUES (15);
+                    """,
+                    in: database
+                )
+                migratedVersion = 15
+            }
+            if migratedVersion == 15 {
+                // The single-list model has no archived/history-only rows:
+                // completed tasks stay in the main list until removed.
+                // Existing rows keep their data; only the obsolete
+                // visibility flags are dropped.
+                try execute(
+                    """
+                    ALTER TABLE tasks DROP COLUMN is_archived;
+                    ALTER TABLE tasks DROP COLUMN history_hidden;
+                    DELETE FROM schema_migrations;
+                    INSERT INTO schema_migrations(version) VALUES (16);
+                    """,
+                    in: database
+                )
             }
         }
     }
@@ -559,8 +585,6 @@ struct AppTaskStore: @unchecked Sendable {
         if var objects = try JSONSerialization.jsonObject(with: raw) as? [[String: Any]] {
             for index in objects.indices {
                 objects[index]["speedHistory"] = [String]()
-                if objects[index]["isArchived"] == nil { objects[index]["isArchived"] = false }
-                if objects[index]["historyHidden"] == nil { objects[index]["historyHidden"] = false }
                 if objects[index]["activeTransferDuration"] == nil {
                     objects[index]["activeTransferDuration"] = 0
                 }
@@ -705,7 +729,6 @@ struct AppTaskStore: @unchecked Sendable {
             .errorCode: .text(persistedErrorCode),
             .errorMessage: .text(persistedErrorMessage),
             .segmentsJson: .text(segments),
-            .isArchived: .integer(task.isArchived ? 1 : 0),
             .averageSpeed: .real(task.averageSpeed),
             .totalDuration: .real(task.totalDuration),
             .category: .text(task.categoryOverride?.rawValue),
@@ -722,7 +745,7 @@ struct AppTaskStore: @unchecked Sendable {
             .mediaCid: .text(task.mediaCID),
             .selectedQuality: .integer(task.selectedQuality.map { Int64($0) }),
             .mediaWarning: .text(task.mediaWarning?.rawValue),
-            .historyHidden: .integer(task.historyHidden ? 1 : 0),
+            .rateLimitKbps: .integer(task.rateLimitKBps.map { Int64($0) }),
         ]
         for column in AppTaskColumn.allCases {
             guard let value = values[column] else { throw AppTaskStoreError.invalidStoredTask("Missing task column") }
@@ -797,7 +820,6 @@ struct AppTaskStore: @unchecked Sendable {
             errorMessage: columnText(statement, AppTaskColumn.errorMessage.rawValue),
             segments: segments
         )
-        task.isArchived = sqlite3_column_int(statement, AppTaskColumn.isArchived.rawValue) != 0
         task.averageSpeed = nullableDouble(statement, AppTaskColumn.averageSpeed.rawValue)
         task.totalDuration = nullableDouble(statement, AppTaskColumn.totalDuration.rawValue)
         task.categoryOverride = columnText(statement, AppTaskColumn.category.rawValue).flatMap(
@@ -820,7 +842,7 @@ struct AppTaskStore: @unchecked Sendable {
         task.selectedQuality = nullableInt64(statement, AppTaskColumn.selectedQuality.rawValue).map { Int($0) }
         task.mediaWarning = columnText(statement, AppTaskColumn.mediaWarning.rawValue)
             .flatMap(AppTaskMediaWarning.init(rawValue:))
-        task.historyHidden = sqlite3_column_int(statement, AppTaskColumn.historyHidden.rawValue) != 0
+        task.rateLimitKBps = nullableInt64(statement, AppTaskColumn.rateLimitKbps.rawValue).map { Int($0) }
         return task
     }
 

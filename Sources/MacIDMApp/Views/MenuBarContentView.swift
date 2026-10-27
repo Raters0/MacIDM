@@ -29,11 +29,16 @@ struct MenuBarIconLabel: View {
 
 struct MenuBarContentView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.colorScheme) private var colorScheme
 
-    private var surfaceColor: Color {
-        colorScheme == .dark ? Color(white: 0.12) : Color(white: 0.985)
+    /// One dynamic color for both the SwiftUI content and the AppKit window
+    /// behind it, so the two can never resolve to different shades.
+    static let surfaceNSColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
+            : NSColor(srgbRed: 0.985, green: 0.985, blue: 0.985, alpha: 1)
     }
+
+    private var surfaceColor: Color { Color(nsColor: Self.surfaceNSColor) }
 
     var body: some View {
         if #available(macOS 15.0, *) {
@@ -60,6 +65,7 @@ struct MenuBarContentView: View {
         // background is supplied. Paint an opaque surface behind the content
         // as well, extending through the hosting view's safe area.
         .background(surfaceColor.ignoresSafeArea())
+        .background(MenuBarPanelWindowConfigurator())
     }
 
     private var header: some View {
@@ -351,5 +357,55 @@ private struct MenuBarPanelButtonLabel: View {
         if prominent { return .white }
         if isHovering && isEnabled { return tint }
         return restForeground ?? .primary
+    }
+}
+
+/// Under the macOS 26 SDK the MenuBarExtra window paints its own layers
+/// outside the hosted content: a glass strip above it and the default white
+/// window background below it, framing the panel with two mismatched bands.
+/// SwiftUI backgrounds cannot reach those areas, so paint the window itself
+/// with the panel surface and hide the system backdrops around the content.
+private struct MenuBarPanelWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        AttachmentView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window { Self.configure(window) }
+    }
+
+    /// Configures synchronously when attached, before the first display.
+    private final class AttachmentView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { MenuBarPanelWindowConfigurator.configure(window) }
+        }
+    }
+
+    @MainActor
+    static func configure(_ window: NSWindow) {
+        window.backgroundColor = MenuBarContentView.surfaceNSColor
+        window.titlebarSeparatorStyle = .none
+        guard let content = window.contentView, let frameView = content.superview else { return }
+        hideBackdrops(in: frameView, keeping: content)
+    }
+
+    /// Hides material views that do not host the panel content. A backdrop
+    /// that contains the content must stay visible, and the content's own
+    /// subtree is never touched.
+    @MainActor
+    private static func hideBackdrops(in view: NSView, keeping content: NSView) {
+        for subview in view.subviews where subview !== content {
+            if !content.isDescendant(of: subview), isBackdrop(subview) {
+                subview.isHidden = true
+            } else {
+                hideBackdrops(in: subview, keeping: content)
+            }
+        }
+    }
+
+    @MainActor
+    private static func isBackdrop(_ view: NSView) -> Bool {
+        view is NSVisualEffectView || String(describing: type(of: view)).contains("GlassEffect")
     }
 }

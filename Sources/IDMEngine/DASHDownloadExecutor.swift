@@ -270,7 +270,8 @@ public struct DASHDownloadExecutor: Sendable {
                 outputURL: request.destination,
                 outputKind: request.outputKind,
                 expectedDuration: manifest.duration,
-                control: control
+                control: control,
+                titleMetadata: FFmpegMetadata.title(forOutput: request.destination)
             )
         )
         cleanup = true
@@ -381,7 +382,8 @@ public struct DASHDownloadExecutor: Sendable {
                 outputURL: request.destination,
                 outputKind: request.outputKind,
                 expectedDuration: nil,
-                control: control
+                control: control,
+                titleMetadata: FFmpegMetadata.title(forOutput: request.destination)
             )
         )
         cleanup = true

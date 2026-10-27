@@ -38,6 +38,14 @@ final class AppModel: ObservableObject {
     /// inner token bucket is swapped whenever the speed-limit setting changes
     /// so in-flight downloads pick up the new limit without a pause/resume.
     let sharedRateLimiter = DynamicRateLimiter()
+    /// Continuous clipboard watch (`clipboardWatch` setting, default off).
+    /// The on-activate detector and this watcher share the offer path.
+    let clipboardLinkWatcher = ClipboardLinkWatcher()
+    /// Per-task dynamic limiters, one for every task that has started a
+    /// transfer (unlimited until the user caps it). Keyed by task id so a cap
+    /// set on an already-running task reaches its in-flight transfers;
+    /// entries are dropped when the task is removed.
+    private(set) var taskRateLimiters: [UUID: DynamicRateLimiter] = [:]
     /// Learns optimal connection counts per host to avoid CDN throttling.
     let connectionPolicyLearner = ConnectionPolicyLearner()
 
@@ -152,8 +160,18 @@ final class AppModel: ObservableObject {
     var statusExportPending = false
     var pendingPersistenceTask: Task<Void, Never>?
     var lastPersistenceFlush = Date.distantPast
+    /// Last persistence failure already shown to the user; a successful save
+    /// clears it so a later, new failure is reported again.
+    var lastReportedPersistenceError: String?
+    /// The task that most recently transitioned to `.completed` in this
+    /// session. `updatedAt` cannot answer "what just finished": renaming or
+    /// re-tagging an old task bumps it too.
+    var lastCompletedTaskID: UUID?
     var takeoverSweepTask: Task<Void, Never>?
     var fileCheckTask: Task<Void, Never>?
+    /// Polls free space while tasks are parked for a full disk; nil when
+    /// none are waiting (see AppModel+DiskSpaceWatch).
+    var diskSpaceWatchTask: Task<Void, Never>?
     var queueScheduleTask: Task<Void, Never>?
     var cancellables = Set<AnyCancellable>()
     /// Restarting the app must not instantly time out takeovers that Chrome
@@ -523,9 +541,14 @@ final class AppModel: ObservableObject {
         }
         startTakeoverSweep()
         startFileExistenceCheck()
+        startDiskSpaceWatchIfNeeded()
         startQueueScheduleLoop()
         rebuildSharedRateLimiter()
         rebuildProxyPolicy()
+        clipboardLinkWatcher.onLinkCopied = { [weak self] value in
+            self?.offerClipboardLink(value)
+        }
+        updateClipboardWatcher()
         // Check yt-dlp availability on launch. If not found, present an
         // install dialog so the user knows YouTube downloads require it
         // before they try to download a YouTube video.
@@ -551,6 +574,16 @@ final class AppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.rebuildSharedRateLimiter()
+            }
+            .store(in: &cancellables)
+        // The continuous clipboard watch follows its setting without a
+        // restart; disabling stops the timer immediately.
+        self.settings.$clipboardWatch
+            .combineLatest(self.settings.$clipboardWatchFilesOnly)
+            .removeDuplicates { $0 == $1 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateClipboardWatcher()
             }
             .store(in: &cancellables)
         // When the user increases the concurrent download limit, queued
@@ -619,6 +652,52 @@ final class AppModel: ObservableObject {
                 ? try? TokenBucketRateLimiter(rateBytesPerSecond: Int64(limitKBps) * 1_024)
                 : nil
         )
+    }
+
+    /// Caps one task's transfer rate. Runs through a per-task dynamic
+    /// limiter so a change applies to an in-flight task immediately, the
+    /// same live behavior the global limit has.
+    func setTaskRateLimit(_ kbps: Int?, for id: UUID) {
+        let limit = (kbps ?? 0) > 0 ? kbps : nil
+        update(id) { $0.rateLimitKBps = limit }
+        tryPersistOrPresentError()
+        taskRateLimiters[id]?.reconfigure(Self.taskBucket(limit))
+    }
+
+    /// The limiter a task's transfers use: the global dynamic limiter plus
+    /// the task's own dynamic limiter. Every task gets the per-task wrapper
+    /// (unlimited when uncapped), so a cap added while the task is already
+    /// downloading applies immediately instead of after a pause/resume. Both
+    /// must grant every byte, so the tighter bound always wins.
+    func rateLimiter(for record: AppTask) -> any DownloadRateLimiting {
+        let limiter: DynamicRateLimiter
+        if let existing = taskRateLimiters[record.id] {
+            limiter = existing
+        } else {
+            limiter = DynamicRateLimiter()
+            taskRateLimiters[record.id] = limiter
+        }
+        limiter.reconfigure(Self.taskBucket(record.rateLimitKBps))
+        return CombinedRateLimiter(global: sharedRateLimiter, task: limiter)
+    }
+
+    /// The effective cap in KB/s for backends that run outside the
+    /// in-process limiters (yt-dlp): the tighter of the global and per-task
+    /// limits, nil when neither applies. Captured at start; yt-dlp cannot be
+    /// re-limited mid-run.
+    func effectiveRateLimitKBps(for record: AppTask) -> Int? {
+        [settings.speedLimitKBps, record.rateLimitKBps ?? 0].filter { $0 > 0 }.min()
+    }
+
+    private static func taskBucket(_ kbps: Int?) -> (any DownloadRateLimiting)? {
+        guard let kbps, kbps > 0 else { return nil }
+        return try? TokenBucketRateLimiter(rateBytesPerSecond: Int64(kbps) * 1_024)
+    }
+
+    /// Drops a removed task's per-task limiter so the dictionary cannot
+    /// outgrow the task list.
+    func discardTaskRateLimiter(_ id: UUID) {
+        taskRateLimiters[id] = nil
     }
 
     var filteredTasks: [AppTask] {
@@ -690,12 +769,8 @@ final class AppModel: ObservableObject {
         filteredTasks.count { $0.status.isActive && !$0.isCLIManaged }
     }
 
-    /// Archived history rows keep their `fileMissing` flag forever (the
-    /// file is gone and the row is only kept for re-download), which made
-    /// the status-bar warning stale after the user already removed those
-    /// records. Only rows still present in the main list count.
     var fileMissingCount: Int {
-        tasks.count { $0.fileMissing && !$0.isArchived }
+        tasks.count { $0.fileMissing }
     }
 
     /// Received/total across active tasks that know their size; nil when no
@@ -708,588 +783,6 @@ final class AppModel: ObservableObject {
         guard total > 0 else { return nil }
         let received = measurable.reduce(Int64(0)) { $0 + $1.receivedBytes }
         return min(1, max(0, Double(received) / Double(total)))
-    }
-
-    /// Strips credentials and auth-looking query parameters from a page
-    /// URL before storing it on the task. Innocuous identifiers (e.g.
-    /// YouTube's `v=`) are preserved so the stored page URL stays useful
-    /// for display and diagnostics without leaking tokens.
-    static func pageURLForStorage(_ url: URL) -> String? {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return nil
-        }
-        components.user = nil
-        components.password = nil
-        // Fragments only carry internal data (e.g. the `#height=N`
-        // quality-selection marker); they are never part of the real page.
-        components.fragment = nil
-        if let items = components.queryItems, !items.isEmpty {
-            let filtered = items.filter { !looksLikeAuthParameter($0.name) }
-            components.queryItems = filtered.isEmpty ? nil : filtered
-        }
-        return components.string ?? url.absoluteString
-    }
-
-    private static let authParameterSignatures = [
-        "token", "secret", "sign", "auth", "session", "credential",
-        "password", "cookie", "apikey", "api_key", "access", "private",
-        "sid", "key",
-    ]
-
-    static func looksLikeAuthParameter(_ name: String) -> Bool {
-        let lower = name.lowercased()
-        return authParameterSignatures.contains { lower.contains($0) }
-    }
-
-    /// Records the durable, non-secret re-resolution identity for a
-    /// site-adapter (Bilibili) DASH-pair task and archives its login cookie,
-    /// so a paused task can be re-resolved to fresh signed track URLs after a
-    /// restart instead of being forced into NEEDS_REFETCH.
-    ///
-    /// The signed track URLs themselves stay transient (never persisted); only
-    /// the page URL (already on the task), the cid, the chosen track's
-    /// format_id, and the page-origin cookie (Keychain via SessionStore) are
-    /// kept. Does nothing for tasks whose page URL is not a supported
-    /// site-adapter page. Cookie archiving honors `rememberSiteSessions`.
-    func recordSiteAdapterResumeContext(
-        task: inout AppTask,
-        downloadURL: URL,
-        pairCID: String?,
-        requestContext: DownloadRequestContext?
-    ) {
-        guard let pageURLString = task.pageURL,
-            let pageURL = URL(string: pageURLString),
-            BilibiliPlayurlAdapter.supports(pageURL)
-        else { return }
-        task.mediaCID = pairCID
-        task.selectedQuality = BilibiliPlayurlAdapter.m4sFormatID(in: downloadURL)
-        // Archive the page-origin login cookie (bilibili.com), not the CDN
-        // host: re-resolution calls the Bilibili API, which needs the page
-        // login state. The value goes to the Keychain; only non-secret
-        // metadata lands in sessions.json.
-        if settings.rememberSiteSessions,
-            let cookie = requestContext?.cookie, !cookie.isEmpty
-        {
-            sessionStore.store(
-                url: pageURL,
-                cookie: cookie,
-                userAgent: requestContext?.userAgent
-            )
-        }
-    }
-
-    func addDownload(
-        urlString: String,
-        destination: URL,
-        maximumParallelRequests: Int,
-        expectedSHA256: String?,
-        startImmediately: Bool,
-        sourceKind: DownloadSourceKind = .http,
-        requestContext: DownloadRequestContext? = nil,
-        automaticRename: Bool = false,
-        pairAudioURL: URL? = nil,
-        pairCID: String? = nil,
-        backend: DownloadBackend = .native,
-        priority: Int = 0,
-        estimatedSize: Int64? = nil,
-        mediaDuration: TimeInterval? = nil,
-        categoryOverride: DownloadCategory? = nil,
-        mimeType: String? = nil,
-        selectionIntent: Date? = nil,
-        takeoverDraftID: String? = nil
-    ) throws {
-        let takeover = try takeoverDraftID.map { try validatedInteractiveTakeover($0) }
-        let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedURL) else { throw IDMError.invalidURL }
-        // 带音轨的提交合法形态：.dash（Bilibili m4s 直链 pair）与 .hls
-        // （EXT-X-MEDIA 音频组，输入是媒体清单，HLS pair 执行器负责下载
-        // + 合并）。其余 sourceKind 与音轨互斥。
-        if pairAudioURL != nil, sourceKind != .dash, sourceKind != .hls {
-            throw IDMError.invalidURL
-        }
-        if let pairAudioURL {
-            guard let scheme = pairAudioURL.scheme?.lowercased(),
-                (scheme == "http" || scheme == "https"),
-                pairAudioURL.host != nil
-            else { throw IDMError.invalidURL }
-        }
-        let normalizedHash = expectedSHA256?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preparedDestination = try categorizedDestination(
-            for: destination.standardizedFileURL,
-            categoryOverride: categoryOverride,
-            mimeType: mimeType
-        )
-        let initialRequest = DownloadRequest(
-            url: url,
-            destination: preparedDestination,
-            sourceKind: sourceKind,
-            maximumParallelRequests: maximumParallelRequests,
-            expectedSHA256: normalizedHash?.isEmpty == true ? nil : normalizedHash,
-            requestContext: requestContext,
-            pairAudioURL: pairAudioURL,
-            pairCID: pairCID,
-            backend: backend
-        )
-        try InputValidator.validate(initialRequest)
-        let resolvedDestination = try availableDestination(
-            for: initialRequest.destination,
-            automaticRename: automaticRename
-        )
-        let request: DownloadRequest
-        if resolvedDestination == initialRequest.destination {
-            request = initialRequest
-        } else {
-            request = DownloadRequest(
-                url: initialRequest.url,
-                destination: resolvedDestination,
-                sourceKind: initialRequest.sourceKind,
-                maximumParallelRequests: initialRequest.maximumParallelRequests,
-                expectedSHA256: initialRequest.expectedSHA256,
-                taskID: initialRequest.taskID,
-                requestContext: initialRequest.requestContext,
-                pairAudioURL: initialRequest.pairAudioURL,
-                pairCID: initialRequest.pairCID,
-                backend: initialRequest.backend
-            )
-        }
-        try InputValidator.validate(request)
-
-        let now = Date()
-        // Signed browser/media URLs are intentionally redacted in the task
-        // store. Keep an in-memory source and a durable refetch marker so the
-        // current session can finish the transfer while a later restart is
-        // prevented from silently retrying the redacted URL.
-        let transientSubmissionType: String? =
-            backend == .youtubeExtractor
-            ? "youtube.extractor"
-            : (url.query != nil || url.user != nil || url.password != nil
-                ? "manual.transient"
-                : nil)
-        var task = AppTask(
-            id: request.taskID,
-            sourceURL: request.url.absoluteString,
-            destinationPath: request.destination.path,
-            maximumParallelRequests: request.maximumParallelRequests,
-            expectedSHA256: request.expectedSHA256,
-            sourceKind: request.sourceKind,
-            browserClientID: takeover?.clientID,
-            browserSubmissionType: transientSubmissionType,
-            browserSubmissionKey: takeover?.request.idempotencyKey,
-            createdAt: now,
-            updatedAt: now,
-            status: takeover != nil ? .takeoverPending : (startImmediately ? .queued : .paused),
-            receivedBytes: 0,
-            totalBytes: estimatedSize,
-            bytesPerSecond: 0,
-            speedHistory: [],
-            sha256: nil,
-            verification: nil,
-            errorCode: nil,
-            errorMessage: nil,
-            segments: []
-        )
-        task.priority = min(100, max(-100, priority))
-        task.mediaDuration = mediaDuration
-        task.categoryOverride = categoryOverride
-        task.mimeType = mimeType
-        // Preserve the user-facing page URL (credentials stripped): the
-        // persisted sourceURL loses query parameters to redaction, which
-        // would strip e.g. YouTube's video identifier.
-        task.pageURL = Self.pageURLForStorage(url)
-        // For a site-adapter DASH pair the download URL is a signed CDN track,
-        // not a page. Keep the Bilibili page (carried in the adapter-provided
-        // referer) as pageURL so the task can be re-resolved to fresh track
-        // URLs after a restart instead of being forced into NEEDS_REFETCH.
-        if sourceKind == .dash, pairAudioURL != nil,
-            let referer = requestContext?.referer,
-            let refererURL = URL(string: referer),
-            BilibiliPlayurlAdapter.supports(refererURL)
-        {
-            task.pageURL = Self.pageURLForStorage(refererURL)
-        }
-        recordSiteAdapterResumeContext(
-            task: &task,
-            downloadURL: url,
-            pairCID: pairCID,
-            requestContext: requestContext
-        )
-        let takeoverRecord = try takeover.map {
-            try makeInteractiveTakeoverRecord($0, task: task, startImmediately: startImmediately)
-        }
-        if let takeoverRecord {
-            // Preserve extractor routing if the user selected an extractor variant.
-            if task.browserSubmissionType != "youtube.extractor" { task.browserSubmissionType = "download.create" }
-            browserTakeovers.append(takeoverRecord)
-        }
-        tasks.insert(task, at: 0)
-        tableSynchronizer.updateLive(task)
-        exportStatus()
-        transientSourceURLs[task.id] = url
-        // Keep the unredacted URL across restarts when the persisted task
-        // row would lose information to redaction (signed query/credentials)
-        // or comes from a browser submission whose context is memory-only.
-        if transientSubmissionType != nil || url.query != nil || url.user != nil
-            || url.password != nil
-        {
-            sourceURLVault.store(id: task.id, url: url)
-        }
-        if let pairAudioURL {
-            transientPairAudioURLs[task.id] = pairAudioURL
-            if let pairCID { transientPairCIDs[task.id] = pairCID }
-        }
-        if let requestContext {
-            transientRequestContexts[task.id] = TransientRequestContext(
-                value: requestContext,
-                expiresAt: now.addingTimeInterval(24 * 60 * 60)
-            )
-        }
-        // Select the new task only while the user has not moved on. The
-        // confirmation sheet's submit runs on a deferred main-actor task; a
-        // rapid click on another row between "Start download" and task creation
-        // must win, otherwise the focus visibly jumps back to the new task.
-        if selectionIntent == nil || lastUserSelectionChange <= selectionIntent! {
-            selectTasks([task.id])
-        }
-        do {
-            if takeoverRecord != nil { try persistBrowserTakeovers() }
-            try persist()
-        } catch {
-            if let takeoverRecord {
-                browserTakeovers.removeAll { $0.taskID == task.id }
-                takeoverStore.release(path: takeoverRecord.reservationPath)
-                try? persistBrowserTakeovers()
-            }
-            tasks.removeAll { $0.id == task.id }
-            transientSourceURLs[task.id] = nil
-            transientPairAudioURLs[task.id] = nil
-            transientPairCIDs[task.id] = nil
-            transientRequestContexts[task.id] = nil
-            selectedTaskIDs.remove(task.id)
-            tableSynchronizer.applyExternalSelection(selectedTaskIDs)
-            if selectedTaskID == task.id { selectedTaskID = nil }
-            tableSynchronizer.replaceAllLive(tasks)
-            throw error
-        }
-        if startImmediately {
-            scheduleQueuedTasks()
-        }
-    }
-
-    /// Runs `operation` with a wall-clock deadline; returns nil when it
-    /// throws or exceeds the budget. Used to keep interactive lookups
-    /// (YouTube format listing) from blocking the new-download dialog.
-    private static func withTimeout<T: Sendable>(
-        _ seconds: TimeInterval,
-        _ operation: @escaping @Sendable () async throws -> T
-    ) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask {
-                (try? await operation())
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-    }
-
-    func resolveDownloadOptions(
-        urlString: String,
-        filenameHint: String? = nil,
-        filenameHintSource: FilenameHintSource = .urlPath,
-        sourceKind: DownloadSourceKind = .http,
-        requestContext: DownloadRequestContext? = nil,
-        pageTitle: String? = nil,
-        mimeType: String? = nil
-    ) async throws -> [DownloadMediaOption] {
-        let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedURL) else { throw IDMError.invalidURL }
-        // The quality list must reflect the login state the download itself
-        // will use: a manually typed URL carries no browser context, so the
-        // stored site session stands in before any outbound request. Without
-        // it, inspection resolves as a guest (guest-quality list, "missing
-        // tracks") while the actual download runs logged in. Delivery stays
-        // same-origin (DownloadRequestContext.apply), so a page-host session
-        // never leaks to a cross-origin media CDN.
-        let effectiveContext = await inspectionRequestContext(for: url, existing: requestContext)
-        if BilibiliPlayurlAdapter.supports(url) {
-            let playurlOptions = try await bilibiliAdapter.resolve(
-                pageURL: url,
-                requestContext: effectiveContext
-            )
-            return playurlOptions.map { option in
-                let displayLabel = bilibiliOptionLabel(for: option)
-                let encoding = BilibiliPlayurlAdapter.displayCodec(option.codecs)
-                return DownloadMediaOption(
-                    url: option.videoURL,
-                    sourceKind: .dash,
-                    filename: DownloadNaming.suggestedFilename(
-                        url: option.videoURL,
-                        sourceKind: .dash,
-                        filenameHint: filenameHint,
-                        pageTitle: option.title,
-                        resourceInfo: nil,
-                        label: displayLabel,
-                        hintSource: filenameHintSource
-                    ),
-                    label: displayLabel,
-                    encoding: encoding,
-                    requestContext: option.requestContext,
-                    pairAudioURL: option.audioURL,
-                    estimatedSize: option.estimatedSize,
-                    duration: option.duration
-                )
-            }
-        }
-        if Self.isYouTubePageURL(url) {
-            let title = DownloadNaming.nonEmptyPageTitle(pageTitle) ?? String(localized: "YouTube 视频")
-            let fallback = [
-                DownloadMediaOption(
-                    url: url,
-                    sourceKind: .http,
-                    filename: DownloadNaming.suggestedFilename(
-                        url: url,
-                        sourceKind: .http,
-                        filenameHint: filenameHint,
-                        pageTitle: title,
-                        resourceInfo: nil,
-                        label: title,
-                        hintSource: filenameHintSource
-                    ),
-                    label: String(localized: "YouTube 视频"),
-                    requestContext: requestContext,
-                    backend: .youtubeExtractor
-                )
-            ]
-            // Ask yt-dlp for the real format list so the user can pick a
-            // resolution, mirroring the browser-extension sniff panel.
-            // Bounded to 15s: a slow/stuck resolve must never block the
-            // dialog — it falls back to the single default option.
-            guard YTDlpManager.isAvailable else { return fallback }
-            let inspection = await Self.withTimeout(15) {
-                try await YouTubeMediaInspector(liveStatusCache: .shared).inspect(
-                    url: url,
-                    requestContext: effectiveContext,
-                    mediaKind: .http
-                )
-            }
-            guard let inspection, !inspection.variants.isEmpty else { return fallback }
-            return inspection.variants.map { variant in
-                DownloadMediaOption(
-                    url: variant.url,
-                    sourceKind: .http,
-                    filename: DownloadNaming.suggestedFilename(
-                        url: url,
-                        sourceKind: .http,
-                        filenameHint: filenameHint,
-                        pageTitle: title,
-                        resourceInfo: nil,
-                        label: variant.label,
-                        hintSource: filenameHintSource
-                    ),
-                    label: variant.label,
-                    encoding: MediaVariantLabel.family(forCodecs: variant.codecs),
-                    requestContext: effectiveContext,
-                    backend: .youtubeExtractor,
-                    estimatedSize: variant.estimatedSize,
-                    duration: variant.duration
-                )
-            }
-        }
-        let inferredKind = sourceKind == .http ? sourceKindForURL(url) : sourceKind
-        if inferredKind == .hls || inferredKind == .dash {
-            return try await inspectDownloadOptions(
-                url: url,
-                sourceKind: inferredKind,
-                filenameHint: filenameHint,
-                filenameHintSource: filenameHintSource,
-                pageTitle: pageTitle,
-                requestContext: effectiveContext
-            )
-        }
-
-        if isDirectMediaURL(url, declaredMime: mimeType) {
-            return [
-                DownloadMediaOption(
-                    url: url,
-                    sourceKind: .http,
-                    filename: DownloadNaming.suggestedFilename(
-                        url: url,
-                        sourceKind: .http,
-                        filenameHint: filenameHint,
-                        pageTitle: pageTitle,
-                        resourceInfo: nil,
-                        hintSource: filenameHintSource
-                    ),
-                    label: String(localized: "直链")
-                )
-            ]
-        }
-
-        let probeRequest = DownloadRequest(
-            url: url,
-            destination: URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
-                .appendingPathComponent(InputValidator.safeFilename(filenameHint ?? "download")),
-            maximumParallelRequests: settings.maximumParallelRequests,
-            requestContext: effectiveContext
-        )
-        if let info = try? await browserProbe(probeRequest),
-            !isHTMLMime(info.mimeType),
-            info.mimeType != nil || !url.pathExtension.isEmpty
-        {
-            return [
-                DownloadMediaOption(
-                    url: info.finalURL,
-                    sourceKind: .http,
-                    filename: DownloadNaming.suggestedFilename(
-                        url: info.finalURL,
-                        sourceKind: .http,
-                        filenameHint: filenameHint,
-                        pageTitle: pageTitle,
-                        resourceInfo: info,
-                        hintSource: filenameHintSource
-                    ),
-                    label: String(localized: "直链"),
-                    // A probed Content-Length is the real size; hand it to the
-                    // confirmation window too, so it does not keep showing
-                    // "size unknown" after the probe finishes.
-                    estimatedSize: info.size,
-                    sizeProbed: info.size != nil
-                )
-            ]
-        }
-
-        let discovery = try? await pageMediaDiscoverer.discover(
-            url: url,
-            requestContext: effectiveContext
-        )
-        // A raw <title> usually carries the site brand ("… - Hanime1.me");
-        // strip it against the page hosts before it becomes the filename base.
-        let strippedDiscoveryTitle = DownloadNaming.semanticPageTitle(
-            discovery?.title,
-            hosts: [url.host, discovery?.pageURL.host]
-        )
-        let discoveredTitle = strippedDiscoveryTitle ?? pageTitle
-        var options: [DownloadMediaOption] = []
-        for candidate in discovery?.candidates ?? [] {
-            if candidate.sourceKind == .hls || candidate.sourceKind == .dash {
-                let inspected = try await inspectDownloadOptions(
-                    url: candidate.url,
-                    sourceKind: candidate.sourceKind,
-                    filenameHint: nil,
-                    pageTitle: discoveredTitle,
-                    requestContext: effectiveContext
-                )
-                options.append(contentsOf: inspected)
-            } else {
-                options.append(
-                    DownloadMediaOption(
-                        url: candidate.url,
-                        sourceKind: .http,
-                        filename: DownloadNaming.suggestedFilename(
-                            url: candidate.url,
-                            sourceKind: .http,
-                            // The page title is the user-facing name for a
-                            // page-discovered resource. The URL filename is
-                            // only a fallback when the page has no title.
-                            filenameHint: nil,
-                            pageTitle: discoveredTitle,
-                            resourceInfo: nil
-                        ),
-                        label: candidate.label
-                    )
-                )
-            }
-        }
-        // yt-dlp fallback: the regular probe found nothing (or errored),
-        // but yt-dlp's extractor library understands thousands of sites'
-        // player-embedded media. One bounded attempt before giving up.
-        if options.isEmpty,
-            let fallback = await ytdlpGenericFallback(
-                url: url,
-                filenameHint: filenameHint,
-                filenameHintSource: filenameHintSource,
-                pageTitle: pageTitle,
-                requestContext: effectiveContext
-            )
-        {
-            return fallback
-        }
-        guard !options.isEmpty else { throw WebPageMediaDiscoveryError.noCandidates }
-        return options
-    }
-
-    /// Inspection-time stand-in for a browser context: a manually typed URL
-    /// has no cookie of its own, so the stored site session (captured by an
-    /// extension download or pasted by hand) fills in exactly like start()
-    /// does for the download itself. Only a missing cookie is filled — an
-    /// explicit browser context still wins field by field — and an
-    /// unreadable credential falls through to no-session rather than an
-    /// empty Cookie header that reads as "logged in".
-    /// The credential read runs off-main (see ``SessionStore/resolvedCookieHeader(for:)``):
-    /// this resolves while the confirmation window is already on screen.
-    func inspectionRequestContext(
-        for url: URL,
-        existing: DownloadRequestContext?
-    ) async -> DownloadRequestContext {
-        if let existing, let cookie = existing.cookie, !cookie.isEmpty {
-            return existing
-        }
-        guard let stored = sessionStore.lookup(url: url),
-            let cookie = await sessionStore.resolvedCookieHeader(for: stored),
-            !cookie.isEmpty
-        else { return existing ?? DownloadRequestContext() }
-        return DownloadRequestContext(
-            cookie: cookie,
-            referer: existing?.referer,
-            userAgent: existing?.userAgent ?? stored.userAgent
-        )
-    }
-
-    /// Asks yt-dlp to resolve a playable media URL for `url` (any site).
-    /// Bounded to 15s like the YouTube format listing: a slow or stuck
-    /// fallback must never block the new-download dialog. Returns nil on
-    /// any failure so the caller keeps its original error path.
-    private func ytdlpGenericFallback(
-        url: URL,
-        filenameHint: String?,
-        filenameHintSource: FilenameHintSource = .urlPath,
-        pageTitle: String?,
-        requestContext: DownloadRequestContext?
-    ) async -> [DownloadMediaOption]? {
-        guard YTDlpManager.isAvailable else { return nil }
-        let extraction =
-            await Self.withTimeout(15) {
-                try await YouTubeMediaInspector().inspectGeneric(
-                    url: url,
-                    requestContext: requestContext
-                )
-            } ?? nil
-        guard let extraction else { return nil }
-        AppLogger.shared.info(
-            .download, "yt-dlp generic fallback resolved media for host: \(url.host ?? "?")")
-        let title = extraction.title ?? pageTitle
-        return [
-            DownloadMediaOption(
-                url: extraction.mediaURL,
-                sourceKind: .http,
-                filename: DownloadNaming.suggestedFilename(
-                    url: extraction.mediaURL,
-                    sourceKind: .http,
-                    filenameHint: filenameHint,
-                    pageTitle: title,
-                    resourceInfo: nil,
-                    hintSource: filenameHintSource
-                ),
-                label: String(localized: "yt-dlp 提取"),
-                requestContext: requestContext,
-                estimatedSize: extraction.estimatedSize,
-                duration: extraction.duration
-            )
-        ]
     }
 
     /// Returns all partial-download artifact URLs for a task: HTTP temp
@@ -1394,12 +887,7 @@ final class AppModel: ObservableObject {
         let value = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var draft: DownloadDraft?
-        if let value,
-            value.count <= 2_048,
-            let url = URL(string: value),
-            url.scheme == "http" || url.scheme == "https",
-            url.host != nil
-        {
+        if let value, let url = ClipboardLinkWatcher.httpLink(from: value) {
             draft = DownloadDraft(urlString: url.absoluteString)
             lastDetectedClipboardURL = value
         }
@@ -1414,14 +902,24 @@ final class AppModel: ObservableObject {
         guard
             let value = NSPasteboard.general.string(forType: .string)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            value != lastDetectedClipboardURL,
-            value.count <= 2_048,
-            let url = URL(string: value),
-            url.scheme == "http" || url.scheme == "https",
-            url.host != nil
+            ClipboardLinkWatcher.httpLink(from: value) != nil
         else { return }
+        offerClipboardLink(value)
+    }
+
+    /// Shared offer path for the on-activate detector and the continuous
+    /// watcher: dedupe per distinct URL, then open the confirmation flow.
+    /// Never starts a download by itself.
+    private func offerClipboardLink(_ value: String) {
+        guard value != lastDetectedClipboardURL else { return }
         lastDetectedClipboardURL = value
         NotificationCenter.default.post(name: .macIDMCreateDownload, object: value)
+    }
+
+    /// Starts or stops the continuous clipboard watch to match the setting.
+    func updateClipboardWatcher() {
+        clipboardLinkWatcher.filesOnly = settings.clipboardWatchFilesOnly
+        clipboardLinkWatcher.update(enabled: settings.clipboardWatch)
     }
 
     // MARK: - Import / Export
@@ -1538,7 +1036,7 @@ final class AppModel: ObservableObject {
         presentedError = PresentedError(title: title, message: error.localizedDescription)
     }
 
-    private func inspectDownloadOptions(
+    func inspectDownloadOptions(
         url: URL,
         sourceKind: DownloadSourceKind,
         filenameHint: String?,
@@ -1697,7 +1195,7 @@ final class AppModel: ObservableObject {
         return sourceKindForURL(url)
     }
 
-    private func isDirectMediaURL(_ url: URL, declaredMime: String? = nil) -> Bool {
+    func isDirectMediaURL(_ url: URL, declaredMime: String? = nil) -> Bool {
         if ["m3u8", "mpd", "mp4", "m4v", "webm", "mov", "mp3", "m4a", "aac", "flac", "ogg"]
             .contains(url.pathExtension.lowercased())
         {
@@ -1722,7 +1220,7 @@ final class AppModel: ObservableObject {
         return host.hasSuffix(".googlevideo.com") && url.path.contains("/videoplayback")
     }
 
-    private func isHTMLMime(_ mime: String?) -> Bool {
+    func isHTMLMime(_ mime: String?) -> Bool {
         guard let mime = mime?.lowercased() else { return false }
         return mime.contains("text/html") || mime.contains("application/xhtml")
     }
@@ -1881,38 +1379,4 @@ enum FilenameRetryError: LocalizedError {
             String(localized: "「\(name)」在目标目录已存在，请换一个名字。")
         }
     }
-}
-
-final class ProgressBridge: @unchecked Sendable {
-    private let lock = NSLock()
-    private let callback: @Sendable (DownloadProgress) -> Void
-    private var lastDelivery = Date.distantPast
-
-    init(callback: @escaping @Sendable (DownloadProgress) -> Void) {
-        self.callback = callback
-    }
-
-    func receive(_ progress: DownloadProgress) {
-        lock.lock()
-        let now = Date()
-        let shouldDeliver =
-            now.timeIntervalSince(lastDelivery) >= 0.2
-            || progress.totalBytes == progress.receivedBytes
-        if shouldDeliver {
-            lastDelivery = now
-        }
-        lock.unlock()
-        if shouldDeliver {
-            callback(progress)
-        }
-    }
-}
-
-extension Notification.Name {
-    static let macIDMCreateDownload = Notification.Name("MacIDMCreateDownload")
-    static let macIDMHotKeyRequested = Notification.Name("MacIDMHotKeyRequested")
-    static let macIDMRequestRemoval = Notification.Name("MacIDMRequestRemoval")
-    static let macIDMRequestClearHistory = Notification.Name("MacIDMRequestClearHistory")
-    static let macIDMRequestSettings = Notification.Name("MacIDMRequestSettings")
-    static let macIDMRequestMainWindow = Notification.Name("MacIDMRequestMainWindow")
 }

@@ -1,6 +1,11 @@
 import Foundation
 
 public actor DownloadEngine {
+    /// Pause before an idle worker asks for new work after a split proposal
+    /// was abandoned; long enough for the parent to make progress, short
+    /// enough not to delay a legitimate later split.
+    static let splitRetryBackoffNanoseconds: UInt64 = 20_000_000
+
     private let router: DownloadProtocolRouter
     private let hlsExecutor: HLSDownloadExecutor
     private let dashExecutor: DASHDownloadExecutor
@@ -129,8 +134,12 @@ public actor DownloadEngine {
                     ),
                     control: control,
                     progress: progress,
+                    // Single attempt per track: the outer `download` retry
+                    // loop already re-enters the pair, which resumes from
+                    // the completed-track checkpoint and the track sidecar.
+                    // Retrying here too multiplied attempts (5 × 5).
                     directDownload: { [self] trackRequest, trackControl, trackProgress in
-                        try await self.download(
+                        try await self.downloadOnce(
                             trackRequest,
                             control: trackControl,
                             progress: trackProgress
@@ -418,7 +427,11 @@ public actor DownloadEngine {
                                 // point; the tracker split then makes the
                                 // clamped range the parent's committed bound.
                                 guard let parent = registry.transfer(for: parentIndex) else {
+                                    // The parent has not registered its transfer
+                                    // yet (or just finished): back off so this
+                                    // worker does not spin on the same proposal.
                                     await coordinator.abandonSplit(parentIndex: parentIndex)
+                                    try await Task.sleep(nanoseconds: Self.splitRetryBackoffNanoseconds)
                                     continue
                                 }
                                 let splitEnd = truncationEnd
@@ -434,7 +447,11 @@ public actor DownloadEngine {
                                     // split point. It will cover the child's
                                     // range itself, so drop the proposal.
                                     parent.clearTruncation()
-                                    await coordinator.abandonSplit(parentIndex: parentIndex)
+                                    await coordinator.abandonSplit(
+                                        parentIndex: parentIndex,
+                                        parentCommittedThrough: truncationEnd
+                                    )
+                                    try await Task.sleep(nanoseconds: Self.splitRetryBackoffNanoseconds)
                                     continue
                                 }
                                 await coordinator.commitSplit(
@@ -478,6 +495,19 @@ public actor DownloadEngine {
                 }
             }
             try tracker.checkpoint(phase: "finalizing")
+            // Publish gate: every sidecar segment must have committed to its
+            // end and the segments must tile [0, total). A hole here means a
+            // byte range was never downloaded (for example an orphaned split
+            // tail); the preallocated file would read as zeros while size
+            // and range checks pass. sidecarCorrupt is retryable, so the
+            // route re-enters and resumes exactly the uncommitted ranges;
+            // after the retry budget the task fails loudly instead of
+            // publishing a corrupt file as completed.
+            let finalPayload = tracker.snapshot()
+            guard SegmentCoverage.isFullyCommitted(finalPayload.segments, total: identity.totalSize)
+            else {
+                throw IDMError.sidecarCorrupt
+            }
         } catch {
             collectedErrors.append(error)
             // Root-cause selection: the control token is the single source
@@ -654,16 +684,7 @@ public actor DownloadEngine {
     }
 
     private func validateCoverage(_ segments: [SegmentCheckpoint], total: Int64) -> Bool {
-        let sorted = segments.sorted { $0.start < $1.start }
-        var cursor: Int64 = 0
-        for segment in sorted {
-            guard segment.start == cursor, segment.endExclusive > segment.start,
-                segment.nextUncommittedOffset >= segment.start,
-                segment.nextUncommittedOffset <= segment.endExclusive
-            else { return false }
-            cursor = segment.endExclusive
-        }
-        return cursor == total
+        SegmentCoverage.isValidResumeLayout(segments, total: total)
     }
 
     private func removeIfPresent(_ url: URL) throws {

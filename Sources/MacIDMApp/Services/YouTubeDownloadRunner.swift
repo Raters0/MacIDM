@@ -282,6 +282,7 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
             var heightConstraint = ""
             var selectedITag: Int?
             var selectedHasAudio = false
+            var audioOnly = false
             if let fragment = request.url.fragment,
                 var components = URLComponents(url: request.url, resolvingAgainstBaseURL: false)
             {
@@ -291,7 +292,8 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
                 }
                 selectedITag = selection.itag
                 selectedHasAudio = selection.hasAudio
-                if selection.height != nil || selection.itag != nil {
+                audioOnly = selection.audioOnly
+                if selection.height != nil || selection.itag != nil || selection.audioOnly {
                     components.fragment = nil
                     downloadURL = components.url ?? request.url
                 }
@@ -299,7 +301,8 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
             let formatString = Self.formatSelector(
                 itag: selectedITag,
                 hasAudio: selectedHasAudio,
-                heightConstraint: heightConstraint
+                heightConstraint: heightConstraint,
+                audioOnly: audioOnly
             )
 
             // Live defense (three-state, §3.2): when a legacy task is
@@ -614,7 +617,8 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
                     inputURL: mediaURL,
                     outputURL: request.destination,
                     outputKind: .mp4,
-                    control: control
+                    control: control,
+                    titleMetadata: FFmpegMetadata.title(forOutput: request.destination)
                 )
             )
             AppLogger.shared.info(.youtube, "FFmpeg remux completed: \(remuxed.byteCount) bytes")
@@ -697,12 +701,14 @@ struct YouTubeDownloadRunner: YouTubeDownloadRunning, Sendable {
     static func formatSelector(
         itag: Int?,
         hasAudio: Bool,
-        heightConstraint: String
+        heightConstraint: String,
+        audioOnly: Bool = false
     ) -> String {
         YouTubeCommandBuilder.formatSelector(
             itag: itag,
             hasAudio: hasAudio,
-            heightConstraint: heightConstraint
+            heightConstraint: heightConstraint,
+            audioOnly: audioOnly
         )
     }
 

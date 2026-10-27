@@ -16,9 +16,16 @@
 #      worktree: restore the main tree, drop the internal-only paths,
 #      flip README.md to the English primary with README.zh-CN.md, and
 #      commit "Prepare v<version> public snapshot".
-#   4. With --publish: push the snapshot to origin (public-snapshot and
-#      main) and create the GitHub Release with all assets. Without it,
-#      print the exact commands so nothing leaves the machine uninvited.
+#   4. With --publish: push the snapshot to the public remote
+#      (public-snapshot and main) and create the GitHub Release with all
+#      assets. Without it, print the exact commands so nothing leaves the
+#      machine uninvited.
+#
+# The public repository is a separate remote, named "public" by default
+# (override with MACIDM_RELEASE_REMOTE). It is deliberately not "origin":
+# its main is a filtered snapshot with no shared history, so tools that
+# compare the working branch against origin/main would report the whole
+# internal tree as changes.
 #
 # The EdDSA private key used by package-update-release.sh lives only in
 # the release engineer's login Keychain; never copy it into the repository.
@@ -50,6 +57,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$version" ] && [ -n "$notes_file" ] || usage
+release_remote="${MACIDM_RELEASE_REMOTE:-public}"
+if $publish && ! git remote get-url "$release_remote" >/dev/null 2>&1; then
+  echo "[release-app] git remote not found: $release_remote (set MACIDM_RELEASE_REMOTE)" >&2
+  exit 1
+fi
 [ -f "$notes_file" ] || {
   echo "[release-app] notes file not found: $notes_file" >&2
   exit 1
@@ -189,8 +201,8 @@ extension_zip="$release_directory/MacIDM-v${version_number}-chrome-extension.zip
 # --- 4. Publish -------------------------------------------------------------
 
 if $publish; then
-  git push origin public-snapshot
-  git push origin "${snapshot_sha}:refs/heads/main"
+  git push "$release_remote" public-snapshot
+  git push "$release_remote" "${snapshot_sha}:refs/heads/main"
   gh release create "v${version_number}" --repo Raters0/MacIDM --target public-snapshot \
     --title "MacIDM v${version_number}" --notes-file "$notes_file" \
     "$release_directory/MacIDM-v${version_number}-macos-development.app.zip" \
@@ -200,8 +212,8 @@ if $publish; then
 else
   cat <<EOF
 [release-app] dry run complete (snapshot commit $snapshot_sha). To publish:
-  git push origin public-snapshot
-  git push origin ${snapshot_sha}:refs/heads/main
+  git push ${release_remote} public-snapshot
+  git push ${release_remote} ${snapshot_sha}:refs/heads/main
   gh release create v${version_number} --repo Raters0/MacIDM --target public-snapshot \\
     --title "MacIDM v${version_number}" --notes-file "$notes_file" \\
     "$release_directory/MacIDM-v${version_number}-macos-development.app.zip" \\

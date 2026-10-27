@@ -203,7 +203,8 @@ struct NewDownloadView: View {
     private var addressSection: some View {
         FlatSectionCard("地址") {
             VStack(alignment: .leading, spacing: 8) {
-                TextField("地址", text: $urlText, prompt: Text("网页或媒体 URL"))
+                TextField("地址", text: $urlText, prompt: Text("网页或媒体 URL；可一次粘贴多行链接批量创建"), axis: .vertical)
+                    .lineLimit(1...5)
                     .textFieldStyle(ClearInputFieldStyle())
                     .onSubmit {
                         inspectResources()
@@ -1160,8 +1161,101 @@ struct NewDownloadView: View {
         }
     }
 
+    /// Addresses split across lines/whitespace. nil means the field holds a
+    /// single address (the normal resource-inspection flow); an empty array
+    /// means bulk text was pasted but at least one token is not a valid
+    /// HTTP(S) URL, so the caller can explain instead of failing opaquely.
+    var pastedBatchAddresses: [URL]? {
+        let tokens =
+            urlText
+            .split(whereSeparator: { $0.isNewline || $0 == " " || $0 == "\t" })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard tokens.count > 1 else { return nil }
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for token in tokens {
+            guard let url = URL(string: token),
+                url.scheme == "http" || url.scheme == "https",
+                url.host != nil
+            else { return [] }
+            // The same link pasted twice is one download, not two.
+            if seen.insert(url.absoluteString).inserted { urls.append(url) }
+        }
+        return urls
+    }
+
+    /// Source kind and file name for one batch address. HLS/DASH manifests
+    /// must run through the stream pipeline (a plain HTTP download would
+    /// save the playlist text) and publish as MP4.
+    static func batchPlan(for url: URL) -> (sourceKind: DownloadSourceKind, filename: String) {
+        let rawName = url.lastPathComponent
+        let safeName = InputValidator.safeFilename(rawName.isEmpty ? nil : rawName)
+        switch url.pathExtension.lowercased() {
+        case "m3u8", "m3u":
+            return (.hls, DownloadNaming.replacingExtension(of: safeName, with: "mp4"))
+        case "mpd":
+            return (.dash, DownloadNaming.replacingExtension(of: safeName, with: "mp4"))
+        default:
+            return (.http, safeName)
+        }
+    }
+
+    /// Bulk creation for a multi-line paste: every address becomes one task
+    /// with the window's current destination, parallelism and start mode.
+    /// No per-URL resource inspection or semantic naming — a paste of many
+    /// links is a list of direct files, and naming falls back to each URL's
+    /// own filename.
+    private func submitBatch(_ urls: [URL]) {
+        guard !isSubmitting else { return }
+        validationMessage = nil
+        isSubmitting = true
+        let clickDate = Date()
+        Task { @MainActor in
+            defer { isSubmitting = false }
+            for (position, url) in urls.enumerated() {
+                let plan = Self.batchPlan(for: url)
+                let destination = URL(fileURLWithPath: destinationDirectory, isDirectory: true)
+                    .appendingPathComponent(plan.filename)
+                do {
+                    try model.addDownload(
+                        urlString: url.absoluteString,
+                        destination: destination,
+                        maximumParallelRequests: maximumParallelRequests,
+                        expectedSHA256: nil,
+                        startImmediately: startImmediately,
+                        sourceKind: plan.sourceKind,
+                        automaticRename: true,
+                        priority: priority,
+                        selectionIntent: clickDate
+                    )
+                } catch {
+                    // Keep only the addresses that were not created, so a
+                    // second submit cannot duplicate the ones that were.
+                    urlText = urls[position...].map(\.absoluteString).joined(separator: "\n")
+                    validationMessage = String(
+                        localized: "已创建 \(position) 个；「\(plan.filename)」失败：\(error.localizedDescription)。地址栏只保留未创建的链接。"
+                    )
+                    return
+                }
+            }
+            onSubmitSuccess?()
+            closeView()
+        }
+    }
+
     private func submit() {
         guard !isSubmitting else { return }
+        if let batch = pastedBatchAddresses {
+            if batch.isEmpty {
+                validationMessage = String(
+                    localized: "检测到多行批量地址，但其中至少一行不是有效的 http(s) 链接；请逐行检查后重试。"
+                )
+                return
+            }
+            submitBatch(batch)
+            return
+        }
         guard
             let selectedOption = resolvedOptions.first(where: { $0.id == selectedOptionID })
                 ?? resolvedOptions.first

@@ -473,10 +473,12 @@
       performanceWatermark = typeof performance?.now === "function" ? performance.now() : 0;
       if (discovery?.collectPerformanceMediaCandidates) {
         for (const item of discovery.collectPerformanceMediaCandidates()) {
+          // No size passed through: performance entries measure the
+          // browser's partial header read, never the file total; the
+          // anonymous size probe fills real totals for size-less candidates.
           if (item.url) {
             addCandidate({
               url: item.url,
-              size: item.size > 0 ? item.size : undefined,
               confidence: "extension",
             });
           }

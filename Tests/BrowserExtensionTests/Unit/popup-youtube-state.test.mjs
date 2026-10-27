@@ -1021,14 +1021,18 @@ test("画廊页 titleSource=card：每行按自身卡片标题命名，不共用
   });
   refreshIntervalCallback();
   await settle(350);
-  const titles = [0, 1, 2].map((index) => {
-    const row = mediaList.children[index];
-    let text = "";
-    row?.walk?.((el) => {
-      if (el instanceof El && el.tagName === "STRONG") text = el.textContent;
+  // Section headers (H3) interleave annex buckets after the media rows;
+  // rows are collected non-positionally so the header itself never reads
+  // as an empty title.
+  const titles = [...mediaList.children]
+    .filter((row) => row?.tagName !== "H3")
+    .map((row) => {
+      let text = "";
+      row?.walk?.((el) => {
+        if (el instanceof El && el.tagName === "STRONG") text = el.textContent;
+      });
+      return text;
     });
-    return text;
-  });
   assert.equal(titles[0], "嬛嬛一袅楚宫腰 · 6aa9.mp4", "带 cardTitle 戳的行用自己的卡片标题");
   // 后续行序受候选类型排序影响，只断言各自身份：无归属行分别退回
   // 自身展示名/URL 尾名，不得借用他卡标题或反复挂通用前缀。

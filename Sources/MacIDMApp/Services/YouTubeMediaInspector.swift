@@ -178,7 +178,7 @@ struct YouTubeMediaInspector: MediaInspecting {
             return codec != "none" && codec != "None" && (format.height ?? 0) > 0
         }
 
-        return
+        var variants =
             videoFormats
             .sorted { lhs, rhs in
                 (rhs.height ?? 0, rhs.tbr ?? 0) < (lhs.height ?? 0, lhs.tbr ?? 0)
@@ -240,6 +240,29 @@ struct YouTubeMediaInspector: MediaInspecting {
                     duration: info.duration
                 )
             }
+
+        // Audio-only variant ("只要声音"): the best audio track as a plain
+        // m4a download — no video, no re-encode. The `audio=1` fragment
+        // locks the download side to `ba[ext=m4a]/ba`.
+        if let audio = Self.bestAudioTrack(formats: info.formats),
+            var components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)
+        {
+            components.fragment = "audio=1"
+            variants.append(
+                MediaVariant(
+                    url: components.url ?? pageURL,
+                    label: String(localized: "仅音频 (m4a)"),
+                    bandwidth: Self.bandwidth(from: audio),
+                    width: nil,
+                    height: nil,
+                    codecs: Self.codecsString(vcodec: audio.vcodec, acodec: audio.acodec),
+                    estimatedSize: Self.trackSize(of: audio, duration: info.duration),
+                    fileExtension: "m4a",
+                    duration: info.duration
+                )
+            )
+        }
+        return variants
     }
 
     // MARK: - Title lookup
@@ -732,6 +755,16 @@ struct YouTubeMediaInspector: MediaInspecting {
         return nil
     }
 
+    /// Best audio-only track, preferring m4a to match `ba[ext=m4a]`.
+    private static func bestAudioTrack(formats: [YouTubeFormat]) -> YouTubeFormat? {
+        let audios = formats.filter {
+            !Self.isVideoCodec($0.vcodec) && Self.hasAudioCodec($0.acodec)
+        }
+        let m4a = audios.filter { $0.ext == "m4a" }
+        let pool = m4a.isEmpty ? audios : m4a
+        return pool.max { ($0.tbr ?? 0) < ($1.tbr ?? 0) }
+    }
+
     /// Best audio-only track size, preferring m4a to match `ba[ext=m4a]`.
     /// Returns 0 when no audio track can be sized — an audio-less estimate
     /// still beats none, and the missing share is typically under 5%.
@@ -739,12 +772,7 @@ struct YouTubeMediaInspector: MediaInspecting {
         formats: [YouTubeFormat],
         duration: TimeInterval?
     ) -> Int64 {
-        let audios = formats.filter {
-            !Self.isVideoCodec($0.vcodec) && Self.hasAudioCodec($0.acodec)
-        }
-        let m4a = audios.filter { $0.ext == "m4a" }
-        let pool = m4a.isEmpty ? audios : m4a
-        guard let audio = pool.max(by: { ($0.tbr ?? 0) < ($1.tbr ?? 0) }) else { return 0 }
+        guard let audio = bestAudioTrack(formats: formats) else { return 0 }
         return trackSize(of: audio, duration: duration) ?? 0
     }
 

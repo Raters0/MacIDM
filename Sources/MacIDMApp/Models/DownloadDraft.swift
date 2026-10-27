@@ -18,10 +18,10 @@ enum FilenameHintSource: String, Sendable {
     /// Derived only from the URL path tail; never outranks the page title.
     /// Also the conservative default for payloads from older extensions.
     case urlPath
-    /// The user typed this name in the confirmation window. Internal-only
-    /// (never a wire value — MessageValidator whitelists the three cases
-    /// above); it tops the trust chain so a re-inspection never overwrites
-    /// an explicit user edit.
+    /// The user authored this name — typed in the confirmation window or
+    /// produced by the Download All rename template. Tops the trust chain
+    /// so neither a re-inspection nor the semantic-title arbitration may
+    /// overwrite an explicit user edit.
     case userEdited
 }
 

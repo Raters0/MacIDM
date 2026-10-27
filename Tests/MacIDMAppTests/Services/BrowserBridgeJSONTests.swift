@@ -472,6 +472,7 @@ final class BrowserBridgeJSONTests: XCTestCase {
         XCTAssertEqual(response.type, "download.accepted")
         XCTAssertEqual(model.tasks.first?.sourceKind, .hls)
         XCTAssertEqual(model.tasks.first?.filename, "master.mp4")
+        try model.persist()
         let persisted = try AppTaskStore(
             directory: directory.appendingPathComponent("state")
         ).load()
@@ -554,6 +555,7 @@ final class BrowserBridgeJSONTests: XCTestCase {
         XCTAssertEqual(response.type, "download.accepted")
         XCTAssertEqual(model.tasks.first?.sourceKind, .hls)
         XCTAssertEqual(model.tasks.first?.filename, "master.mp4")
+        try model.persist()
         let persisted = try AppTaskStore(directory: directory.appendingPathComponent("state")).load()
         XCTAssertEqual(persisted.first?.sourceKind, .hls)
     }

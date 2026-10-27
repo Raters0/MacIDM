@@ -52,14 +52,7 @@ enum CLIOutput {
     }
 
     static func emitError(_ error: Error, json: Bool) {
-        let code: String
-        if let engine = error as? IDMError {
-            code = engine.code
-        } else if case CLIError.taskNotFound = error {
-            code = "TASK_NOT_FOUND"
-        } else {
-            code = "USAGE_ERROR"
-        }
+        let code = errorCode(error)
 
         let message: String
         if case CLIError.usage(let detail) = error {
@@ -74,6 +67,23 @@ enum CLIOutput {
             let data = "macidm: \(code): \(message)\n".data(using: .utf8)!
             FileHandle.standardError.write(data)
         }
+    }
+
+    static func errorCode(_ error: Error) -> String {
+        if let engine = error as? IDMError {
+            return engine.code
+        }
+        if case CLIError.taskNotFound = error {
+            return "TASK_NOT_FOUND"
+        }
+        if error is URLError {
+            // Transport failures that reach the CLI as Foundation errors are
+            // network problems, not argument mistakes; labeling them
+            // USAGE_ERROR sends users and support scripts debugging the
+            // command they typed instead of the connection.
+            return "NETWORK_ERROR"
+        }
+        return "USAGE_ERROR"
     }
 
     static func exitCode(for error: Error) -> Int32 {

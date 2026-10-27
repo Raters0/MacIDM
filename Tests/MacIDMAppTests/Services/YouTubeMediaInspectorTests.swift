@@ -178,21 +178,22 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         }
     }
 
-    func testInspectWithoutVideoFormatsThrowsNoFormats() async throws {
+    func testInspectAudioOnlyVideoYieldsSingleAudioVariantAndEmptyStillThrows() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMInspectorNoFormatsTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let executable = directory.appendingPathComponent("fake-yt-dlp")
-        // 只有音轨（vcodec=none）的 JSON 是合法输出但没有视频变体。
-        let json = """
+        // 只有音轨（vcodec=none）的 JSON：以前直接 noFormats，现在产出
+        // 「仅音频 (m4a)」变体（只要声音，无转码直下）。
+        let audioOnlyJSON = """
             {"live_status": "not_live", "duration": 60, "formats": [
               {"format_id": "140", "ext": "m4a", "vcodec": "none",
                "acodec": "mp4a.40.2", "tbr": 129, "filesize": 900000}
             ]}
             """
-        let script = "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n"
+        let script = "#!/bin/sh\ncat <<'EOF'\n\(audioOnlyJSON)\nEOF\n"
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
@@ -200,9 +201,26 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         )
 
         let inspector = YouTubeMediaInspector(executableURL: executable)
+        let inspection = try await inspector.inspect(
+            url: URL(string: "https://www.youtube.com/watch?v=fixture")!,
+            requestContext: nil,
+            mediaKind: .http
+        )
+        XCTAssertEqual(inspection.variants.count, 1)
+        XCTAssertEqual(inspection.variants[0].fileExtension, "m4a")
+        XCTAssertEqual(inspection.variants[0].estimatedSize, 900_000)
+        XCTAssertEqual(inspection.variants[0].url.fragment, "audio=1")
+
+        // 既无视频也无音轨（例如只有字幕/元数据行）仍然 noFormats。
+        let emptyJSON = """
+            {"live_status": "not_live", "duration": 60, "formats": [
+              {"format_id": "sb0", "ext": "mp4", "vcodec": "none", "acodec": "none"}
+            ]}
+            """
+        try Data(("#!/bin/sh\ncat <<'EOF'\n\(emptyJSON)\nEOF\n").utf8).write(to: executable)
         do {
             _ = try await inspector.inspect(
-                url: URL(string: "https://www.youtube.com/watch?v=fixture")!,
+                url: URL(string: "https://www.youtube.com/watch?v=fixture2")!,
                 requestContext: nil,
                 mediaKind: .http
             )
@@ -567,8 +585,8 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         )
 
         // 变体按（高度、码率）降序：1080 mp4(137)、1080 webm(248)、
-        // 720 progressive(22)、720 mp4(136)。
-        XCTAssertEqual(inspection.variants.count, 4)
+        // 720 progressive(22)、720 mp4(136)，末尾追加「仅音频 (m4a)」。
+        XCTAssertEqual(inspection.variants.count, 5)
         let estimates = inspection.variants.map(\.estimatedSize)
         // 预估镜像用户实际选中的 itag（technical-spec §3.4）：变体 URL 带
         // itag 时按「该轨自身大小 + 无音轨则叠加最优 m4a」计算。
@@ -581,6 +599,11 @@ final class YouTubeMediaInspectorTests: XCTestCase {
         XCTAssertEqual(inspection.variants[2].height, 720)
         XCTAssertEqual(estimates[2], 25_000_000 + 1_800_000)
         XCTAssertEqual(estimates[3], 15_000_000)
+        // 追加的「仅音频」变体：最优 m4a 音轨（140，1.8M）自身大小，
+        // 带 audio=1 片段锁定下载侧 ba[ext=m4a]/ba。
+        XCTAssertEqual(inspection.variants[4].fileExtension, "m4a")
+        XCTAssertEqual(estimates[4], 1_800_000)
+        XCTAssertEqual(inspection.variants[4].url.fragment, "audio=1")
     }
 
     func testVariantEstimateFallsBackToDurationTimesBitrate() async throws {

@@ -45,6 +45,16 @@ h1, h2, p { margin: 0; }
 
 h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
 
+/* Section labels bucketing the candidate list (媒体 / 图片 / 其他) with a
+   count each; only rendered when more than one section is populated. */
+.section-label {
+  margin: 10px 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
 /* Quick cookie-authorization shortcut beside the title. The generic button
    rule sets width:100%, so this class pins it back to content width. */
 .cookie-shortcut {

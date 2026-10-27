@@ -298,12 +298,6 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     /// as yt-dlp. SQLite intentionally does not persist it; recovered tasks
     /// fall back to durable byte accounting until a worker reports again.
     var overallProgressFraction: Double? = nil
-    var isArchived: Bool = false
-    /// The user removed this task's record from the history timeline while
-    /// the task still lives in the main list. Display-only: hides the row
-    /// from the 历史记录 timeline without touching 全部下载/进行中/已完成 or
-    /// local files. Survives restarts so a cleared timeline stays cleared.
-    var historyHidden: Bool = false
     /// Transient UI flag: true when a completed task's destination file is
     /// no longer present on disk. Not persisted to SQLite.
     var fileMissing: Bool = false
@@ -335,6 +329,10 @@ struct AppTask: Codable, Identifiable, Hashable, Sendable {
     /// (single-connection servers, yt-dlp runs), so the detail panel shows
     /// this instead of the configured maximum once the task has ended.
     var usedParallelRequests: Int? = nil
+    /// Per-task speed cap in KB/s. nil or 0 = uncapped; the execution layer
+    /// combines it with the global limiter, and because every byte must pass
+    /// both buckets, the tighter bound always wins.
+    var rateLimitKBps: Int? = nil
     /// Site-adapter (Bilibili) re-resolution identity, persisted so a paused
     /// DASH-pair task can be re-resolved to fresh signed track URLs after a
     /// restart instead of being forced into NEEDS_REFETCH. `mediaCID` is the
@@ -649,7 +647,6 @@ enum SidebarFilter: Hashable {
     case all
     case active
     case completed
-    case history
     case today
     case yesterday
     case thisWeek
@@ -662,7 +659,6 @@ enum SidebarFilter: Hashable {
         case .all: String(localized: "全部下载")
         case .active: String(localized: "进行中")
         case .completed: String(localized: "已完成")
-        case .history: String(localized: "历史记录")
         case .today: String(localized: "今天")
         case .yesterday: String(localized: "昨天")
         case .thisWeek: String(localized: "本周")
@@ -674,30 +670,23 @@ enum SidebarFilter: Hashable {
     func matches(_ task: AppTask, calendar: Calendar = .current) -> Bool {
         switch self {
         case .all:
-            return !task.isArchived
+            return true
         case .active:
-            return !task.isArchived && !task.status.isTerminal
+            return !task.status.isTerminal
         case .completed:
-            return !task.isArchived && task.status == .completed
-        case .history:
-            // History is a complete timeline of every download the user
-            // ever added — live, archived, and terminal alike — minus the
-            // entries the user explicitly removed from the timeline. Those
-            // stay in the main-list views; only the timeline row goes away.
-            return !task.historyHidden
+            return task.status == .completed
         case .today:
-            return !task.isArchived && calendar.isDateInToday(task.createdAt)
+            return calendar.isDateInToday(task.createdAt)
         case .yesterday:
-            return !task.isArchived && calendar.isDateInYesterday(task.createdAt)
+            return calendar.isDateInYesterday(task.createdAt)
         case .thisWeek:
-            guard !task.isArchived else { return false }
             guard let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start
             else { return false }
             return task.createdAt >= weekStart
         case .category(let category):
-            return !task.isArchived && task.category == category
+            return task.category == category
         case .queue(let queueID):
-            return !task.isArchived && task.queueID == queueID && !task.isCLIManaged
+            return task.queueID == queueID && !task.isCLIManaged
         }
     }
 }

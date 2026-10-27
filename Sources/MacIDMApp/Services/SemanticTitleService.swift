@@ -153,7 +153,7 @@ final class SemanticTitleService: ObservableObject {
                 return .failure("API 地址无效（仅支持 HTTPS）")
             }
             do {
-                let (data, response) = try await perform(request, transport: transport)
+                let (_, response) = try await perform(request, transport: transport)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                     let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                     return .failure("HTTP \(status)")

@@ -239,7 +239,6 @@ extension AppModel {
             speedLimitKBps: settings.speedLimitKBps,
             autoStartDownloads: settings.autoStartDownloads,
             organizeByCategory: settings.organizeByCategory,
-            archiveOnDelete: settings.archiveOnDelete,
             notificationSoundsEnabled: settings.notificationSoundsEnabled,
             clipboardAutoDetect: settings.clipboardAutoDetect,
             ytdlpAutoCheckUpdates: settings.ytdlpAutoCheckUpdates,
@@ -286,10 +285,6 @@ extension AppModel {
         if let value = payload["organizeByCategory"] as? Bool {
             settings.organizeByCategory = value
             applied.append("organizeByCategory")
-        }
-        if let value = payload["archiveOnDelete"] as? Bool {
-            settings.archiveOnDelete = value
-            applied.append("archiveOnDelete")
         }
         if let value = payload["notificationSoundsEnabled"] as? Bool {
             settings.notificationSoundsEnabled = value

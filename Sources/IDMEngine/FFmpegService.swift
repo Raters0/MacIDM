@@ -159,6 +159,44 @@ public enum FFmpegOutputKind: String, Sendable {
     case m4a
 }
 
+/// Title metadata written into remuxed/merged media files so players,
+/// Finder previews, and media libraries show the user's chosen name instead
+/// of the URL-derived original.
+public enum FFmpegMetadata {
+    /// Derives the title from the output file's own name (the name the user
+    /// confirmed in the download window). Returns nil for placeholder names
+    /// that carry no information, and for hidden working files
+    /// (`.<task-id>.macidm.hls-input.ts` and the like): those are
+    /// intermediates whose final publish step writes the real title.
+    public static func title(forOutput outputURL: URL) -> String? {
+        var filename = outputURL.lastPathComponent
+        guard !filename.hasPrefix(".") else { return nil }
+        // Strip only the final extension: dots inside the name are part of
+        // the title ("deep.dive.name.mp4" keeps "deep.dive.name").
+        if let dot = filename.lastIndex(of: "."),
+            dot != filename.startIndex,
+            dot != filename.index(before: filename.endIndex)
+        {
+            filename = String(filename[..<dot])
+        }
+        let title = filename.trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty, title.lowercased() != "download" else { return nil }
+        return title
+    }
+
+    /// Strips characters ffmpeg argument values must not carry and bounds
+    /// the length; the value travels as one argv element, so no shell
+    /// quoting is involved.
+    static func sanitizedTitle(_ title: String?) -> String? {
+        guard let title else { return nil }
+        let scalars = title.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }
+        let cleaned = String(String.UnicodeScalarView(scalars))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        return String(cleaned.prefix(500))
+    }
+}
+
 public struct FFmpegRemuxRequest: Sendable {
     public let inputURL: URL
     public let outputURL: URL
@@ -167,6 +205,8 @@ public struct FFmpegRemuxRequest: Sendable {
     public let expectedSHA256: String?
     public let timeout: TimeInterval
     public let control: (@Sendable () -> DownloadControl)?
+    /// Written via `-metadata title=` so players show the user's name.
+    public let titleMetadata: String?
 
     public init(
         inputURL: URL,
@@ -175,7 +215,8 @@ public struct FFmpegRemuxRequest: Sendable {
         expectedDuration: TimeInterval? = nil,
         expectedSHA256: String? = nil,
         timeout: TimeInterval = 5 * 60,
-        control: (@Sendable () -> DownloadControl)? = nil
+        control: (@Sendable () -> DownloadControl)? = nil,
+        titleMetadata: String? = nil
     ) {
         self.inputURL = inputURL
         self.outputURL = outputURL
@@ -184,6 +225,7 @@ public struct FFmpegRemuxRequest: Sendable {
         self.expectedSHA256 = expectedSHA256
         self.timeout = timeout
         self.control = control
+        self.titleMetadata = FFmpegMetadata.sanitizedTitle(titleMetadata)
     }
 }
 
@@ -196,6 +238,8 @@ public struct FFmpegMergeRequest: Sendable {
     public let expectedSHA256: String?
     public let timeout: TimeInterval
     public let control: (@Sendable () -> DownloadControl)?
+    /// Written via `-metadata title=` so players show the user's name.
+    public let titleMetadata: String?
 
     public init(
         videoURL: URL?,
@@ -205,7 +249,8 @@ public struct FFmpegMergeRequest: Sendable {
         expectedDuration: TimeInterval? = nil,
         expectedSHA256: String? = nil,
         timeout: TimeInterval = 5 * 60,
-        control: (@Sendable () -> DownloadControl)? = nil
+        control: (@Sendable () -> DownloadControl)? = nil,
+        titleMetadata: String? = nil
     ) {
         self.videoURL = videoURL
         self.audioURL = audioURL
@@ -215,6 +260,7 @@ public struct FFmpegMergeRequest: Sendable {
         self.expectedSHA256 = expectedSHA256
         self.timeout = timeout
         self.control = control
+        self.titleMetadata = FFmpegMetadata.sanitizedTitle(titleMetadata)
     }
 }
 
@@ -450,6 +496,9 @@ public struct FFmpegService: FFmpegRemuxing, FFmpegMerging, Sendable {
         )
 
         var arguments = ["-hide_banner", "-nostdin", "-loglevel", "error", "-n", "-i", request.inputURL.path]
+        if let title = request.titleMetadata {
+            arguments += ["-metadata", "title=\(title)"]
+        }
         switch request.outputKind {
         case .mp4:
             arguments += ["-map", "0", "-c", "copy", "-movflags", "+faststart", temporary.path]
@@ -541,9 +590,15 @@ public struct FFmpegService: FFmpegRemuxing, FFmpegMerging, Sendable {
                 let index = request.videoURL == nil ? 0 : 1
                 arguments += ["-map", String(index) + ":a:0?"]
             }
+            if let title = request.titleMetadata {
+                arguments += ["-metadata", "title=\(title)"]
+            }
             arguments += ["-c", "copy", "-movflags", "+faststart", temporary.path]
         case .m4a:
             let index = request.videoURL == nil ? 0 : 1
+            if let title = request.titleMetadata {
+                arguments += ["-metadata", "title=\(title)"]
+            }
             arguments += ["-map", String(index) + ":a:0?", "-vn", "-c:a", "copy", temporary.path]
         }
 

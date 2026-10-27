@@ -119,10 +119,11 @@ extension AppModel {
             expectedSHA256: record.sourceKind == .hls ? nil : record.expectedSHA256,
             taskID: record.id,
             requestContext: effectiveContext,
-            rateLimiter: sharedRateLimiter,
+            rateLimiter: rateLimiter(for: record),
             pairAudioURL: transientPairAudioURLs[id],
             pairCID: transientPairCIDs[id],
-            backend: record.browserSubmissionType == "youtube.extractor" ? .youtubeExtractor : .native
+            backend: record.browserSubmissionType == "youtube.extractor" ? .youtubeExtractor : .native,
+            externalRateLimitKBps: effectiveRateLimitKBps(for: record)
         )
         let isHLS = record.sourceKind == .hls
         let isDASH = record.sourceKind == .dash
@@ -772,6 +773,9 @@ extension AppModel {
         } else {
             controlSettledStatus = nil
         }
+        // A full disk is not a terminal failure: park the task as paused and
+        // let the disk-space watch resume it once room returns.
+        let parkedForDiskSpace = controlSettledStatus == nil && DownloadRetryPolicy.isOutOfSpace(error)
         update(id) {
             $0.bytesPerSecond = 0
             $0.errorRecommendation = diagnosis?.recommendation
@@ -817,6 +821,14 @@ extension AppModel {
                 $0.errorCode = Self.persistedFailureCode(for: error)
                 $0.errorMessage = ErrorPresentation.describe(error).message
             }
+            if parkedForDiskSpace {
+                $0.status = .paused
+                $0.errorCode = Self.diskFullErrorCode
+                $0.errorMessage = String(localized: "磁盘空间不足，任务已暂停；释放空间后会自动继续。")
+                $0.errorRecommendation = String(
+                    localized: "清理目标磁盘或更换保存位置；也可以在空间足够后手动点击继续。"
+                )
+            }
             if let controlSettledStatus {
                 $0.status = controlSettledStatus
                 $0.errorCode = nil
@@ -824,6 +836,10 @@ extension AppModel {
                 $0.errorRecommendation = nil
                 $0.errorCategory = nil
             }
+        }
+        if parkedForDiskSpace, let parked = task(with: id) {
+            notifier.notifyDiskFull(filename: parked.filename)
+            startDiskSpaceWatchIfNeeded()
         }
         // After setting the task error state, check whether a yt-dlp
         // update might fix a YouTube download failure. Two-stage guard:
@@ -1045,7 +1061,7 @@ extension AppModel {
             expectedSHA256: nil,
             taskID: id,
             requestContext: resolvedContext,
-            rateLimiter: sharedRateLimiter,
+            rateLimiter: rateLimiter(for: record),
             pairAudioURL: option.audioURL,
             pairCID: record.mediaCID,
             backend: .native

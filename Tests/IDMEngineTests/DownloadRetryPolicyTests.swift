@@ -67,6 +67,43 @@ final class DownloadRetryPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldRetry(URLError(.secureConnectionFailed)))
     }
 
+    func testTransientStorageErrorsAreRetryableButPrecheckIsNot() {
+        // ENOSPC mid-transfer and EMFILE/ENFILE descriptor exhaustion clear
+        // on their own once space is freed or handles are released; the
+        // retry route resumes from the committed checkpoint. The
+        // creation-time capacity pre-check throws storageError without a
+        // POSIX code and must keep failing fast, and hardware I/O or
+        // permission errors must never be retried.
+        let policy = DownloadRetryPolicy(
+            maxAttempts: 4,
+            baseDelayNanoseconds: 0,
+            maximumDelayNanoseconds: 0
+        )
+
+        XCTAssertTrue(policy.shouldRetry(IDMError.storageError("No space left on device", ENOSPC)))
+        XCTAssertTrue(policy.shouldRetry(IDMError.storageError("Too many open files", EMFILE)))
+        XCTAssertTrue(policy.shouldRetry(IDMError.storageError("Too many open files in system", ENFILE)))
+        XCTAssertFalse(policy.shouldRetry(IDMError.storageError("目标卷可用空间不足")))
+        XCTAssertFalse(policy.shouldRetry(IDMError.storageError("Input/output error", EIO)))
+        XCTAssertFalse(policy.shouldRetry(IDMError.storageError("Operation not permitted", EPERM)))
+    }
+
+    func testFoundationRaisedStorageFailuresAreRetryable() {
+        // Writes that surface through Foundation instead of the POSIX sink
+        // keep the same transient classification.
+        let policy = DownloadRetryPolicy(
+            maxAttempts: 4,
+            baseDelayNanoseconds: 0,
+            maximumDelayNanoseconds: 0
+        )
+
+        XCTAssertTrue(
+            policy.shouldRetry(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError))
+        )
+        XCTAssertTrue(policy.shouldRetry(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))))
+        XCTAssertFalse(policy.shouldRetry(NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))))
+    }
+
     func testResumeValidationInvariantFailuresAreRetryable() {
         // A checkpoint invariant failure does not prove the on-disk resume
         // state is unusable: re-entering the normal route either resumes
@@ -145,6 +182,21 @@ final class DownloadRetryPolicyTests: XCTestCase {
             XCTAssertGreaterThan(delay, 0)
             XCTAssertLessThanOrEqual(delay, 8_000_000_000)
         }
+    }
+
+    func testOutOfSpaceRecognizesFullVolumeFailuresOnly() {
+        XCTAssertTrue(DownloadRetryPolicy.isOutOfSpace(IDMError.storageError("No space left", ENOSPC)))
+        XCTAssertTrue(
+            DownloadRetryPolicy.isOutOfSpace(IDMError.storageError(FileSupport.insufficientCapacityMessage))
+        )
+        XCTAssertTrue(
+            DownloadRetryPolicy.isOutOfSpace(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError))
+        )
+        XCTAssertTrue(DownloadRetryPolicy.isOutOfSpace(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))))
+        // Descriptor exhaustion and other storage faults are not a full disk.
+        XCTAssertFalse(DownloadRetryPolicy.isOutOfSpace(IDMError.storageError("Too many open files", EMFILE)))
+        XCTAssertFalse(DownloadRetryPolicy.isOutOfSpace(IDMError.storageError("I/O error", EIO)))
+        XCTAssertFalse(DownloadRetryPolicy.isOutOfSpace(IDMError.httpStatus(503)))
     }
 }
 

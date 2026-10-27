@@ -220,10 +220,17 @@
       const isMediaInitiator = ["video", "audio", "source", "embed"].includes(entry.initiatorType);
       if (isMediaInitiator || checkMediaFn(url)) {
         seen.add(url);
+        // No size here, deliberately. A media resource's first Performance
+        // entry is the browser's header-read request: transferSize then
+        // measures that fragment (measured: 300 bytes for a 129 KB mp3), not
+        // the file. Treating it as the total made the wrong value final —
+        // the size probe skips candidates that already have a size, and
+        // noise suppression then hid the real audio as a "player blip".
+        // The anonymous size probe owns total sizes; entries only discover
+        // URLs.
         result.push({
           url,
           text: "",
-          size: entry.transferSize > 0 ? entry.transferSize : undefined,
           confidence: "extension",
         });
       }

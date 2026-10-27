@@ -19,9 +19,10 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0")
     ],
     targets: [
-        .target(name: "IDMEngine"),
+        .target(name: "IDMEngine", exclude: ["AGENTS.md"]),
         .target(
             name: "MacIDMBridge",
+            exclude: ["AGENTS.md"],
             linkerSettings: [.linkedFramework("Security")]
         ),
         .executableTarget(
@@ -36,9 +37,14 @@ let package = Package(
                 "MacIDMBridge",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
+            exclude: ["AGENTS.md"],
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
-        .executableTarget(name: "MacIDMHost", dependencies: ["MacIDMBridge"]),
+        .executableTarget(
+            name: "MacIDMHost",
+            dependencies: ["MacIDMBridge"],
+            exclude: ["AGENTS.md"]
+        ),
         .testTarget(name: "IDMEngineTests", dependencies: ["IDMEngine"]),
         .testTarget(name: "MacIDMBridgeTests", dependencies: ["MacIDMBridge"]),
         .testTarget(name: "MacIDMAppTests", dependencies: ["MacIDMApp", "MacIDMCLI"]),

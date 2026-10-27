@@ -619,16 +619,6 @@ public final class MediaBufferBudget: @unchecked Sendable {
             }
         }
     }
-
-    // MARK: - Test helpers
-
-    public func resetStats() {
-        lock.lock()
-        defer { lock.unlock() }
-        state.peakReservedBytes = state.reservedBytes
-        state.totalWaitCount = 0
-        state.totalTimeoutCount = 0
-    }
 }
 
 // MARK: - Global budget singleton

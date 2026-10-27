@@ -56,6 +56,20 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.add(request) { _ in }
     }
 
+    func notifyDiskFull(filename: String) {
+        guard let center else { return }
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "磁盘空间不足")
+        content.body = String(localized: "\(filename) 已暂停，释放空间后会自动继续下载。")
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { _ in }
+    }
+
     func notifyCompletionActionFailed(action: String, message: String) {
         guard let center else { return }
         requestAuthorizationIfNeeded()

@@ -619,6 +619,9 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(task.category, .video)
         XCTAssertEqual(task.detectedCategory, .video)
 
+        // addDownload persists through the debounced async channel; force a
+        // synchronous flush before reloading the store from disk.
+        try model.persist()
         // The MIME survives a restart so the detail panel keeps the same
         // "自动" preview as the submission window showed.
         let restarted = AppModel(
@@ -654,6 +657,7 @@ final class AppModelTests: XCTestCase {
 
         let task = try XCTUnwrap(model.tasks.first)
         XCTAssertEqual(task.sourceKind, .dash)
+        try model.persist()
         let persisted = try AppTaskStore(directory: directory.appendingPathComponent("state")).load()
         XCTAssertEqual(persisted.first?.sourceKind, .dash)
     }
@@ -680,6 +684,7 @@ final class AppModelTests: XCTestCase {
             pairCID: "fixture-cid"
         )
 
+        try model.persist()
         let restarted = AppModel(
             storeDirectory: stateDirectory,
             settings: AppSettings(defaults: defaults),
@@ -1208,7 +1213,7 @@ final class AppModelTests: XCTestCase {
 
         model.remove(taskID)
 
-        XCTAssertTrue(model.tasks.first?.isArchived == true)
+        XCTAssertTrue(model.tasks.isEmpty)
         XCTAssertNil(model.selectedTaskID)
     }
 
@@ -1239,142 +1244,78 @@ final class AppModelTests: XCTestCase {
         model.remove(taskID, fileRemoval: .moveToTrash)
 
         // 移到废纸篓走的是 Trash 通道，而不是直接删除；文件本体留在原地
-        //（测试用假 Trash 处理器，不污染真实废纸篓），记录照常归档。
+        //（测试用假 Trash 处理器，不污染真实废纸篓），记录从列表移除。
         XCTAssertEqual(trashed.value, destination)
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
-        XCTAssertTrue(model.tasks.first?.isArchived == true)
+        XCTAssertTrue(model.tasks.isEmpty)
     }
 
-    func testClearHistoryEmptiesTimelineWithoutTouchingMainListOrFiles() throws {
+    func testRemovingRecordKeepsFileAndPersistsRemoval() throws {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacIDMClearHistoryTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let defaults = makeIsolatedDefaults()
-        let model = AppModel(
-            storeDirectory: directory.appendingPathComponent("state"),
-            settings: AppSettings(defaults: defaults)
-        )
-        for name in ["completed.mp4", "failed.mp4", "archived.mp4", "paused.mp4"] {
-            try model.addDownload(
-                urlString: "https://example.com/\(name)",
-                destination: directory.appendingPathComponent(name),
-                maximumParallelRequests: 8,
-                expectedSHA256: nil,
-                startImmediately: false
-            )
-        }
-        let completed = try XCTUnwrap(model.tasks.first { $0.filename == "completed.mp4" })
-        let failed = try XCTUnwrap(model.tasks.first { $0.filename == "failed.mp4" })
-        let archived = try XCTUnwrap(model.tasks.first { $0.filename == "archived.mp4" })
-        let paused = try XCTUnwrap(model.tasks.first { $0.filename == "paused.mp4" })
-        model.update(completed.id) { $0.status = .completed }
-        model.update(failed.id) { $0.status = .failed }
-        try Data("content".utf8).write(to: directory.appendingPathComponent("completed.mp4"))
-        model.remove(archived.id)
-
-        model.clearHistory()
-
-        // 已归档记录被永久移除；仍在主列表的任务（含已完成的终结记录）只是
-        // 从历史时间线隐藏，全部下载里照常保留，本地文件一律不动。
-        XCTAssertEqual(
-            Set(model.tasks.map(\.id)),
-            Set([completed.id, failed.id, paused.id])
-        )
-        XCTAssertTrue(
-            model.tasks.allSatisfy(\.historyHidden),
-            "清空历史后剩余任务应从时间线隐藏"
-        )
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent("completed.mp4").path)
-        )
-        model.sidebarFilter = .all
-        XCTAssertEqual(model.filteredTasks.count, 3)
-        model.sidebarFilter = .history
-        XCTAssertEqual(model.filteredTasks.count, 0)
-    }
-
-    func testRemoveFromHistoryHidesLiveRecordAndKeepsMainListIntact() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacIDMRemoveFromHistoryTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let defaults = makeIsolatedDefaults()
-        let model = AppModel(
-            storeDirectory: directory.appendingPathComponent("state"),
-            settings: AppSettings(defaults: defaults)
-        )
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for name in ["live.mp4", "archived.mp4"] {
-            try model.addDownload(
-                urlString: "https://example.com/\(name)",
-                destination: directory.appendingPathComponent(name),
-                maximumParallelRequests: 8,
-                expectedSHA256: nil,
-                startImmediately: false
-            )
-        }
-        let live = try XCTUnwrap(model.tasks.first { $0.filename == "live.mp4" })
-        let archived = try XCTUnwrap(model.tasks.first { $0.filename == "archived.mp4" })
-        model.update(live.id) { $0.status = .completed }
-        try Data("content".utf8).write(to: directory.appendingPathComponent("live.mp4"))
-        model.remove(archived.id)
-
-        // 历史时间线中删除：活跃任务仅从时间线隐藏，主列表与文件保持；
-        // 已归档记录被永久移除。
-        model.removeFromHistory([live.id, archived.id])
-
-        XCTAssertEqual(model.tasks.map(\.id), [live.id])
-        XCTAssertTrue(model.tasks.first?.historyHidden == true)
-        model.sidebarFilter = .all
-        XCTAssertEqual(model.filteredTasks.map(\.id), [live.id])
-        model.sidebarFilter = .completed
-        XCTAssertEqual(model.filteredTasks.map(\.id), [live.id])
-        model.sidebarFilter = .history
-        XCTAssertEqual(model.filteredTasks.count, 0)
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent("live.mp4").path)
-        )
-    }
-
-    func testHistoryHiddenSurvivesRestart() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacIDMHistoryHiddenPersistTests-\(UUID().uuidString)")
+            .appendingPathComponent("MacIDMRemovePersistTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let storeDirectory = directory.appendingPathComponent("state")
-        let defaults = makeIsolatedDefaults()
         let model = AppModel(
             storeDirectory: storeDirectory,
-            settings: AppSettings(defaults: defaults)
+            settings: AppSettings(defaults: makeIsolatedDefaults())
         )
+        let destination = directory.appendingPathComponent("finished.mp4")
         try model.addDownload(
-            urlString: "https://example.com/hidden.mp4",
-            destination: directory.appendingPathComponent("hidden.mp4"),
+            urlString: "https://example.com/finished.mp4",
+            destination: destination,
             maximumParallelRequests: 8,
             expectedSHA256: nil,
             startImmediately: false
         )
         let taskID = try XCTUnwrap(model.tasks.first?.id)
-        model.removeFromHistory([taskID])
+        model.update(taskID) { $0.status = .completed }
+        try Data("content".utf8).write(to: destination)
+
+        model.remove(taskID)
         try model.persist()
+
+        XCTAssertTrue(model.tasks.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
 
         let restarted = AppModel(
             storeDirectory: storeDirectory,
             settings: AppSettings(defaults: makeIsolatedDefaults())
         )
-        // 清空的时间线在重启后保持清空，主列表不受影响。
-        XCTAssertEqual(restarted.tasks.first?.historyHidden, true)
-        XCTAssertEqual(restarted.tasks.first?.status, .paused)
-        restarted.sidebarFilter = .history
-        XCTAssertEqual(restarted.filteredTasks.count, 0)
-        restarted.sidebarFilter = .all
-        XCTAssertEqual(restarted.filteredTasks.count, 1)
+        XCTAssertTrue(restarted.tasks.isEmpty)
     }
 
-    func testRemovingRunningTaskStopsItAndArchivesTheRecord() throws {
+    func testReDownloadCompletedTaskCreatesANewTask() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMReDownloadTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(
+            storeDirectory: directory.appendingPathComponent("state"),
+            settings: AppSettings(defaults: makeIsolatedDefaults())
+        )
+        model.settings.downloadDirectory = directory.path
+        model.settings.autoStartDownloads = false
+        try model.addDownload(
+            urlString: "https://example.com/finished.mp4",
+            destination: directory.appendingPathComponent("finished.mp4"),
+            maximumParallelRequests: 8,
+            expectedSHA256: nil,
+            startImmediately: false
+        )
+        let taskID = try XCTUnwrap(model.tasks.first?.id)
+        model.update(taskID) { $0.status = .completed }
+
+        model.reDownload(taskID)
+
+        XCTAssertEqual(model.tasks.count, 2)
+        XCTAssertEqual(
+            model.tasks.filter { $0.sourceURL == "https://example.com/finished.mp4" }.count,
+            2
+        )
+    }
+
+    func testRemovingRunningTaskStopsItAndDeletesTheRecord() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacIDMRemoveActiveTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1398,47 +1339,12 @@ final class AppModelTests: XCTestCase {
             $0.bytesPerSecond = 1024
         }
 
-        // Deleting a live download must stop it first, then archive it.
+        // Deleting a live download must stop it first, then remove the record.
         model.remove(taskID)
 
-        XCTAssertEqual(model.tasks.first?.status, .cancelled)
-        XCTAssertTrue(model.tasks.first?.isArchived == true)
+        XCTAssertTrue(model.tasks.isEmpty)
         XCTAssertNil(model.executions[taskID].control)
         XCTAssertNil(model.executions[taskID].task)
-    }
-
-    func testHistoryFilterShowsEveryAddedTask() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacIDMHistoryFilterTests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let defaults = makeIsolatedDefaults()
-        let model = AppModel(
-            storeDirectory: directory.appendingPathComponent("state"),
-            settings: AppSettings(defaults: defaults)
-        )
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try model.addDownload(
-            urlString: "https://example.com/kept.mp4",
-            destination: directory.appendingPathComponent("kept.mp4"),
-            maximumParallelRequests: 8,
-            expectedSHA256: nil,
-            startImmediately: false
-        )
-        try model.addDownload(
-            urlString: "https://example.com/deleted.mp4",
-            destination: directory.appendingPathComponent("deleted.mp4"),
-            maximumParallelRequests: 8,
-            expectedSHA256: nil,
-            startImmediately: false
-        )
-        let archivedID = try XCTUnwrap(model.tasks.first?.id)
-        model.remove(archivedID)
-
-        // History records every added download: live and archived rows alike.
-        model.sidebarFilter = .history
-        XCTAssertEqual(model.filteredTasks.count, 2)
-        model.sidebarFilter = .all
-        XCTAssertEqual(model.filteredTasks.count, 1)
     }
 
     func testSearchMatchesJobIDCaseInsensitively() throws {

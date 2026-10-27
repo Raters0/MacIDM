@@ -30,8 +30,8 @@ final class CLIGUIStateMirror: @unchecked Sendable {
                     updated_at, status, received_bytes, total_bytes,
                     bytes_per_second, speed_history_json, sha256, verification,
                     error_code, error_message, segments_json,
-                    is_archived, average_speed, total_duration, category, priority
-                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'cli', NULL, ?, ?, ?, ?, ?, 0, '[]', ?, NULL, ?, ?, '[]', 0, NULL, NULL, NULL, 0)
+                    average_speed, total_duration, category, priority
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'cli', NULL, ?, ?, ?, ?, ?, 0, '[]', ?, NULL, ?, ?, '[]', NULL, NULL, NULL, 0)
                 ON CONFLICT(id) DO UPDATE SET
                     source_url = excluded.source_url,
                     destination_path = excluded.destination_path,

@@ -603,12 +603,29 @@ function renderMediaCandidates(payload) {
     nameCount.set(name, (nameCount.get(name) || 0) + 1);
   }
   // Fragment/segment candidates default to one collapsed group at the end,
-  // so a player cannot fill the Popup with internal requests.
+  // so a player cannot fill the Popup with internal requests. Everything
+  // else is bucketed into sections mirroring the display-order categories:
+  // the media bucket IS the main list (unlabeled, so a media-only page and
+  // positional row lookups stay exactly as before), while annex buckets —
+  // decorative images, everything else — get a labeled header with a count
+  // when populated.
   const fragments = [];
+  const buckets = { media: [], images: [], other: [] };
   for (const candidate of candidates) {
     if (isCollapsedSegment(candidate)) {
       fragments.push(candidate);
     } else {
+      const section = globalThis.MacIDMMediaUtils?.candidateSection?.(candidate) ?? "media";
+      buckets[section].push(candidate);
+    }
+  }
+  for (const candidate of buckets.media) {
+    mediaList.append(renderCandidate(candidate, nameCount));
+  }
+  for (const key of ["images", "other"]) {
+    if (buckets[key].length === 0) continue;
+    mediaList.append(renderSectionHeader(key, buckets[key].length));
+    for (const candidate of buckets[key]) {
       mediaList.append(renderCandidate(candidate, nameCount));
     }
   }
@@ -1818,6 +1835,19 @@ function variantOptionLabel(variant) {
     ? null
     : t("common.approxSize", { size: formatBytes(estimatedSize) ?? t("common.unknown") });
   return [label, sizeText].filter(Boolean).join(" · ");
+}
+
+// The media bucket is the unlabeled main list, so only annex buckets have labels.
+const SECTION_LABEL_KEYS = {
+  images: "popup.sectionImages",
+  other: "popup.sectionOther",
+};
+
+function renderSectionHeader(key, count) {
+  const header = document.createElement("h3");
+  header.className = "section-label";
+  header.textContent = `${t(SECTION_LABEL_KEYS[key])} (${count})`;
+  return header;
 }
 
 function isCollapsedSegment(candidate) {

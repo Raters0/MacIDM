@@ -12,7 +12,7 @@ public enum IDMError: Error, Equatable, Sendable {
     case resourceChanged
     case authenticationRequired
     case httpStatus(Int)
-    case storageError(String)
+    case storageError(String, Int32? = nil)
     case sidecarCorrupt
     case verificationFailed(expected: String, actual: String)
     case paused
@@ -37,7 +37,7 @@ extension IDMError: LocalizedError {
         case .resourceChanged: "Remote resource identity changed"
         case .authenticationRequired: "Authentication is required"
         case .httpStatus(let status): "HTTP request failed with status \(status)"
-        case .storageError(let message): "Storage error: \(message)"
+        case .storageError(let message, _): "Storage error: \(message)"
         case .sidecarCorrupt: "Resume metadata is invalid or does not match the temporary file"
         case .verificationFailed(let expected, let actual):
             "SHA-256 verification failed (expected \(expected), got \(actual))"

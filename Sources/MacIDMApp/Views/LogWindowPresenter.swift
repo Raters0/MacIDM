@@ -85,16 +85,7 @@ private struct ThemedLogWindowRoot: View {
     var body: some View {
         content
             .tint(AppTheme.accent)
-            .preferredColorScheme(preferredColorScheme)
             .appWindowSurface()
-            .background(WindowAppearanceConfigurator(colorScheme: settings.colorScheme))
-    }
-
-    private var preferredColorScheme: ColorScheme? {
-        switch settings.colorScheme {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
+            .appThemedWindow(settings)
     }
 }

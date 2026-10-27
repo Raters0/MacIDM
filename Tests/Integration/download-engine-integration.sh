@@ -116,6 +116,15 @@ if grep -rnE "fixture-secret|signature=" "$TEST_DIR/state-signed-background" >/d
   exit 1
 fi
 
+mkdir -p "$TEST_DIR/state-sha-stream"
+if "$MACIDM_BIN" add "http://127.0.0.1:$TEST_PORT/stream.m3u8" \
+  --output "$TEST_DIR/sha-stream.mp4" \
+  --sha256 "$(expected_hash 65536)" \
+  --state-dir "$TEST_DIR/state-sha-stream" >/dev/null 2>&1; then
+  echo "--sha256 on an HLS URL was accepted" >&2
+  exit 1
+fi
+
 mkdir -p "$TEST_DIR/state-bad"
 if "$MACIDM_BIN" add "http://127.0.0.1:$TEST_PORT/bad-range?size=65536" \
   --output "$TEST_DIR/bad.bin" \

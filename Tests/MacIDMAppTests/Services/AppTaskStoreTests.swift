@@ -526,6 +526,128 @@ final class AppTaskStoreTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(store.load().first).mediaWarning, .noAudioTrack)
     }
 
+    func testV15DatabaseDropsArchiveFlagsWithoutLosingTasks() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacIDMV15MigrationTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let taskID = UUID().uuidString.lowercased()
+        let databaseURL = directory.appendingPathComponent("tasks.sqlite3")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let legacySchema = """
+            CREATE TABLE schema_migrations (version INTEGER NOT NULL);
+            INSERT INTO schema_migrations(version) VALUES (15);
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY NOT NULL,
+                source_url TEXT NOT NULL,
+                destination_path TEXT NOT NULL,
+                maximum_parallel_requests INTEGER NOT NULL,
+                expected_sha256 TEXT,
+                source_kind TEXT,
+                browser_client_id TEXT,
+                browser_submission_type TEXT,
+                browser_submission_key TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                status TEXT NOT NULL,
+                received_bytes INTEGER NOT NULL,
+                total_bytes INTEGER,
+                bytes_per_second REAL NOT NULL,
+                speed_history_json TEXT NOT NULL,
+                sha256 TEXT,
+                verification TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                segments_json TEXT NOT NULL,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                average_speed REAL,
+                total_duration REAL,
+                category TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                started_at REAL,
+                media_duration REAL,
+                queue_id TEXT,
+                page_url TEXT,
+                error_recommendation TEXT,
+                error_category TEXT,
+                used_parallel_requests INTEGER,
+                mime_type TEXT,
+                active_transfer_duration REAL NOT NULL DEFAULT 0,
+                media_cid TEXT,
+                selected_quality INTEGER,
+                media_warning TEXT,
+                history_hidden INTEGER NOT NULL DEFAULT 0,
+                rate_limit_kbps INTEGER
+            );
+            INSERT INTO tasks (
+                id, source_url, destination_path, maximum_parallel_requests, expected_sha256,
+                source_kind, browser_client_id, browser_submission_type, browser_submission_key, created_at,
+                updated_at, status, received_bytes, total_bytes, bytes_per_second,
+                speed_history_json, sha256, verification, error_code, error_message,
+                segments_json, is_archived, average_speed, total_duration, category,
+                priority, started_at, media_duration, queue_id, page_url,
+                error_recommendation, error_category, used_parallel_requests, mime_type,
+                active_transfer_duration, media_cid, selected_quality, media_warning,
+                history_hidden, rate_limit_kbps
+            ) VALUES (
+                '\(taskID)', 'https://example.com/legacy.zip', '/tmp/legacy.zip', 8,
+                NULL, NULL, NULL, NULL, NULL, 1700000000,
+                1700000001, 'completed', 100, 100, 0,
+                '[]', NULL, NULL, NULL, NULL,
+                '[]', 1, NULL, NULL, NULL,
+                0, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                0, NULL, NULL, NULL,
+                1, NULL
+            );
+            """
+        var errorPointer: UnsafeMutablePointer<CChar>?
+        let schemaResult = sqlite3_exec(database, legacySchema, nil, nil, &errorPointer)
+        if let errorPointer { sqlite3_free(errorPointer) }
+        XCTAssertEqual(schemaResult, SQLITE_OK)
+        sqlite3_close(database)
+
+        let store = try AppTaskStore(directory: directory)
+        let loaded = try XCTUnwrap(store.load().first)
+        XCTAssertEqual(loaded.id.uuidString.lowercased(), taskID)
+        XCTAssertEqual(loaded.status, .completed)
+
+        var migratedDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &migratedDatabase), SQLITE_OK)
+        defer { sqlite3_close(migratedDatabase) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(migratedDatabase, "PRAGMA table_info(tasks)", -1, &statement, nil),
+            SQLITE_OK
+        )
+        defer { sqlite3_finalize(statement) }
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1) {
+                columns.insert(String(cString: name))
+            }
+        }
+        XCTAssertFalse(columns.contains("is_archived"))
+        XCTAssertFalse(columns.contains("history_hidden"))
+
+        var versionStatement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                migratedDatabase,
+                "SELECT MAX(version) FROM schema_migrations",
+                -1,
+                &versionStatement,
+                nil
+            ),
+            SQLITE_OK
+        )
+        defer { sqlite3_finalize(versionStatement) }
+        XCTAssertEqual(sqlite3_step(versionStatement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(versionStatement, 0), 16)
+    }
+
     private func makePersistableTask(destination: String) -> AppTask {
         AppTask(
             id: UUID(),

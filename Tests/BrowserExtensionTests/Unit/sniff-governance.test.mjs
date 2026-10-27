@@ -244,6 +244,33 @@ test("segments without manifest evidence stay visible", () => {
   assert.deepEqual(result.filteredSummary, { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 });
 });
 
+test("unknown-size indexed segments collapse after a same-host manifest", () => {
+  // Measured D2/D4 fixture: chunked segment responses keep size null (the
+  // anonymous probe cannot measure them), which used to exempt every
+  // unknown-size segment from suppression. Manifest attribution plus an
+  // indexed segment filename (stem ends in a digit run) is the fallback
+  // evidence; mp4 never uses it because a direct mp4 link is common.
+  const manifest = candidate({
+    url: "https://cdn.example.com/live/master.m3u8",
+    mime: "application/vnd.apple.mpegurl",
+  });
+  const indexedTS = candidate({ url: "https://cdn.example.com/live/seg-0001.ts" });
+  const indexedM4S = candidate({ url: "https://cdn.example.com/live/0.m4s" });
+  const unknownMP4 = candidate({ url: "https://cdn.example.com/live/frag-1.mp4" });
+  const namedTS = candidate({ url: "https://cdn.example.com/live/preview.ts" });
+  const result = run([manifest, indexedTS, indexedM4S, unknownMP4, namedTS], null);
+  assert.deepEqual(urls(result), [manifest.url, unknownMP4.url, namedTS.url]);
+  assert.deepEqual(result.filteredSummary, { diagnosticAudio: 0, streamSegments: 2, smallResources: 0 });
+});
+
+test("unknown-size indexed segments stay visible without a manifest", () => {
+  const indexedTS = candidate({ url: "https://cdn.example.com/live/seg-0001.ts" });
+  const indexedM4S = candidate({ url: "https://cdn.example.com/live/0.m4s" });
+  const result = run([indexedTS, indexedM4S], null);
+  assert.equal(result.candidates.length, 2);
+  assert.deepEqual(result.filteredSummary, { diagnosticAudio: 0, streamSegments: 0, smallResources: 0 });
+});
+
 test("large segments above the threshold are kept even with a manifest", () => {
   const manifest = candidate({
     url: "https://cdn.example.com/live/master.m3u8",

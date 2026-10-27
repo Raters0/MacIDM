@@ -42,7 +42,8 @@ struct HLSArtifactPublisher {
                 outputURL: destination,
                 outputKind: .mp4,
                 expectedSHA256: expectedSHA256,
-                control: control
+                control: control,
+                titleMetadata: FFmpegMetadata.title(forOutput: destination)
             )
         )
         try? FileManager.default.removeItem(at: result.destination)
