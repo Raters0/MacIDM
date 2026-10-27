@@ -1,0 +1,223 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MacIDM — main window preview</title>
+<link rel="stylesheet" href="demo-kit.css">
+<style>
+  .stage { width: 1280px; height: 720px; background: linear-gradient(160deg, #eceef6, #f6f6f8); }
+  .main { left: 24px; top: 20px; width: 1232px; height: 680px; display: grid; grid-template-rows: 44px 1fr 28px; }
+  .toolbar { display: flex; align-items: center; gap: 16px; padding: 0 14px; border-bottom: 1px solid var(--separator); background: #f4f4f6; color: #666; }
+  .toolbar .tools { display: flex; gap: 14px; margin-left: 40px; font-size: 14px; }
+  .search { margin-left: auto; width: 230px; height: 26px; border-radius: 7px; background: rgba(0,0,0,.05); display: flex; align-items: center; padding: 0 9px; color: var(--text-tertiary); }
+  .content { display: grid; grid-template-columns: 210px 1fr 300px; min-height: 0; }
+
+  .sidebar { background: var(--sidebar); border-right: 1px solid var(--separator); padding: 10px 8px; }
+  .sidebar .head { margin: 12px 8px 4px; color: var(--text-tertiary); font-size: 11px; font-weight: 600; }
+  .nav { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; border-radius: 6px; }
+  .nav.selected { background: rgba(91,108,240,.14); color: var(--accent); font-weight: 600; }
+  .nav .n { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+
+  .table { background: #fff; display: flex; flex-direction: column; min-width: 0; }
+  .cols, .task { display: grid; grid-template-columns: minmax(0,1.75fr) minmax(0,.65fr) minmax(0,1fr) minmax(0,.85fr) minmax(0,.85fr) minmax(0,1.1fr); align-items: center; padding: 0 14px; gap: 8px; }
+  .cols { white-space: nowrap; height: 30px; color: var(--text-secondary); font-size: 12px; border-bottom: 1px solid var(--separator); }
+  .task { height: 34px; white-space: nowrap; }
+  .task:nth-child(even) { background: #fafafc; }
+  .task.selected { background: var(--accent) !important; color: #fff; }
+  .task.selected .status, .task.selected .muted { color: #fff !important; }
+  .task.selected .bar { background: rgba(255,255,255,.3); }
+  .task.selected .bar > i { background: #fff; }
+  .name { overflow: hidden; text-overflow: ellipsis; }
+  .status { display: flex; gap: 6px; align-items: center; }
+  .s-run { color: var(--accent); } .s-done { color: var(--success); } .s-pause { color: var(--warning); } .s-fail { color: var(--danger); } .s-queue { color: var(--text-secondary); }
+  .prog { display: grid; grid-template-columns: 1fr 38px; gap: 8px; align-items: center; font-size: 12px; }
+  .limit { color: var(--text-tertiary); display: inline-flex; vertical-align: -2px; margin-left: 3px; }
+
+  .detail { border-left: 1px solid var(--separator); padding: 14px 16px; background: var(--window); overflow: hidden; }
+  .detail h2 { margin: 0 0 4px; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail .sub { color: var(--text-secondary); font-size: 12px; }
+  .detail h3 { margin: 16px 0 6px; font-size: 12px; }
+  .card { background: #fff; border: 1px solid var(--separator); border-radius: 8px; padding: 10px; }
+  .overall { display: flex; justify-content: space-between; font-size: 12px; margin-top: 6px; color: var(--text-secondary); }
+  .segments { display: grid; gap: 6px; }
+  .seg { display: grid; grid-template-columns: 18px 1fr; gap: 6px; align-items: center; font-size: 10px; color: var(--text-tertiary); }
+  .seg .bar { height: 6px; }
+  .chart { height: 120px; position: relative; }
+  .chart svg { position: absolute; inset: 0; }
+  .chart .peak { position: absolute; right: 2px; top: 0; font-size: 11px; color: var(--text-secondary); }
+  .statusbar { display: flex; align-items: center; gap: 16px; padding: 0 14px; border-top: 1px solid var(--separator); color: var(--text-secondary); font-size: 11px; background: #f7f7f9; }
+  .statusbar .right { margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mac-window main">
+    <div class="toolbar">
+      <span class="lights"><i></i><i></i><i></i></span>
+      <span class="tools"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM6 3v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l8 5-8 5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10M11 3v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.8 9.5h5.4l.8-9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span class="search">⌕&nbsp; <span data-t="search"></span></span>
+    </div>
+    <div class="content">
+      <div class="sidebar" id="sidebar"></div>
+      <div class="table">
+        <div class="cols">
+          <span data-t="colName"></span><span data-t="colSize"></span><span data-t="colStatus"></span>
+          <span data-t="colSpeed"></span><span data-t="colTime"></span><span data-t="colProgress"></span>
+        </div>
+        <div id="rows"></div>
+      </div>
+      <div class="detail">
+        <h2>Sintel — trailer 1080p.mp4</h2>
+        <div class="sub" id="detailSub"></div>
+        <h3 data-t="overall"></h3>
+        <div class="card">
+          <div class="bar"><i id="overallBar"></i></div>
+          <div class="overall"><span id="overallBytes"></span><span id="overallPct"></span></div>
+        </div>
+        <h3 data-t="segments"></h3>
+        <div class="card segments" id="segments"></div>
+        <h3 data-t="speed"></h3>
+        <div class="card chart">
+          <span class="peak" id="peak"></span>
+          <svg viewBox="0 0 248 100" preserveAspectRatio="none"><path id="area" fill="rgba(91,108,240,.12)"/><path id="line" fill="none" stroke="#5b6cf0" stroke-width="1.6"/></svg>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span id="activeCount"></span><span id="totalProgress"></span>
+      <span class="right" id="totalSpeed"></span>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { applyStrings, clamp, registerScene, tr } from "./demo-kit.js";
+
+// Strings mirror Resources/Localization (the App's English catalog keys
+// are the Chinese source strings).
+const S = {
+  search: { en: "Search tasks", zh: "搜索任务" },
+  colName: { en: "File name", zh: "文件名" },
+  colSize: { en: "Size", zh: "大小" },
+  colStatus: { en: "Status", zh: "状态" },
+  colSpeed: { en: "Speed", zh: "速度" },
+  colTime: { en: "Download time", zh: "下载耗时" },
+  colProgress: { en: "Progress", zh: "进度" },
+  overall: { en: "Overall progress", zh: "总进度" },
+  segments: { en: "Segment progress", zh: "分段进度" },
+  speed: { en: "Download speed", zh: "下载速度" },
+  downloading: { en: "Downloading", zh: "下载中" },
+  completed: { en: "Completed", zh: "已完成" },
+  paused: { en: "Paused", zh: "已暂停" },
+  failed: { en: "Failed", zh: "失败" },
+  queued: { en: "Queued", zh: "排队中" },
+};
+applyStrings(S);
+
+const sidebar = [
+  ["all", { en: "All Downloads", zh: "全部下载" }, 8, true],
+  ["active", { en: "Active", zh: "进行中" }, 4],
+  ["done", { en: "Completed", zh: "已完成" }, 2],
+  ["h", { en: "Queue", zh: "队列" }],
+  ["main", { en: "Main Queue", zh: "主队列" }, 8],
+  ["h", { en: "Time", zh: "时间" }],
+  ["today", { en: "Today", zh: "今天" }, 6],
+  ["week", { en: "This Week", zh: "本周" }, 8],
+  ["h", { en: "Category", zh: "分类" }],
+  ["video", { en: "Video", zh: "视频" }, 4],
+  ["audio", { en: "Audio", zh: "音频" }, 1],
+  ["docs", { en: "Documents", zh: "文档" }, 1],
+  ["apps", { en: "Applications", zh: "应用程序" }, 1],
+  ["zip", { en: "Archives", zh: "压缩包" }, 1],
+];
+document.getElementById("sidebar").innerHTML = sidebar
+  .map(([id, label, count, selected]) =>
+    id === "h"
+      ? `<div class="head">${tr(label)}</div>`
+      : `<div class="nav${selected ? " selected" : ""}"><span>${tr(label)}</span><span class="n">${count}</span></div>`)
+  .join("");
+
+// Running tasks advance with time; the rest are static.
+const tasks = [
+  { name: "Sintel — trailer 1080p.mp4", size: 129, from: 0.34, rate: 0.075, speed: 11.8, selected: true },
+  { name: "ubuntu-24.04-desktop-arm64.iso", size: 3100, from: 0.12, rate: 0.022, speed: 24.6 },
+  { name: "Big Buck Bunny (HLS).mp4", size: 312, from: 0.58, rate: 0.016, speed: 2.0, limit: 2048 },
+  { name: "Podcast Episode 42.m4a", size: 48, status: "queued", progress: 0 },
+  { name: "Blender-4.2-macos-arm64.dmg", size: 412, status: "completed", progress: 1, time: "00:18" },
+  { name: "Annual Report 2026.pdf", size: 4.8, status: "completed", progress: 1, time: "00:01" },
+  { name: "Product Demo.mp4", size: 86, status: "paused", progress: 0.61, time: "00:09" },
+  { name: "dataset-archive.zip", size: 1200, status: "failed", progress: 0.07, time: "00:04" },
+];
+
+const fmtSize = (mb) => (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`);
+const statusClass = { downloading: "s-run", completed: "s-done", paused: "s-pause", failed: "s-fail", queued: "s-queue" };
+const statusIcon = { downloading: "↓", completed: "✓", paused: "❙❙", failed: "!", queued: "…" };
+
+function wobble(seed, t) {
+  return 1 + 0.08 * Math.sin(t * 2.3 + seed) + 0.05 * Math.sin(t * 5.1 + seed * 2);
+}
+
+const rows = document.getElementById("rows");
+const segmentBox = document.getElementById("segments");
+segmentBox.innerHTML = Array.from({ length: 8 }, (_, i) => `<div class="seg"><span>${i + 1}</span><span class="bar"><i id="seg${i}"></i></span></div>`).join("");
+const segmentStart = [0.62, 0.48, 0.41, 0.37, 0.3, 0.26, 0.18, 0.1];
+const segmentRate = [0.11, 0.1, 0.095, 0.09, 0.085, 0.08, 0.08, 0.075];
+
+function render(t) {
+  let active = 0;
+  let totalSpeed = 0;
+  rows.innerHTML = tasks
+    .map((task, index) => {
+      const running = task.rate !== undefined;
+      const progress = running ? clamp(task.from + task.rate * t) : task.progress;
+      const status = running ? "downloading" : task.status;
+      const speed = running ? task.speed * wobble(index, t) : 0;
+      if (running) {
+        active += 1;
+        totalSpeed += speed;
+      }
+      const speedText = running
+        ? `${speed.toFixed(1)} MB/s${task.limit ? ` <span class="limit"><svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 11a5.5 5.5 0 1 1 11 0M8 11l-2.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>` : ""}`
+        : "—";
+      const time = running ? `00:${String(Math.floor(9 + t)).padStart(2, "0")}` : task.time ?? "—";
+      return `<div class="task${task.selected ? " selected" : ""}">
+        <span class="name">${task.name}</span>
+        <span class="muted">${fmtSize(task.size)}</span>
+        <span class="status ${statusClass[status]}">${statusIcon[status]} ${tr(S[status])}</span>
+        <span>${speedText}</span>
+        <span>${time}</span>
+        <span class="prog"><span class="bar"><i style="width:${(progress * 100).toFixed(1)}%"></i></span><span>${Math.round(progress * 100)}%</span></span>
+      </div>`;
+    })
+    .join("");
+
+  const selected = tasks[0];
+  const overall = clamp(selected.from + selected.rate * t);
+  document.getElementById("overallBar").style.width = `${(overall * 100).toFixed(1)}%`;
+  document.getElementById("overallBytes").textContent = `${(overall * selected.size).toFixed(1)} MB / ${selected.size} MB`;
+  document.getElementById("overallPct").textContent = `${(overall * 100).toFixed(1)}%`;
+  document.getElementById("detailSub").textContent = `${tr(S.downloading)} · ${(selected.speed * wobble(0, t)).toFixed(1)} MB/s · 8 ${tr({ en: "connections", zh: "个连接" })}`;
+  segmentStart.forEach((start, i) => {
+    document.getElementById(`seg${i}`).style.width = `${(clamp(start + segmentRate[i] * t) * 100).toFixed(1)}%`;
+  });
+
+  // Speed history: 60 samples ending at t, drawn left to right.
+  const samples = Array.from({ length: 60 }, (_, i) => {
+    const at = t - (59 - i) * 0.15;
+    return at < -4 ? 0 : selected.speed * wobble(0, at) * clamp((at + 4) / 1.5);
+  });
+  const peak = 14;
+  const points = samples.map((value, i) => `${((i / 59) * 248).toFixed(1)},${(100 - (value / peak) * 88).toFixed(1)}`);
+  document.getElementById("line").setAttribute("d", `M${points.join(" L")}`);
+  document.getElementById("area").setAttribute("d", `M0,100 L${points.join(" L")} L248,100 Z`);
+  document.getElementById("peak").textContent = `${peak} MB/s`;
+
+  document.getElementById("activeCount").textContent = tr({ en: `Active tasks ${active}/8`, zh: `活动任务 ${active}/8` });
+  document.getElementById("totalProgress").textContent = "";
+  document.getElementById("totalSpeed").textContent = tr({ en: "Total speed ", zh: "总速度 " }) + `${totalSpeed.toFixed(1)} MB/s`;
+}
+
+registerScene({ duration: 8, fps: 10, width: 1280, height: 720, render });
+</script>
+</body>
+</html>

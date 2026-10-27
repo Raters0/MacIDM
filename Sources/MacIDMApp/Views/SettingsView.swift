@@ -263,11 +263,22 @@ struct SettingsView: View {
             .layoutPriority(1)
 
             Spacer(minLength: 20)
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
+            if controlColumnWidth < SettingsMetrics.wideControlColumn {
+                // Toggles, buttons and menus have a natural width; never
+                // compress them below it. A fixed column wrapped longer
+                // English labels one letter per line ("Che/ck/for/…"), so
+                // the column is a minimum here and the title text yields.
                 control()
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: controlColumnWidth, alignment: .trailing)
+            } else {
+                // Wide columns host text fields that should fill the column.
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    control()
+                }
+                .frame(width: controlColumnWidth)
             }
-            .frame(width: controlColumnWidth)
         }
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)

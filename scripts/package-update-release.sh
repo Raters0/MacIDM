@@ -80,6 +80,20 @@ if [ -z "$ed_signature" ] || [ -z "$zip_length" ]; then
   exit 1
 fi
 
+# Release notes are embedded in the appcast so Sparkle's update window shows
+# them in place instead of loading the GitHub release page. The notes file
+# (MACIDM_RELEASE_NOTES_FILE, set by release-app.sh) carries the English text,
+# a line with only ---, then the Chinese text; each half becomes an HTML
+# description with its own xml:lang. Without a notes file the item has none.
+release_notes_xml=""
+if [ -n "${MACIDM_RELEASE_NOTES_FILE:-}" ]; then
+  [ -f "$MACIDM_RELEASE_NOTES_FILE" ] || {
+    echo "[package-update-release] release notes not found: $MACIDM_RELEASE_NOTES_FILE" >&2
+    exit 1
+  }
+  release_notes_xml="$(python3 "$repository_root/scripts/render-release-notes.py" "$MACIDM_RELEASE_NOTES_FILE")"
+fi
+
 pub_date="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S %z')"
 cat > "$appcast_path" <<EOF
 <?xml version="1.0" standalone="yes"?>
@@ -92,7 +106,7 @@ cat > "$appcast_path" <<EOF
         <item>
             <title>MacIDM ${version}</title>
             <pubDate>${pub_date}</pubDate>
-            <sparkle:releaseNotesLink>https://github.com/Raters0/MacIDM/releases/tag/v${version}</sparkle:releaseNotesLink>
+            ${release_notes_xml}
             <enclosure
                 url="https://github.com/Raters0/MacIDM/releases/download/v${version}/${zip_name}"
                 sparkle:version="${bundle_version}"

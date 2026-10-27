@@ -143,7 +143,7 @@ extension SettingsView {
                 }
             } else {
                 Text(
-                    "开启后选择服务商（自动填充地址与模型）并粘贴 API KEY（只存本机钥匙串，可下拉获取模型列表、测试连接）并粘贴 API KEY（只存本机钥匙串，输入框内的眼睛图标可查看）。关闭或不可用时完全使用本地命名规则。"
+                    "开启后选择服务商（自动填充地址与模型）并粘贴 API KEY（只存本机钥匙串，可点眼睛图标查看，可下拉获取模型列表、测试连接）。关闭或不可用时完全使用本地命名规则。"
                 )
             }
         }
@@ -260,7 +260,7 @@ extension SettingsView {
 
     func fetchSemanticModels() {
         guard let config = liveSemanticConfig() else {
-            semanticToolMessage = "请先填写 API 地址与 KEY"
+            semanticToolMessage = String(localized: "请先填写 API 地址与 KEY")
             return
         }
         isFetchingSemanticModels = true
@@ -272,14 +272,14 @@ extension SettingsView {
                 semanticModels = models
                 semanticToolMessage = nil
             case .failure(let detail):
-                semanticToolMessage = "获取模型列表失败：\(detail)"
+                semanticToolMessage = String(localized: "获取模型列表失败：\(detail)")
             }
         }
     }
 
     func testSemanticConnection() {
         guard let config = liveSemanticConfig() else {
-            semanticToolMessage = "请先填写 API 地址与 KEY"
+            semanticToolMessage = String(localized: "请先填写 API 地址与 KEY")
             return
         }
         isTestingSemanticConnection = true

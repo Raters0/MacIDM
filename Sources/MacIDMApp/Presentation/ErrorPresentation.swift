@@ -6,6 +6,15 @@ import IDMEngine
 /// through `String(localized:)` so the English catalog can translate the
 /// whole mapping without touching call sites.
 enum ErrorPresentation {
+    /// Error text is persisted with the task in the language active when it
+    /// failed. Chinese is the development language, so a stored message is
+    /// usually its own localization key: look it up again so the panel
+    /// follows a later language switch. Interpolated or English-recorded
+    /// text has no key and is shown unchanged.
+    static func localizedStored(_ text: String) -> String {
+        Bundle.main.localizedString(forKey: text, value: text, table: nil)
+    }
+
     struct Friendly {
         let title: String
         let message: String

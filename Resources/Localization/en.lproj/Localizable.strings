@@ -51,7 +51,6 @@
 "时间" = "Time";
 "开始" = "Start";
 "不限" = "No limit";
-"串行" = "Sequential";
 "后台运行" = "Running in background";
 "可选" = "Optional";
 "该站点" = "this site";
@@ -127,11 +126,7 @@
 "导入任务列表…" = "Import Task List…";
 "导出任务列表（JSON）…" = "Export Task List (JSON)…";
 "导出任务列表（CSV）…" = "Export Task List (CSV)…";
-"永久删除" = "Delete Permanently";
-"永久删除…" = "Delete Permanently…";
-"永久清除" = "Delete Permanently";
 "删除记录" = "Remove Record";
-"删除记录和文件" = "Remove Record and File";
 "删除队列…" = "Delete Queue…";
 "重命名…" = "Rename…";
 "重命名队列" = "Rename Queue";
@@ -147,8 +142,8 @@
 "更改筛选条件或搜索内容" = "Change the filter or search terms";
 "支持 ⌘/⇧ 多选进行批量操作" = "Use ⌘/⇧ multi-selection for batch actions";
 "下载管理器已就绪" = "Download manager ready";
-"%lld 个任务正在处理" = "%lld tasks in progress";
-"%lld 个任务等待下载" = "%lld tasks waiting to download";
+"%lld 个任务正在处理" = "In progress: %lld";
+"%lld 个任务等待下载" = "Waiting to download: %lld";
 "主队列" = "Main Queue";
 "当前筛选下活动任务数 / 任务总数" = "Active tasks under the current filter / total tasks";
 "全部活动任务的加权总进度" = "Weighted total progress of all active tasks";
@@ -156,9 +151,7 @@
 "总进度" = "Overall progress";
 "当前没有正在下载的任务" = "No tasks are downloading right now";
 "退出 MacIDM" = "Quit MacIDM";
-"删除选中的 %lld 个任务？" = "Remove the %lld selected tasks?";
-"记录将被永久删除，不可恢复。" = "Records are deleted permanently and cannot be recovered.";
-"正在下载的任务会先停止，然后删除。" = "Downloading tasks are stopped first, then removed.";
+"删除选中的 %lld 个任务？" = "Remove the selected tasks (%lld)?";
 "删除队列「%@」？" = "Delete queue \"%@\"?";
 "队列内的任务会移回主队列，不会删除任何下载文件。" = "Tasks in the queue move back to the main queue; no downloaded files are deleted.";
 "该保存位置已存在于任务列表中，请先移除旧任务或选择新文件名。" = "This destination already exists in the task list; remove the old task or choose a new file name first.";
@@ -169,17 +162,14 @@
 "操作未完成" = "Operation not completed";
 "导出失败" = "Export failed";
 "导入完成" = "Import complete";
-"已导入 %lld 个任务（全部处于暂停状态，请手动继续）。" = "Imported %lld tasks (all paused; resume them manually).";
+"已导入 %lld 个任务（全部处于暂停状态，请手动继续）。" = "Tasks imported: %lld (all paused; resume them manually).";
 "导入失败" = "Import failed";
 "任务导出文件版本 %lld 不受支持。" = "Task export file version %lld is not supported.";
 "导出文件中没有可导入的下载任务。" = "The export file contains no importable download tasks.";
-"MacIDM-任务" = "MacIDM-Tasks";
-
 /* ---- Task detail ---- */
 "轨道进度" = "Track progress";
 "分段进度" = "Segment progress";
 "下载速度" = "Download speed";
-"任务信息" = "Task info";
 "打开文件" = "Open File";
 "在访达中显示" = "Reveal in Finder";
 "复制路径" = "Copy Path";
@@ -192,14 +182,9 @@
 "最近 2 分钟" = "Last 2 minutes";
 "下载速度曲线，最近 2 分钟，当前速度 %@，峰值 %@" = "Download speed, last 2 minutes, current %@, peak %@";
 "验证" = "Verification";
-"SHA-256 与预期值一致" = "SHA-256 matches the expected value";
-"FFmpeg remux 与 ffprobe 轨道校验完成" = "FFmpeg remux and ffprobe track verification completed";
-"范围与大小验证完成" = "Range and size verification completed";
 "速度 %@" = "Speed %@";
 "分类" = "Category";
 "保存至" = "Save to";
-"9/12 已完成" = "9/12 completed";
-
 /* ---- Categories ---- */
 "压缩包" = "Archives";
 "文档" = "Documents";
@@ -258,7 +243,6 @@
 "已下载 %@" = "Downloaded %@";
 "yt-dlp 已内置在应用中，用于解析 YouTube 等站点；更新会下载到应用支持目录并优先生效。" = "yt-dlp is bundled in the app for parsing sites like YouTube; updates download to the app support directory and take precedence.";
 "yt-dlp（站点解析组件）" = "yt-dlp (site parsing component)";
-"删除记录时保留到历史（可重新下载）" = "Keep removed records in history (re-downloadable)";
 "App 激活时检测剪贴板中的下载链接" = "Detect download links in the clipboard when the app is activated";
 "关闭主窗口后仅保留菜单栏图标" = "Keep only the menu bar icon after closing the main window";
 "隐藏 Dock 图标并继续在后台下载；可从菜单栏重新打开主窗口。" = "Hides the Dock icon and keeps downloading in the background; reopen the main window from the menu bar.";
@@ -303,14 +287,11 @@
 "管理 %@ 的站点会话" = "Manage the site session for %@";
 "已保存的站点" = "Saved sites";
 "尚未保存任何站点会话" = "No site sessions saved yet";
-"显示另外 %lld 个站点" = "Show %lld more sites";
+"显示另外 %lld 个站点" = "Show more sites (%lld)";
 "收起" = "Show Less";
 "已展开" = "Expanded";
 "已折叠" = "Collapsed";
-"清除所有已保存会话" = "Clear all saved sessions";
-"删除所有站点的已保存 Cookie。" = "Deletes the saved cookies for all sites.";
 "删除所有站点的已保存 Cookies" = "Delete saved cookies for all sites";
-"清除全部" = "Clear All";
 "更新" = "Update";
 "启用下载代理" = "Enable download proxy";
 "类型" = "Type";
@@ -335,7 +316,7 @@
 "界面" = "UI";
 "系统" = "System";
 "级别" = "Level";
-"%lld 条" = "%lld lines";
+"%lld 条" = "Lines: %lld";
 "自动跟随" = "Auto-follow";
 "日志更新时自动滚动到最新一条" = "Scroll to the newest line as logs update";
 "到底部" = "To bottom";
@@ -364,8 +345,7 @@
 "需要登录的站点：优先用 Chrome 插件提交（自动携带会话）；也可以在此粘贴 Cookie，保存后对该站点的下载自动生效。" = "For sites that require login: prefer submitting via the Chrome extension (session included automatically), or paste the cookie here; once saved it applies to downloads from that site.";
 "寻找资源" = "Find Resources";
 "正在寻找…" = "Finding…";
-"已找到 %lld 个资源" = "Found %lld resources";
-"需站点解析" = "Needs site parsing";
+"已找到 %lld 个资源" = "Resources found: %lld";
 "高级选项" = "Advanced options";
 "下载选项" = "Download options";
 "最大并行请求数" = "Max parallel requests";
@@ -377,10 +357,6 @@
 "探测中…" = "Probing…";
 "大小未知" = "Size unknown";
 "时长 %@" = "Duration %@";
-"时长未知" = "Duration unknown";
-"预估大小，以实际下载为准" = "Estimated size; the actual download may differ";
-"原始格式: MPEG-TS → 输出格式: MP4（FFmpeg 重封装）" = "Source format: MPEG-TS → output format: MP4 (FFmpeg remux)";
-"原始格式: WebM → 输出格式: MP4（FFmpeg 合并）" = "Source format: WebM → output format: MP4 (FFmpeg merge)";
 "已选择普通文件下载；如果地址实际是网页，下载结果可能是 HTML。" = "A plain file download was selected; if the URL is actually a web page, the result may be HTML.";
 "已识别音视频，将在下载时自动合并为 MP4。" = "Audio and video detected; they will be merged into MP4 automatically during the download.";
 "已找到多个资源，请选择要下载的画质或格式。" = "Multiple resources found; pick the quality or format to download.";
@@ -423,8 +399,6 @@
 
 /* ---- Cookie paste sheet ---- */
 "粘贴站点 Cookie" = "Paste Site Cookie";
-"Cookie 按站点隔离，仅用于该主机的 https 下载（不用于 http 或兄弟子域；由于未实现 Path 属性解析，在同一主机的不同路径下均会复用）。获取方式：在浏览器中登录该站点，按 F12 打开开发者工具 → Network → 刷新页面 → 点击任意请求 → 在 Request Headers 中复制 Cookie 的值。" = "Cookies are isolated per site and used only for https downloads from that exact host (not for http or sibling subdomains; without Path-level parsing, they are reused across different paths on the same host). How to get one: log in to the site in your browser, press F12 to open DevTools → Network → refresh the page → click any request → copy the Cookie value from Request Headers.";
-"站点域名（如 example.com）" = "Site domain (e.g. example.com)";
 "Cookie 值" = "Cookie value";
 "Cookie 值不能为空。" = "The cookie value cannot be empty.";
 "Cookie 格式看起来不正确（应包含 name=value 形式的键值对）。" = "The cookie does not look right (it should contain name=value pairs).";
@@ -452,7 +426,7 @@
 "活动" = "Active";
 "排队" = "Queued";
 "所有下载已完成" = "All downloads complete";
-"即将执行「%@」，剩余 %lld 秒" = "“%@” will run in %lld seconds";
+"即将执行「%@」，剩余 %lld 秒" = "“%1$@” will run in %2$lld s";
 "睡眠失败" = "Sleep failed";
 "关机失败" = "Shutdown failed";
 "未获得系统自动化权限或系统拒绝了请求。" = "Automation permission was not granted or the system denied the request.";
@@ -487,7 +461,6 @@
 "正在准备 yt-dlp" = "Preparing yt-dlp";
 "正在获取最新版本信息……" = "Fetching the latest release info…";
 "下载完成，正在安装并验证……" = "Download complete; installing and verifying…";
-"命令执行失败（退出码 %d）：%@" = "Command failed (exit code %d): %@";
 "需要 yt-dlp 组件" = "yt-dlp component required";
 "YouTube 视频下载依赖 yt-dlp。MacIDM 可以自动下载官方版本并安装到应用目录，或你也可以手动执行 brew install yt-dlp。" = "YouTube downloads depend on yt-dlp. MacIDM can download and install the official build into the app directory automatically, or you can run brew install yt-dlp yourself.";
 "自动安装" = "Install Automatically";
@@ -536,7 +509,6 @@
 "浏览器接管状态不允许当前操作。" = "The browser takeover state does not allow this operation.";
 "该浏览器接管请求已被放弃，请使用新的请求标识重新提交。" = "This browser takeover request was abandoned; re-submit with a new request id.";
 "当前请求包含 MacIDM 无法安全重建的 Authorization 或无效上下文；Chrome 下载将继续。" = "This request contains an Authorization header or context MacIDM cannot safely reconstruct; the Chrome download will continue.";
-"直播 HLS/DASH 暂不支持，MacIDM 只接受已结束的点播流。" = "Live HLS/DASH is not supported yet; MacIDM only accepts finished on-demand streams.";
 "无法解析媒体播放列表：" = "Cannot parse the media playlist: ";
 "media.inspect 需要有效的 URL" = "media.inspect requires a valid URL";
 "media.inspect 目前只支持 HLS、DASH 或 YouTube URL" = "media.inspect currently supports only HLS, DASH, or YouTube URLs";
@@ -548,7 +520,6 @@
 "音视频配对地址只在当前会话保留，请从浏览器媒体候选重新提交。" = "Audio/video pair URLs are kept for the current session only; re-submit from the browser media candidates.";
 "带参数的下载地址未在本机持久化，请重新提交原始链接。" = "The parameterized download URL was not persisted on this machine; re-submit the original link.";
 "带参数的下载地址未持久化，请重新提交原始链接。" = "The parameterized download URL was not persisted; re-submit the original link.";
-"站点 %@ 需要登录态。" = "Site %@ requires a logged-in session.";
 "站点 %@ " = "Site %@ ";
 "也可以手动粘贴 Cookie（任务失败弹窗或设置→站点会话中操作）。" = "You can also paste cookies manually (from a task failure dialog or Settings → Site sessions).";
 "推荐：在 Chrome 中登录该站点后通过 MacIDM 插件重新提交下载（自动携带会话）；" = "Recommended: log in to the site in Chrome, then re-submit the download via the MacIDM extension (session included automatically); ";
@@ -763,9 +734,6 @@
 "yt-dlp 未返回有效文本" = "yt-dlp returned no valid text";
 "无法解析 yt-dlp 输出" = "Cannot parse the yt-dlp output";
 "YouTube 视频没有可用的视频格式" = "No video formats are available for this YouTube video";
-"未知分辨率" = "Unknown resolution";
-"yt-dlp 返回错误（退出码 %d）" = "yt-dlp returned an error (exit code %d)";
-"yt-dlp 错误：%@" = "yt-dlp error: %@";
 "不是受支持的 Bilibili 视频地址。" = "Not a supported Bilibili video URL.";
 "Bilibili 播放接口返回了无法解析的数据。" = "The Bilibili playback API returned unparseable data.";
 "Bilibili 拒绝了请求（需要登录或大会员权限）：" = "Bilibili rejected the request (login or premium membership required): ";
@@ -774,9 +742,6 @@
 "Bilibili 视频" = "Bilibili video";
 "Bilibili 番剧" = "Bilibili series";
 "Bilibili 访问被拒（HTTP %lld）" = "Bilibili access denied (HTTP %lld)";
-" · 编码：" = " · Codec: ";
-"%@ · 编码：%@" = "%@ · Codec: %@";
-
 /* ---- Task store / transfer / installer / discoverer ---- */
 "任务数据库错误：" = "Task database error: ";
 "任务数据库版本 %lld 不受支持。" = "Task database version %lld is not supported.";
@@ -841,7 +806,6 @@
 /* ---- Task detail extras ---- */
 "已下载 %@，任务已结束（大小未知）" = "Downloaded %@; the task has ended (size unknown)";
 "已下载 %@，大小未知" = "Downloaded %@; size unknown";
-"已探测大小，以实际下载为准" = "Size probed; the actual download may differ";
 "%lld/%lld 分段已完成" = "%lld/%lld segments completed";
 "建议：%@" = "Suggestion: %@";
 "粘贴 Cookie" = "Paste Cookie";
@@ -861,10 +825,9 @@
 "2. 手动：从浏览器开发者工具复制 Cookie 后粘贴到 MacIDM。" = "2. Manual: copy the cookie from the browser DevTools and paste it into MacIDM.";
 "如需删除该站点已存会话，请到设置 → 站点会话中操作。" = "To delete a saved session for this site, go to Settings → Site sessions.";
 "移动到队列" = "Move to Queue";
-"移除记录…" = "Remove Record…";
 "总速度" = "Total speed";
 "当前活动任务的总下载速度" = "Total download speed of the active tasks";
-"%lld 个文件已丢失" = "%lld files missing";
+"%lld 个文件已丢失" = "Files missing: %lld";
 "Chrome 接管：%@" = "Chrome takeover: %@";
 
 "设置分类" = "Settings categories";
@@ -905,10 +868,294 @@
 
 "已是最新" = "Up to date";
 
-"查看新版本" = "View Release";
-
-"打开 GitHub 发布页面" = "Open the GitHub release page";
-
 "自动检查新版本" = "Automatically check for new versions";
 
 "每天最多联网检查一次；关闭后仅手动检查。" = "Checks online at most once a day; when off, only manual checks run.";
+
+"该任务由 CLI 管理，请在 CLI 中执行 %@ 操作" = "This task is managed by the CLI; run %@ from the CLI.";
+
+"磁盘空间不足，任务已暂停；释放空间后会自动继续。" = "The disk is full, so the task is paused; it resumes automatically once space is freed.";
+
+"清理目标磁盘或更换保存位置；也可以在空间足够后手动点击继续。" = "Free up space on the destination disk or choose another save location; you can also click Resume once there is enough space.";
+
+"下载尚未确认停止，正在等待写入结束；结束后才可重试或删除文件。" = "The download has not confirmed that it stopped and is still finishing its writes; retry or delete the file once it ends.";
+
+"下载仍在停止中" = "Download Is Still Stopping";
+
+"旧执行尚未结束，不能同时启动新的写入。请等待停止完成后重试。" = "The previous run has not finished, so a new write cannot start yet. Wait for it to stop, then try again.";
+
+"无音轨" = "No Audio Track";
+
+"产物只有视频轨、没有音频：来源清单本身只含视频流。可回到页面改选带音频的清单重新下载。" = "The result has video but no audio because the source manifest only contains a video stream. Go back to the page and choose a manifest with audio to download again.";
+
+"用户取消了接管，并要求同时取消浏览器下载。" = "The user cancelled the takeover and asked to cancel the browser download as well.";
+
+"与浏览器地址栏中的主机一致；www.example.com 与 example.com 是两个不同的站点。" = "Must match the host in the browser's address bar; www.example.com and example.com are different sites.";
+
+"该站点已保存过 Cookie（更新于 %@）；粘贴新值并保存即会覆盖。" = "A cookie is already saved for this site (updated %@); pasting and saving a new value replaces it.";
+
+"站点主机名（如 example.com）" = "Site host name (for example, example.com)";
+
+"站点会话仅用于 https 下载。" = "Site sessions are used only for https downloads.";
+
+"域名无法作为站点会话保存，请填写完整主机名（例如 example.com）。" = "This domain cannot be saved as a site session; enter a full host name (for example, example.com).";
+
+"无法保存到钥匙串：%@" = "Could not save to the Keychain: %@";
+
+"如何获取：登录 → F12 → Network → ⌘R 刷新 → 点列表第一行 → 复制 Cookie 值" = "How to get it: sign in → F12 → Network → ⌘R to reload → click the first row → copy the Cookie value";
+
+"第 1 步 · 先登录，再刷新" = "Step 1 · Sign in, then reload";
+
+"在浏览器中正常登录该站点，按 F12（或右键页面选“检查”）打开开发者工具并切到 Network（网络）面板，然后按 ⌘R 刷新一次页面。必须登录之后再刷新，否则发出的请求里没有登录 Cookie。" = "Sign in to the site in your browser as usual, press F12 (or right-click the page and choose Inspect) to open the developer tools, switch to the Network panel, then press ⌘R to reload the page once. Reload after signing in, otherwise the requests carry no sign-in cookie.";
+
+"第 2 步 · 点击“页面主请求”" = "Step 2 · Click the page's main request";
+
+"刷新后请求列表的第一行通常就是当前页面本身：Name（名称）与地址栏网址一致，Type（类型）列显示 document。它带 Cookie 的概率最高。列表太杂时，点类型栏里的 Doc（文档）按钮只看文档类请求，选最上面一行。" = "After reloading, the first row of the request list is usually the page itself: its Name matches the address bar and its Type column shows document. It is the request most likely to carry the cookie. If the list is crowded, click Doc in the type bar to show only document requests and pick the top row.";
+
+"第 3 步 · 复制 Cookie 值" = "Step 3 · Copy the Cookie value";
+
+"点开该请求，在右侧 Headers（标头）面板向下滚动到 Request Headers（请求标头）小节，找到 Cookie 一行，复制冒号后面的全部内容。开头的 “Cookie:” 三个字母不用管，保存时会自动去掉。同一站点不同请求带的 Cookie 可能略有差异（个别字段随请求变化），任选一份都可以，关键是包含登录字段（例如 B 站的 SESSDATA）。" = "Open the request, scroll down the Headers panel to Request Headers, find the Cookie line, and copy everything after the colon. Ignore a leading “Cookie:”; it is removed when you save. Different requests on the same site may carry slightly different cookies (some fields change per request); any one works as long as it includes the sign-in fields (for example, Bilibili's SESSDATA).";
+
+"第 4 步 · 第一行没有 Cookie 怎么办" = "Step 4 · The first row has no cookie";
+
+"js、css、图片、字体等静态文件请求基本都不带 Cookie，不必逐个去点。把类型栏换成 Fetch/XHR，点击一个名称像接口的请求（常含 api、user、login、info 等字样，且域名与本站相同），在它的 Request Headers 里找 Cookie。" = "Static files such as js, css, images and fonts rarely carry cookies, so there is no need to check them one by one. Switch the type bar to Fetch/XHR, click a request that looks like an API call (names often contain api, user, login or info, on the same domain as the site), and look for Cookie in its Request Headers.";
+
+"第 5 步 · 还是找不到" = "Step 5 · Still can't find it";
+
+"多半是刷新发生在登录之前：重新登录后再刷新一次。若依旧没有，该站点可能不需要 Cookie 或登录状态在别的域名下，改用 Chrome 插件提交下载即可自动携带登录状态，无需手动粘贴。" = "Most likely the page was reloaded before you signed in: sign in again and reload once more. If there is still nothing, the site may not need a cookie or keeps its sign-in on another domain; submit the download from the Chrome extension instead, which carries the sign-in automatically, with no pasting needed.";
+
+"作用范围" = "Scope";
+
+"Cookie 按站点隔离，仅用于该主机的 https 下载（不用于 http 或兄弟子域；由于未实现 Path 属性解析，在同一主机的不同路径下均会复用）。保存后对该站点的解析与下载自动生效。" = "Cookies are isolated per site and used only for https downloads from that host (not for http or sibling subdomains; because the Path attribute is not parsed, they are reused across all paths on the same host). Once saved, they apply automatically to inspection and downloads for that site.";
+
+"yt-dlp 无法启动" = "yt-dlp Cannot Start";
+
+"已找到 yt-dlp，但进程启动失败（文件损坏或系统限制）。" = "yt-dlp was found, but the process failed to start (a damaged file or a system restriction).";
+
+"在设置 → yt-dlp 中重新下载安装。" = "Download and install it again in Settings → yt-dlp.";
+
+"直播暂不支持" = "Live Streams Not Supported";
+
+"内容正在直播或即将开始，MacIDM 只接受已结束的点播/回放。" = "This content is live or about to start; MacIDM only accepts finished on-demand videos or replays.";
+
+"直播结束并生成回放后再提交下载。" = "Submit the download again after the stream ends and a replay is available.";
+
+"直播状态无法确认" = "Live Status Unknown";
+
+"直播探测失败或结果不可解析；为避免误下载活动直播，任务已安全中止。" = "The live-status check failed or could not be parsed; the task was stopped safely to avoid downloading an active live stream.";
+
+"稍后重试；若反复出现，请检查网络或在设置中更新 yt-dlp。" = "Try again later; if it keeps happening, check your network or update yt-dlp in Settings.";
+
+"进程清理未完成" = "Process Cleanup Incomplete";
+
+"yt-dlp 进程组未能在预算内全部退出。" = "The yt-dlp process group did not exit within the time budget.";
+
+"稍后重试；若反复出现可在活动监视器中检查残留 yt-dlp 进程。" = "Try again later; if it keeps happening, check Activity Monitor for leftover yt-dlp processes.";
+
+"请求超时" = "Request Timed Out";
+
+"网络连接或媒体缓冲等待超时，请检查网络后重试。" = "The network connection or media buffering timed out; check your network and try again.";
+
+"HLS/DASH 视频需要 ffmpeg 才能合并与转码。请安装 ffmpeg（如 brew install ffmpeg）后重启 MacIDM，MacIDM 会自动检测系统中的 ffmpeg。" = "HLS/DASH videos need ffmpeg to merge and convert. Install ffmpeg (for example, brew install ffmpeg) and restart MacIDM; it detects the system ffmpeg automatically.";
+
+"MacIDM 语义判断服务 KEY" = "MacIDM semantic title service key";
+
+"开机自启动注册被取消。" = "Launch-at-login registration was cancelled.";
+
+"无法设置开机自启动：%@" = "Could not set launch at login: %@";
+
+"彻底删除 %lld 个文件？" = "Permanently delete the files (%lld)?";
+
+"仅删除记录" = "Remove Record Only";
+
+"移到废纸篓" = "Move to Trash";
+
+"彻底删除" = "Delete Permanently";
+
+"文件将被立即删除，不可恢复。" = "The files are deleted immediately and cannot be recovered.";
+
+"YouTube 要求登录或人机验证，无法解析画质。请先在浏览器登录该站点后重试。" = "YouTube requires sign-in or a human check, so the qualities could not be read. Sign in to the site in your browser and try again.";
+
+"Cookie 上下文不可用，无法完成需要登录态的解析。" = "No cookie context is available, so inspection that needs a signed-in session cannot finish.";
+
+"网络或代理连接失败或超时，请检查网络后重试。" = "The network or proxy connection failed or timed out; check your network and try again.";
+
+"yt-dlp 版本过旧，无法解析该页面，请更新后重试。" = "yt-dlp is too old to read this page; update it and try again.";
+
+"解析成功，但该视频没有可下载的视频格式。" = "The page was read, but this video has no downloadable video formats.";
+
+"解析工具的进程组未能在预算内完成清理，为避免残留进程干扰已中止本次检查；请稍后重试。" = "The inspection tool's process group was not cleaned up within the time budget, so this check was stopped to avoid leftover processes; try again later.";
+
+"资源" = "Resources";
+
+"HLS 音视频" = "HLS audio and video";
+
+"网页或媒体 URL；可一次粘贴多行链接批量创建" = "Web page or media URL; paste several lines to create many tasks at once";
+
+"macOS 安装包" = "macOS installer";
+
+"Windows 程序" = "Windows program";
+
+"Android 应用" = "Android app";
+
+"Linux 软件包" = "Linux package";
+
+"立即开始下载" = "Start downloading immediately";
+
+"检测到多行批量地址，但其中至少一行不是有效的 http(s) 链接；请逐行检查后重试。" = "Several addresses were pasted, but at least one line is not a valid http(s) link; check each line and try again.";
+
+"已创建 %lld 个；「%@」失败：%@。地址栏只保留未创建的链接。" = "Created %1$lld; “%2$@” failed: %3$@. Only the links that were not created remain in the address field.";
+
+"磁盘空间不足" = "Disk Full";
+
+"%@ 已暂停，释放空间后会自动继续下载。" = "%@ is paused and resumes automatically once space is freed.";
+
+"API 地址无效（仅支持 HTTPS）" = "Invalid API address (HTTPS only)";
+
+"未完成配置（API 地址 / 模型 / KEY）" = "Not fully configured (API address / model / key)";
+
+"网络错误：%@" = "Network error: %@";
+
+"服务未返回任何模型" = "The service returned no models";
+
+"响应格式无法解析（期望 data[].id）" = "Unreadable response format (expected data[].id)";
+
+"%lld 个模型" = "Models: %lld";
+
+"智谱 GLM（GLM-Flash）" = "Zhipu GLM (GLM-Flash)";
+
+"自定义（OpenAI 兼容）" = "Custom (OpenAI-compatible)";
+
+"MacIDM 站点会话 Cookie" = "MacIDM site session cookie";
+
+"开机自启动" = "Launch at Login";
+
+"登录时自动启动 MacIDM 并常驻菜单栏。" = "Start MacIDM when you log in and keep it in the menu bar.";
+
+"已注册但被系统阻止；请在“系统设置 → 通用 → 登录项”中重新启用。" = "Registered but blocked by the system; turn it back on in System Settings → General → Login Items.";
+
+"智能命名辅助（实验性）" = "Smart Naming Assistant (Experimental)";
+
+"启用语义判断服务" = "Enable the semantic title service";
+
+"服务商" = "Provider";
+
+"API 地址" = "API Address";
+
+"模型" = "Model";
+
+"连接测试" = "Connection Test";
+
+"模型 id（可点右侧图标获取列表）" = "Model ID (click the icon on the right for a list)";
+
+"隐藏 API KEY" = "Hide API Key";
+
+"显示 API KEY" = "Show API Key";
+
+"测试连接" = "Test Connection";
+
+"请先填写 API 地址与 KEY" = "Enter the API address and key first";
+
+"请选择服务商或填写 API 地址。" = "Choose a provider or enter an API address.";
+
+"请填写模型 id。" = "Enter a model ID.";
+
+"在 API KEY 输入框粘贴 KEY（自动保存到本机钥匙串）后生效。" = "Takes effect once you paste a key into the API Key field (saved automatically to this Mac's Keychain).";
+
+"确认窗口先按常规规则给出文件名，仲裁结果仅在高置信时覆盖为建议名，用户编辑永远优先。上送内容仅限候选标题字符串与页面标题，不含媒体 URL、Cookie 或其他凭据。" = "The confirmation window first proposes a name using the regular rules; the service's choice replaces it only when confidence is high, and your own edits always win. Only candidate title strings and the page title are sent, never media URLs, cookies or other credentials.";
+
+"开启后选择服务商（自动填充地址与模型）并粘贴 API KEY（只存本机钥匙串，可点眼睛图标查看，可下拉获取模型列表、测试连接）。关闭或不可用时完全使用本地命名规则。" = "When on, choose a provider (which fills in the address and model) and paste an API key (stored only in this Mac's Keychain; click the eye icon to view it, fetch the model list from the menu, or test the connection). When off or unavailable, only the local naming rules are used.";
+
+"正在获取模型列表…" = "Fetching models…";
+
+"获取模型列表" = "Fetch Models";
+
+"重新获取" = "Fetch Again";
+
+"获取模型列表失败：%@" = "Could not fetch models: %@";
+
+"持续监测剪贴板中的下载链接" = "Watch the clipboard for download links";
+
+"在其他应用里复制下载链接时立即弹出确认窗口，无需切换到本应用；本应用处于前台时不会触发。" = "Copying a download link in another app opens the confirmation window right away, without switching to MacIDM; it never fires while MacIDM is frontmost.";
+
+"仅对文件和媒体链接弹出" = "Only for file and media links";
+
+"只在复制的是文件、视频/音频或支持的视频网站链接时弹出；复制普通网页链接不打扰。" = "Only links to files, video/audio, or supported video sites open the window; copying an ordinary web page link stays quiet.";
+
+"（%lld）" = " (%lld)";
+
+"来源协议未确认，重新捕获后才会复用" = "Source protocol unconfirmed; it is reused only after being captured again";
+
+"未能存入钥匙串，本次运行后需重新粘贴" = "Not saved to the Keychain; paste it again after this session";
+
+"复制 Cookie" = "Copy Cookie";
+
+"代理类型" = "Proxy Type";
+
+"原视频或画质当前不可用，请恢复网站登录状态，或重新提交并选择画质。" = "The original video or quality is not available right now; restore your sign-in on the site, or submit again and choose a quality.";
+
+"打开最近完成的文件" = "Open the most recently finished file";
+
+"在访达中显示最近完成的文件" = "Show the most recently finished file in Finder";
+
+"平均速度：%@（仅统计实际传输时间）" = "Average speed: %@ (transfer time only)";
+
+"平均速度 %@" = "Average speed %@";
+
+"已限速：%lld KB/s" = "Speed limited: %lld KB/s";
+
+"已限速 %lld KB/s" = "Speed limited %lld KB/s";
+
+"%@：%@" = "%1$@: %2$@";
+
+"实际传输 %@；端到端 %@（含暂停、解析与混流）" = "Transfer %1$@; end to end %2$@ (including pauses, inspection and muxing)";
+
+"仅统计实际传输时间（已排除排队、暂停、解析与混流）" = "Counts transfer time only (excludes queueing, pauses, inspection and muxing)";
+
+"下载耗时 %@" = "Download time %@";
+
+"%@ · 任务ID: %@" = "%1$@ · Job ID: %2$@";
+
+"彻底删除…" = "Delete Permanently…";
+
+"限制速度…（当前 %lld KB/s）" = "Limit Speed… (now %lld KB/s)";
+
+"限制速度…" = "Limit Speed…";
+
+"限制此任务速度" = "Limit This Task's Speed";
+
+"单位 KB/s；输入 0 表示不限速。全局限速仍同时生效，两者取更严者。" = "In KB/s; enter 0 for no limit. The global limit still applies, and the stricter of the two wins.";
+
+"应用" = "Apply";
+
+"0 = 不限速" = "0 = no limit";
+
+"下载的 yt-dlp 无法执行或版本不符，已取消安装。" = "The downloaded yt-dlp could not run or has the wrong version; installation was cancelled.";
+
+"无法获取 yt-dlp 校验文件，已停止安装。" = "Could not get the yt-dlp checksum file; installation stopped.";
+
+"yt-dlp 校验文件中缺少该资产的哈希，已停止安装。" = "The yt-dlp checksum file has no hash for this asset; installation stopped.";
+
+"yt-dlp 校验文件中该资产的哈希不唯一，已停止安装。" = "The yt-dlp checksum file lists more than one hash for this asset; installation stopped.";
+
+"yt-dlp 校验文件中的哈希格式非法，已停止安装。" = "The yt-dlp checksum file has an invalid hash format; installation stopped.";
+
+"下载的 yt-dlp 校验不符（SHA-256 不匹配），已停止安装。" = "The downloaded yt-dlp failed verification (SHA-256 mismatch); installation stopped.";
+
+"yt-dlp 已找到但无法启动（可能是文件损坏或系统限制）。请在设置的 yt-dlp 页面重新下载安装。" = "yt-dlp was found but cannot start (possibly a damaged file or a system restriction). Download and install it again on the yt-dlp page in Settings.";
+
+"正在直播或即将开始的直播暂不支持下载，MacIDM 只接受已结束的点播/回放。" = "Live or upcoming streams cannot be downloaded; MacIDM only accepts finished on-demand videos or replays.";
+
+"无法确认 YouTube 内容的直播状态，为避免误下载已中止；请稍后重试。" = "Could not confirm whether this YouTube content is live, so it was stopped to avoid a wrong download; try again later.";
+
+"yt-dlp 进程组未能在预算内完成清理，为避免残留进程干扰已中止本次下载；请稍后重试。" = "The yt-dlp process group was not cleaned up within the time budget, so this download was stopped to avoid leftover processes; try again later.";
+
+"视频不可用或已删除" = "Video unavailable or deleted";
+
+"yt-dlp 解析失败（退出码 %d）" = "yt-dlp could not read the page (exit code %d)";
+
+"仅音频 (m4a)" = "Audio only (m4a)";
+
+"安装更新…" = "Install Update…";
+
+"查看更新内容并安装" = "See what's new and install";

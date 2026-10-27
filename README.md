@@ -7,7 +7,7 @@
 
 MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser media sniffing, segmented downloads, resume, and more. [Internet Download Manager (IDM)](https://www.internetdownloadmanager.com/) still [has no macOS version](https://www.internetdownloadmanager.com/register/new_faq/functions2.html), so this project was created as a Chrome extension plus an App.
 
-<p><img src="README-assets/app-overview-en.png" alt="MacIDM main window: task list, track progress and speed graph" width="1000" /></p>
+<p><img src="README-assets/app-overview-en.gif" alt="Interface preview: MacIDM main window with task list, segment progress and speed graph" width="1000" /></p>
 
 ## Features
 
@@ -15,13 +15,15 @@ MacIDM is a macOS media downloader written in Swift / SwiftUI, with browser medi
 
 1. The browser extension discovers and selects resources; downloads run in the local App and its download backends. You can also paste a download link directly in the App.
 
-The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and opening the App's new-task window:
+The walkthrough below shows clicking the floating button on a video / audio resource, expanding the resource, clicking Download, and confirming the download in the App's new-task window:
 
-<p><img src="README-assets/page-sniff-en.gif" alt="English walkthrough: open the media panel, select a resource and open a new download task" width="900" /></p>
+<p><img src="README-assets/page-sniff-en.gif" alt="Interface preview: open the media panel, select a resource and start it from the new download task window" width="900" /></p>
 
 2. The toolbar Popup lists all media resources on the current page.
 
-<table><tr><td><img src="README-assets/browser-popup-en.png" alt="MacIDM extension Popup in English" width="380" /></td></tr></table>
+<table><tr><td><img src="README-assets/browser-popup-en.gif" alt="Interface preview: the MacIDM extension Popup finds media and downloads a chosen quality" width="380" /></td></tr></table>
+
+<sub>These animations are interface previews rendered from the front-end pages in <code>Resources/Design/readme-demo</code> with the real UI strings (<code>scripts/render-readme-demos.sh</code>), not screen recordings.</sub>
 
 ### Task management and other features
 

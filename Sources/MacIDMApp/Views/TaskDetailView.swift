@@ -77,7 +77,7 @@ struct TaskDetailView: View {
                             if let message = task.errorMessage, showsErrorPanel {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("错误详情").font(.callout.weight(.semibold))
-                                    Text(message)
+                                    Text(ErrorPresentation.localizedStored(message))
                                         .font(.caption)
                                         .textSelection(.enabled)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -478,10 +478,11 @@ struct TaskDetailView: View {
         task.errorCode != "PAUSED" && task.errorCode != "CANCELLED"
     }
 
-    private func errorPanel(_ message: String) -> some View {
+    private func errorPanel(_ storedMessage: String) -> some View {
+        let message = ErrorPresentation.localizedStored(storedMessage)
         let friendly =
             task.errorCode.map { ErrorPresentation.describe(code: $0, fallbackMessage: message) }
-            ?? ErrorPresentation.Friendly(title: "下载错误", message: message)
+            ?? ErrorPresentation.Friendly(title: String(localized: "下载错误"), message: message)
         return VStack(alignment: .leading, spacing: 8) {
             Label(friendly.title, systemImage: "exclamationmark.triangle.fill")
                 .font(.subheadline.weight(.semibold))
@@ -495,7 +496,7 @@ struct TaskDetailView: View {
             }
             .buttonStyle(.borderless)
             if let recommendation = task.errorRecommendation, !recommendation.isEmpty {
-                Text("建议：\(recommendation)")
+                Text("建议：\(ErrorPresentation.localizedStored(recommendation))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

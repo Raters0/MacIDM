@@ -13,9 +13,9 @@ struct DetailColumnView: View {
                 .id(task.id)
         } else {
             EmptyStateView(
-                title: "选择一个任务查看详情",
+                title: String(localized: "选择一个任务查看详情"),
                 systemImage: "sidebar.right",
-                description: "支持 ⌘/⇧ 多选进行批量操作"
+                description: String(localized: "支持 ⌘/⇧ 多选进行批量操作")
             )
         }
     }

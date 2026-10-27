@@ -84,7 +84,11 @@
   // zh-CN catalog is the source of truth, so a missing translation still
   // shows readable copy instead of a raw key.
   function t(key, params) {
-    const template = locales.get(currentLanguage)?.[key] ?? locales.get(DEFAULT_LANGUAGE)?.[key];
+    // A "<key>.one" entry, when present, is the singular form for count 1
+    // ("1 resource", not "1 resources").
+    const lookup = (name) =>
+      locales.get(currentLanguage)?.[name] ?? locales.get(DEFAULT_LANGUAGE)?.[name];
+    const template = (params?.count === 1 ? lookup(`${key}.one`) : undefined) ?? lookup(key);
     if (template == null) return key;
     if (!params) return template;
     return template.replace(/\{(\w+)\}/gu, (token, name) =>

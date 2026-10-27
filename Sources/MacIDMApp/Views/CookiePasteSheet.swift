@@ -140,28 +140,45 @@ struct CookiePasteSheet: View {
     private var detailedGuide: some View {
         VStack(alignment: .leading, spacing: 8) {
             guideStep(
-                "第 1 步 · 先登录，再刷新",
-                "在浏览器中正常登录该站点，按 F12（或右键页面选“检查”）打开开发者工具并切到 Network（网络）面板，然后按 ⌘R 刷新一次页面。必须登录之后再刷新，否则发出的请求里没有登录 Cookie。"
+                String(localized: "第 1 步 · 先登录，再刷新"),
+                String(
+                    localized:
+                        "在浏览器中正常登录该站点，按 F12（或右键页面选“检查”）打开开发者工具并切到 Network（网络）面板，然后按 ⌘R 刷新一次页面。必须登录之后再刷新，否则发出的请求里没有登录 Cookie。"
+                )
             )
             guideStep(
-                "第 2 步 · 点击“页面主请求”",
-                "刷新后请求列表的第一行通常就是当前页面本身：Name（名称）与地址栏网址一致，Type（类型）列显示 document。它带 Cookie 的概率最高。列表太杂时，点类型栏里的 Doc（文档）按钮只看文档类请求，选最上面一行。"
+                String(localized: "第 2 步 · 点击“页面主请求”"),
+                String(
+                    localized:
+                        "刷新后请求列表的第一行通常就是当前页面本身：Name（名称）与地址栏网址一致，Type（类型）列显示 document。它带 Cookie 的概率最高。列表太杂时，点类型栏里的 Doc（文档）按钮只看文档类请求，选最上面一行。"
+                )
             )
             guideStep(
-                "第 3 步 · 复制 Cookie 值",
-                "点开该请求，在右侧 Headers（标头）面板向下滚动到 Request Headers（请求标头）小节，找到 Cookie 一行，复制冒号后面的全部内容。开头的 “Cookie:” 三个字母不用管，保存时会自动去掉。同一站点不同请求带的 Cookie 可能略有差异（个别字段随请求变化），任选一份都可以，关键是包含登录字段（例如 B 站的 SESSDATA）。"
+                String(localized: "第 3 步 · 复制 Cookie 值"),
+                String(
+                    localized:
+                        "点开该请求，在右侧 Headers（标头）面板向下滚动到 Request Headers（请求标头）小节，找到 Cookie 一行，复制冒号后面的全部内容。开头的 “Cookie:” 三个字母不用管，保存时会自动去掉。同一站点不同请求带的 Cookie 可能略有差异（个别字段随请求变化），任选一份都可以，关键是包含登录字段（例如 B 站的 SESSDATA）。"
+                )
             )
             guideStep(
-                "第 4 步 · 第一行没有 Cookie 怎么办",
-                "js、css、图片、字体等静态文件请求基本都不带 Cookie，不必逐个去点。把类型栏换成 Fetch/XHR，点击一个名称像接口的请求（常含 api、user、login、info 等字样，且域名与本站相同），在它的 Request Headers 里找 Cookie。"
+                String(localized: "第 4 步 · 第一行没有 Cookie 怎么办"),
+                String(
+                    localized:
+                        "js、css、图片、字体等静态文件请求基本都不带 Cookie，不必逐个去点。把类型栏换成 Fetch/XHR，点击一个名称像接口的请求（常含 api、user、login、info 等字样，且域名与本站相同），在它的 Request Headers 里找 Cookie。"
+                )
             )
             guideStep(
-                "第 5 步 · 还是找不到",
-                "多半是刷新发生在登录之前：重新登录后再刷新一次。若依旧没有，该站点可能不需要 Cookie 或登录状态在别的域名下，改用 Chrome 插件提交下载即可自动携带登录状态，无需手动粘贴。"
+                String(localized: "第 5 步 · 还是找不到"),
+                String(
+                    localized:
+                        "多半是刷新发生在登录之前：重新登录后再刷新一次。若依旧没有，该站点可能不需要 Cookie 或登录状态在别的域名下，改用 Chrome 插件提交下载即可自动携带登录状态，无需手动粘贴。")
             )
             guideStep(
-                "作用范围",
-                "Cookie 按站点隔离，仅用于该主机的 https 下载（不用于 http 或兄弟子域；由于未实现 Path 属性解析，在同一主机的不同路径下均会复用）。保存后对该站点的解析与下载自动生效。"
+                String(localized: "作用范围"),
+                String(
+                    localized:
+                        "Cookie 按站点隔离，仅用于该主机的 https 下载（不用于 http 或兄弟子域；由于未实现 Path 属性解析，在同一主机的不同路径下均会复用）。保存后对该站点的解析与下载自动生效。"
+                )
             )
         }
         .padding(12)

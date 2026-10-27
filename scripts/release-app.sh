@@ -66,6 +66,8 @@ fi
   echo "[release-app] notes file not found: $notes_file" >&2
   exit 1
 }
+# Packaging runs inside the snapshot worktree, so pass the notes by absolute path.
+notes_file="$(cd "$(dirname "$notes_file")" && pwd)/$(basename "$notes_file")"
 case "$version" in
   v*) version_number="${version#v}" ;;
   *) version_number="$version" ;;
@@ -185,7 +187,7 @@ snapshot_sha="$(git -C "$snapshot_worktree" rev-parse HEAD)"
   # The snapshot worktree carries its own .build; Sparkle's signing tools
   # must be resolved there once before packaging.
   swift package resolve >&2
-  bash scripts/package-update-release.sh >&2
+  MACIDM_RELEASE_NOTES_FILE="$notes_file" bash scripts/package-update-release.sh >&2
   ( cd BrowserExtension && ditto -c -k --sequesterRsrc --keepParent chrome \
       "$release_directory/MacIDM-v${version_number}-chrome-extension.zip" )
 )

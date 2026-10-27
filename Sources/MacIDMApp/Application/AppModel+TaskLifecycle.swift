@@ -59,7 +59,7 @@ extension AppModel {
                 $0.bytesPerSecond = 0
                 if self.executions[id].task != nil {
                     $0.errorCode = "STOP_TIMEOUT"
-                    $0.errorMessage = "下载尚未确认停止，正在等待写入结束；结束后才可重试或删除文件。"
+                    $0.errorMessage = String(localized: "下载尚未确认停止，正在等待写入结束；结束后才可重试或删除文件。")
                 }
             }
             self.tryPersistOrPresentError()
@@ -69,8 +69,8 @@ extension AppModel {
     func resume(_ id: UUID) {
         guard executions[id].task == nil else {
             presentedError = PresentedError(
-                title: "下载仍在停止中",
-                message: "旧执行尚未结束，不能同时启动新的写入。请等待停止完成后重试。"
+                title: String(localized: "下载仍在停止中"),
+                message: String(localized: "旧执行尚未结束，不能同时启动新的写入。请等待停止完成后重试。")
             )
             return
         }

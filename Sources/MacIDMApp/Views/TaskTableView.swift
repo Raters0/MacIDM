@@ -169,7 +169,8 @@ struct TaskTableView: View, Equatable {
                         )
                         .modifier(TableCellLayout())
                     }
-                    .width(min: 60, ideal: 60)
+                    // Wide enough for the English header "Download time".
+                    .width(min: 60, ideal: 96)
                 }
 
                 if isColumnVisible("date") {
@@ -229,7 +230,7 @@ struct TaskTableView: View, Equatable {
                     )
                     .modifier(TableCellLayout())
                 }
-                .width(min: 60, ideal: 60)
+                .width(min: 60, ideal: 96)
 
                 TableColumn("日期", value: \.createdAt) { task in
                     Text(task.createdAt, format: .dateTime.month().day().hour().minute())
@@ -286,9 +287,10 @@ struct TaskTableView: View, Equatable {
         .overlay {
             if displayedTasks.isEmpty {
                 EmptyStateView(
-                    title: appearance.tasksEmpty ? "还没有下载任务" : "没有匹配的任务",
+                    title: appearance.tasksEmpty ? String(localized: "还没有下载任务") : String(localized: "没有匹配的任务"),
                     systemImage: appearance.tasksEmpty ? "arrow.down.doc" : "magnifyingglass",
-                    description: appearance.tasksEmpty ? "点击「添加」或拖入下载链接" : "更改筛选条件或搜索内容"
+                    description: appearance.tasksEmpty
+                        ? String(localized: "点击「添加」或拖入下载链接") : String(localized: "更改筛选条件或搜索内容")
                 )
             }
         }
@@ -449,7 +451,7 @@ struct TaskContextMenuModifier: ViewModifier {
         do {
             try model.retryWithNewFilename(task.id, filename: entered)
         } catch {
-            model.presentedError = PresentedError(title: "改名失败", message: error.localizedDescription)
+            model.presentedError = PresentedError(title: String(localized: "改名失败"), message: error.localizedDescription)
         }
     }
 }

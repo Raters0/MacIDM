@@ -20,7 +20,7 @@ final class AppUpdateEngine: NSObject, ObservableObject {
         /// started because the bundle lacks the Sparkle configuration).
         case idle
         case upToDate
-        case updateAvailable(latest: String, releaseURL: URL)
+        case updateAvailable(latest: String)
         case failed(message: String)
     }
 
@@ -80,10 +80,14 @@ final class AppUpdateEngine: NSObject, ObservableObject {
     }
 
     /// User-initiated check. Sparkle's standard driver renders the progress
-    /// and result dialogs; the delegate callbacks below mirror the outcome
-    /// into `state` so it stays visible after the dialogs close.
+    /// and result dialogs — including the update window with the embedded
+    /// release notes and the Install button — and the delegate callbacks
+    /// below mirror the outcome into `state` so it stays visible after the
+    /// dialogs close. The app is activated first: from the menu bar panel it
+    /// may not be frontmost, and Sparkle's window would open behind others.
     func checkForUpdates() {
         guard let updater else { return }
+        NSApp.activate(ignoringOtherApps: true)
         updater.checkForUpdates()
     }
 }
@@ -91,11 +95,7 @@ final class AppUpdateEngine: NSObject, ObservableObject {
 extension AppUpdateEngine: SPUUpdaterDelegate {
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let latest = item.displayVersionString
-        let releaseURL =
-            item.releaseNotesURL
-            ?? item.infoURL
-            ?? URL(string: "https://github.com/Raters0/MacIDM/releases/latest")!
-        state = .updateAvailable(latest: latest, releaseURL: releaseURL)
+        state = .updateAvailable(latest: latest)
         AppLogger.shared.info(.system, "update available via Sparkle: \(latest)")
     }
 

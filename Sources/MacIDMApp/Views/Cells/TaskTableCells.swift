@@ -120,7 +120,7 @@ struct DurationCell: View {
             let wall = live.wallClockDuration ?? task.wallClockDuration,
             wall > live.displayDuration
         else {
-            return "仅统计实际传输时间（已排除排队、暂停、解析与混流）"
+            return String(localized: "仅统计实际传输时间（已排除排队、暂停、解析与混流）")
         }
         return String(
             localized: "实际传输 \(netText)；端到端 \(DisplayFormatting.duration(wall))（含暂停、解析与混流）"
@@ -203,7 +203,7 @@ struct TaskNameCell: View {
                 .monospacedDigit()
                 .foregroundStyle(task.fileMissing ? AnyShapeStyle(DangerColor()) : AnyShapeStyle(Color.primary))
         }
-        .help(redacted ? task.jobID : "\(task.filename) · 任务ID: \(task.jobID)")
+        .help(redacted ? task.jobID : String(localized: "\(task.filename) · 任务ID: \(task.jobID)"))
     }
 }
 

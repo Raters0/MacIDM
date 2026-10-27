@@ -107,6 +107,7 @@
     "popup.pageUnavailable": "当前页面不可用",
     "popup.temporarilyUnreadable": "暂时无法读取",
     "popup.resourceCount": "{count} 个资源",
+    "popup.resourceCount.one": "1 个资源",
     "popup.sectionImages": "图片",
     "popup.sectionOther": "其他",
     "popup.noResources": "未发现资源",

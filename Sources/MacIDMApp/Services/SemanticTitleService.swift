@@ -58,15 +58,16 @@ final class SemanticTitleService: ObservableObject {
             return cached
         }
         guard let config = await configProvider(), isConfigured(config) else {
-            remember(.init(decision: nil, failure: "未完成配置（API 地址 / 模型 / KEY）"), forKey: context.cacheKey)
+            remember(
+                .init(decision: nil, failure: String(localized: "未完成配置（API 地址 / 模型 / KEY）")), forKey: context.cacheKey)
             Self.logSemanticTitle("failure=unconfigured", context: context)
-            return .init(decision: nil, failure: "未完成配置（API 地址 / 模型 / KEY）")
+            return .init(decision: nil, failure: String(localized: "未完成配置（API 地址 / 模型 / KEY）"))
         }
 
         guard let request = Self.makeRequest(config: config, context: context) else {
-            remember(.init(decision: nil, failure: "API 地址无效（仅支持 HTTPS）"), forKey: context.cacheKey)
+            remember(.init(decision: nil, failure: String(localized: "API 地址无效（仅支持 HTTPS）")), forKey: context.cacheKey)
             Self.logSemanticTitle("failure=invalid-endpoint", context: context)
-            return .init(decision: nil, failure: "API 地址无效（仅支持 HTTPS）")
+            return .init(decision: nil, failure: String(localized: "API 地址无效（仅支持 HTTPS）"))
         }
 
         Self.logSemanticTitle("invoke model=\(config.model)", context: context)
@@ -118,7 +119,7 @@ final class SemanticTitleService: ObservableObject {
             return .success(["jev-latest", "jev-preview"])
         case .openAICompatible:
             guard let request = Self.modelsRequest(config: config) else {
-                return .failure("API 地址无效（仅支持 HTTPS）")
+                return .failure(String(localized: "API 地址无效（仅支持 HTTPS）"))
             }
             do {
                 let (data, response) = try await perform(request, transport: transport)
@@ -129,10 +130,10 @@ final class SemanticTitleService: ObservableObject {
                 guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                     let items = payload["data"] as? [[String: Any]]
                 else {
-                    return .failure("响应格式无法解析（期望 data[].id）")
+                    return .failure(String(localized: "响应格式无法解析（期望 data[].id）"))
                 }
                 let ids = items.compactMap { $0["id"] as? String }.sorted()
-                guard !ids.isEmpty else { return .failure("服务未返回任何模型") }
+                guard !ids.isEmpty else { return .failure(String(localized: "服务未返回任何模型")) }
                 return .success(ids)
             } catch {
                 return .failure(Self.networkFailureDetail(error))
@@ -150,7 +151,7 @@ final class SemanticTitleService: ObservableObject {
         switch config.format {
         case .typeSafe:
             guard let request = Self.typeSafeProbeRequest(config: config) else {
-                return .failure("API 地址无效（仅支持 HTTPS）")
+                return .failure(String(localized: "API 地址无效（仅支持 HTTPS）"))
             }
             do {
                 let (_, response) = try await perform(request, transport: transport)
@@ -166,7 +167,8 @@ final class SemanticTitleService: ObservableObject {
             let models = await fetchModelList(config: config, transport: transport)
             switch models {
             case .success(let ids):
-                return .success(Self.latencyDetail(startedAt, model: config.model, extra: "\(ids.count) 个模型"))
+                return .success(
+                    Self.latencyDetail(startedAt, model: config.model, extra: String(localized: "\(ids.count) 个模型")))
             case .failure(let detail):
                 return .failure(detail)
             }
@@ -434,7 +436,7 @@ final class SemanticTitleService: ObservableObject {
 
     private static func networkFailureDetail(_ error: Error) -> String {
         let description = (error as? URLError)?.localizedDescription ?? error.localizedDescription
-        return "网络错误：\(description)"
+        return String(localized: "网络错误：\(description)")
     }
 
     private static func latencyDetail(_ startedAt: Date, model: String, extra: String?) -> String {
@@ -524,7 +526,7 @@ struct SemanticTitleProviderPreset: Identifiable, Sendable, Equatable {
             endpoint: "https://api.typesafe.ai/v1/systemone", model: "jev-latest"
         ),
         SemanticTitleProviderPreset(
-            id: "zhipu", displayName: "智谱 GLM（GLM-Flash）", format: .openAICompatible,
+            id: "zhipu", displayName: String(localized: "智谱 GLM（GLM-Flash）"), format: .openAICompatible,
             endpoint: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash"
         ),
         SemanticTitleProviderPreset(
@@ -536,7 +538,7 @@ struct SemanticTitleProviderPreset: Identifiable, Sendable, Equatable {
             endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini"
         ),
         SemanticTitleProviderPreset(
-            id: "custom", displayName: "自定义（OpenAI 兼容）", format: .openAICompatible,
+            id: "custom", displayName: String(localized: "自定义（OpenAI 兼容）"), format: .openAICompatible,
             endpoint: "", model: ""
         ),
     ]

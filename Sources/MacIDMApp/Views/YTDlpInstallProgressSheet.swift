@@ -60,9 +60,9 @@ struct YTDlpInstallProgressSheet: View {
 
     private var stageTitle: String {
         switch progress?.stage {
-        case .fetchingRelease, nil: "正在准备 yt-dlp"
-        case .downloading: "正在下载 yt-dlp"
-        case .installing: "正在安装 yt-dlp"
+        case .fetchingRelease, nil: String(localized: "正在准备 yt-dlp")
+        case .downloading: String(localized: "正在下载 yt-dlp")
+        case .installing: String(localized: "正在安装 yt-dlp")
         }
     }
 }

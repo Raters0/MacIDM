@@ -25,7 +25,7 @@ struct SidebarView: View {
                 filterRow(.active, systemImage: "arrow.down.circle", counts: counts)
                 filterRow(.completed, systemImage: "checkmark.circle", counts: counts)
 
-                sectionHeader("队列")
+                sectionHeader(String(localized: "队列"))
                 queueRow(nil, title: model.mainQueueTitle, isPaused: false, counts: counts)
                 ForEach(model.queues) { queue in
                     queueRow(queue.id, title: queue.name, isPaused: queue.isPaused, counts: counts)
@@ -51,12 +51,12 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .modifier(HoverHighlight())
 
-                sectionHeader("时间")
+                sectionHeader(String(localized: "时间"))
                 filterRow(.today, systemImage: "sun.max", counts: counts)
                 filterRow(.yesterday, systemImage: "moon", counts: counts)
                 filterRow(.thisWeek, systemImage: "calendar", counts: counts)
 
-                sectionHeader("分类")
+                sectionHeader(String(localized: "分类"))
                 ForEach(DownloadCategory.allCases, id: \.self) { category in
                     filterRow(.category(category), systemImage: category.systemImage, counts: counts)
                 }
@@ -96,8 +96,8 @@ struct SidebarView: View {
     private func createQueue() {
         guard
             let name = promptForQueueName(
-                title: "新建队列",
-                message: "输入队列名称。队列拥有独立的并发上限与可选的定时调度。"
+                title: String(localized: "新建队列"),
+                message: String(localized: "输入队列名称。队列拥有独立的并发上限与可选的定时调度。")
             )
         else { return }
         if let queue = model.addQueue(name: name) {
@@ -123,8 +123,8 @@ struct SidebarView: View {
     private func renameQueue(_ queue: AppQueue) {
         guard
             let name = promptForQueueName(
-                title: "重命名队列",
-                message: "输入新的队列名称。",
+                title: String(localized: "重命名队列"),
+                message: String(localized: "输入新的队列名称。"),
                 initial: queue.name
             )
         else { return }

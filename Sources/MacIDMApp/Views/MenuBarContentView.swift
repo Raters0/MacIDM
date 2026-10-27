@@ -53,8 +53,8 @@ struct MenuBarContentView: View {
             header
             activityOverview
             actions
-            if case .updateAvailable(let latest, let releaseURL) = model.updateEngine.state {
-                updateBanner(latest: latest, releaseURL: releaseURL)
+            if case .updateAvailable(let latest) = model.updateEngine.state {
+                updateBanner(latest: latest)
             }
             Divider()
             footer
@@ -170,11 +170,11 @@ struct MenuBarContentView: View {
     }
 
     /// New-release banner from the app update check. Only appears when a
-    /// check found a newer GitHub release; clicking opens the release page
-    /// in the browser — the app never updates itself.
-    private func updateBanner(latest: String, releaseURL: URL) -> some View {
+    /// check found a newer release; clicking opens Sparkle's update window
+    /// (release notes and Install) inside the app.
+    private func updateBanner(latest: String) -> some View {
         Button {
-            NSWorkspace.shared.open(releaseURL)
+            model.updateEngine.checkForUpdates()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.circle.fill")
@@ -194,7 +194,7 @@ struct MenuBarContentView: View {
                 tint: AppTheme.warning, showsIdleBackground: false, restForeground: AppTheme.warning
             )
         )
-        .help("打开 GitHub 发布页面")
+        .help("查看更新内容并安装")
     }
 
     private var footer: some View {

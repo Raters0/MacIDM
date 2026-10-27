@@ -159,9 +159,13 @@ extension SettingsView {
                         settings.globalHotKeyCombo = nil
                     }
                     .disabled(settings.globalHotKeyCombo == nil)
+                    .fixedSize()
                     Button("恢复默认") {
                         settings.globalHotKeyCombo = .defaultValue
                     }
+                    // Keep "Reset to default" on one line; the recorder field
+                    // gives up width instead.
+                    .fixedSize()
                 }
             }
         }
@@ -264,31 +268,35 @@ extension SettingsView {
     }
 
     /// App self-update (Settings → 关于), powered by Sparkle (technical-spec
-    /// §6.1). The check button delegates to Sparkle's standard driver UI;
-    /// the status text mirrors the engine state so the outcome stays
-    /// visible after Sparkle's dialogs close.
+    /// §6.1). One button: it checks, or — once a newer version is known —
+    /// opens Sparkle's update window with the release notes and Install.
+    /// The status line sits under the button so long English labels never
+    /// squeeze the button text into a column.
     var updateCheckRow: some View {
         settingRow(
             "软件更新",
             description: "自动检查每天最多一次。",
-            controlColumnWidth: SettingsMetrics.mediumControlColumn
+            controlColumnWidth: SettingsMetrics.wideControlColumn
         ) {
-            HStack(spacing: 8) {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button(updateButtonTitle(model.updateEngine.state)) {
+                    model.updateEngine.checkForUpdates()
+                }
+                .fixedSize()
                 if let text = updateStatusText(model.updateEngine.state) {
                     Text(text)
                         .font(.caption)
                         .foregroundStyle(updateStatusColor(model.updateEngine.state))
-                }
-                Button("检查更新") {
-                    model.updateEngine.checkForUpdates()
-                }
-                if case .updateAvailable(_, let releaseURL) = model.updateEngine.state {
-                    Button("查看新版本") {
-                        NSWorkspace.shared.open(releaseURL)
-                    }
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+
+    func updateButtonTitle(_ state: AppUpdateEngine.State) -> LocalizedStringKey {
+        if case .updateAvailable = state { return "安装更新…" }
+        return "检查更新"
     }
 
     func updateStatusText(_ state: AppUpdateEngine.State) -> String? {
@@ -297,7 +305,7 @@ extension SettingsView {
             nil
         case .upToDate:
             String(localized: "已是最新")
-        case .updateAvailable(let latest, _):
+        case .updateAvailable(let latest):
             String(localized: "发现新版本 \(latest)")
         case .failed(let message):
             message

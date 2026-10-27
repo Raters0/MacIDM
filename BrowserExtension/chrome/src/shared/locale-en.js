@@ -107,6 +107,7 @@
     "popup.pageUnavailable": "Current page unavailable",
     "popup.temporarilyUnreadable": "Temporarily unreadable",
     "popup.resourceCount": "{count} resources",
+    "popup.resourceCount.one": "1 resource",
     "popup.sectionImages": "Images",
     "popup.sectionOther": "Other",
     "popup.noResources": "No resources found",

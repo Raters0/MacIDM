@@ -23,6 +23,13 @@ test("placeholders are substituted and unknown keys fall back to the key", () =>
   assert.equal(t("does.not.exist"), "does.not.exist");
 });
 
+test("count 1 uses the singular .one form when a catalog provides it", async () => {
+  await i18n.setLanguage("en");
+  assert.equal(i18n.t("popup.resourceCount", { count: 1 }), "1 resource");
+  assert.equal(i18n.t("popup.resourceCount", { count: 2 }), "2 resources");
+  await i18n.setLanguage("zh-CN");
+});
+
 test("setLanguage switches catalogs and rejects unsupported languages", async () => {
   await i18n.setLanguage("en");
   assert.equal(i18n.currentLanguage(), "en");
