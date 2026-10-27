@@ -24,8 +24,6 @@ MacIDM 是一款使用 Swift / SwiftUI 编写的 macOS 媒体资源下载器，�
 
 <table><tr><td><img src="README-assets/browser-popup.gif" alt="MacIDM 扩展 Popup：列出本页媒体并下载" width="380" /></td></tr></table>
 
-<sub>以上动图逐帧录自真实运行的 App 与扩展；示例页面与下载任务来自本地测试数据，鼠标指针为后期叠加。</sub>
-
 ### 任务管理与其他功能
 
 - App 主窗口提供任务列表、分类和下载详情，可查看分段进度与速度曲线。

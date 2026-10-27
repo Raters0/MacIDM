@@ -23,8 +23,6 @@ The walkthrough below shows clicking the floating button on a video / audio reso
 
 <table><tr><td><img src="README-assets/browser-popup-en.gif" alt="MacIDM extension Popup: lists the media on the page and downloads one" width="380" /></td></tr></table>
 
-<sub>These animations are recorded frame by frame from the running App and extension; the sample page and downloads are local test data, and the pointer is overlaid afterwards.</sub>
-
 ### Task management and other features
 
 - The App main window provides the task list, categories, and download details, including segment progress and a speed graph.
